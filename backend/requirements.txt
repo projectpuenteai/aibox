@@ -1,0 +1,9 @@
+accelerate==1.2.1
+chromadb==0.5.23
+fastapi==0.115.6
+sentence-transformers==5.2.2
+tokenizers==0.20.3
+transformers==4.46.3
+uvicorn[standard]==0.32.1
+bitsandbytes==0.45.2
+posthog<4

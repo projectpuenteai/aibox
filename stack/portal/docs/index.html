@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Project Puente Docs</title>
+  <link rel="stylesheet" href="./docs.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <section id="dashboardView" class="dashboard-view">
+      <div class="dashboard-wrap">
+        <header class="hero-card">
+          <div class="hero-copy">
+            <div id="workspaceEyebrow" class="eyebrow">Workspace</div>
+            <h1 id="docsHeroTitle">Docs</h1>
+            <p id="userMeta">Loading workspace...</p>
+          </div>
+          <div class="hero-actions">
+            <a id="homeLink" href="/" class="ghost-btn home-btn" aria-label="Go to portal home">Home</a>
+            <label class="search-shell" for="searchInput">
+              <span class="search-icon">⌕</span>
+              <input id="searchInput" type="search" placeholder="Search documents" autocomplete="off" />
+            </label>
+            <button id="newDocBtn" class="primary-btn" type="button">+ New document</button>
+          </div>
+        </header>
+
+        <div class="scope-row">
+          <div id="scopeTabs" class="scope-tabs"></div>
+          <div id="docSummary" class="section-meta">Loading documents...</div>
+        </div>
+
+        <section id="starredSection" class="dashboard-section">
+          <div class="section-head">
+            <div>
+              <h2 id="starredHeading">Starred</h2>
+              <p id="starredDescription">Protected documents stay here for quick access.</p>
+            </div>
+          </div>
+          <div id="starredDocs" class="starred-row"></div>
+        </section>
+
+        <section class="dashboard-section">
+          <div class="section-head">
+            <div>
+              <div class="section-title-row">
+                <h2 id="allDocsHeading">All documents</h2>
+                <button id="allDocsNewBtn" class="icon-btn all-docs-add-btn" type="button" aria-label="Create new document">+</button>
+              </div>
+              <p id="allDocsMeta">Most recently edited first.</p>
+            </div>
+            <button id="clearTrashBtn" class="ghost-btn danger-btn hidden" type="button">Clear trash</button>
+          </div>
+          <div id="allDocsGrid" class="docs-grid"></div>
+        </section>
+      </div>
+    </section>
+
+    <section id="editorView" class="editor-view hidden">
+      <div class="editor-topbar">
+        <div class="editor-toprow">
+          <button id="backBtn" class="icon-btn round-btn prominent-home-btn" type="button" aria-label="Back to dashboard">⌂</button>
+          <div class="editor-title-group">
+            <input id="editorTitleInput" class="editor-title-input" type="text" maxlength="200" placeholder="Untitled document" />
+            <div class="editor-copy-row">
+              <span id="editorSaveState" class="save-state">All changes saved</span>
+              <span id="editorMeta" class="editor-meta">Loading document...</span>
+            </div>
+          </div>
+          <div class="editor-actions">
+            <button id="editorStarBtn" class="ghost-btn" type="button">☆ Star</button>
+            <button id="editorDeleteBtn" class="ghost-btn danger-btn" type="button">Move to trash</button>
+            <button id="editorRestoreBtn" class="primary-btn" type="button" hidden>Restore</button>
+          </div>
+        </div>
+
+        <div id="trashBanner" class="trash-banner hidden">
+          <div>
+            <strong id="trashBannerTitle">Trash view</strong>
+            <span id="trashBannerText">This document is read only until you restore it.</span>
+          </div>
+        </div>
+
+        <div class="toolbar-shell">
+          <div class="toolbar-group">
+            <label class="toolbar-field" for="fontSelect">
+              <span id="fontLabel">Font</span>
+              <select id="fontSelect">
+                <option value="Arial">Arial</option>
+                <option value="Times New Roman">Times New Roman</option>
+                <option value="Georgia">Georgia</option>
+                <option value="Verdana">Verdana</option>
+                <option value="Trebuchet MS">Trebuchet MS</option>
+                <option value="Courier New">Courier New</option>
+              </select>
+            </label>
+            <label class="toolbar-field narrow" for="fontSizeSelect">
+              <span id="sizeLabel">Size</span>
+              <select id="fontSizeSelect">
+                <option value="1">8</option>
+                <option value="2">10</option>
+                <option value="3" selected>12</option>
+                <option value="4">14</option>
+                <option value="5">18</option>
+                <option value="6">24</option>
+                <option value="7">36</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="toolbar-group compact-group">
+            <button class="icon-btn" type="button" data-command="undo" aria-label="Undo">↶</button>
+            <button class="icon-btn" type="button" data-command="redo" aria-label="Redo">↷</button>
+          </div>
+
+          <div class="toolbar-group compact-group">
+            <button class="icon-btn" type="button" data-command="bold" aria-label="Bold"><strong>B</strong></button>
+            <button class="icon-btn" type="button" data-command="italic" aria-label="Italic"><em>I</em></button>
+            <button class="icon-btn" type="button" data-command="underline" aria-label="Underline"><u>U</u></button>
+          </div>
+
+          <div class="toolbar-group compact-group">
+            <button class="icon-btn" type="button" data-command="justifyLeft" aria-label="Align left">≡</button>
+            <button class="icon-btn" type="button" data-command="justifyCenter" aria-label="Align center">≣</button>
+            <button class="icon-btn" type="button" data-command="justifyRight" aria-label="Align right">☰</button>
+          </div>
+
+          <div class="toolbar-group compact-group">
+            <button class="icon-btn" type="button" data-list="ul" aria-label="Bulleted list">•</button>
+            <button class="icon-btn" type="button" data-list="ol" aria-label="Numbered list">1.</button>
+            <button class="icon-btn" id="checklistBtn" type="button" aria-label="Checklist">☑</button>
+          </div>
+
+          <div class="toolbar-group color-group">
+            <label class="toolbar-color-field" for="textColorInput">
+              <span id="textColorLabel">Text</span>
+              <input id="textColorInput" type="color" value="#111827" />
+            </label>
+            <label class="toolbar-color-field" for="highlightColorInput">
+              <span id="highlightLabel">Highlight</span>
+              <input id="highlightColorInput" type="color" value="#fff59d" />
+            </label>
+            <button id="clearHighlightBtn" class="ghost-btn small-btn" type="button">Clear</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="document-stage">
+        <div class="document-shell">
+          <div id="editorSurface" class="editor-surface" contenteditable="true" spellcheck="true" data-placeholder="You can write here."></div>
+        </div>
+      </div>
+    </section>
+
+    <div class="status-bar">
+      <span id="statusText" class="status-text">Loading docs...</span>
+      <span id="warningText" class="warning-text"></span>
+    </div>
+  </div>
+
+  <script src="/assets/vendor/markdown-it/markdown-it.min.js"></script>
+  <script src="/assets/vendor/dompurify/purify.min.js"></script>
+  <script src="./docs.js"></script>
+</body>
+</html>

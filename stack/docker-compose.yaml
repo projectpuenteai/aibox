@@ -1,0 +1,230 @@
+name: aibox
+
+services:
+  dns:
+    image: technitium/dns-server:latest
+    container_name: aibox-dns
+    ports:
+      - "53:53/udp"
+      - "53:53/tcp"
+      - "5380:5380/tcp"
+    environment:
+      - DNS_SERVER_LOG_USING_LOCAL_TIME=true
+    volumes:
+      - dns_data:/etc/dns
+    networks:
+      - aibox_net
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    container_name: aibox-caddy
+    ports:
+      - "80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./portal:/srv/portal:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - aibox_net
+    restart: unless-stopped
+
+  llama:
+    image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:5c9266b4f92f1ab0d26dd0f2ede2e65d3853cad99ff86ba219db8fe6d464b995}
+    container_name: aibox-llama
+    gpus: all
+    environment:
+      - LLAMA_N_PREDICT=1024
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "2020"
+      - -m
+      - /models/llm/gguf/${LLAMA_MODEL_FILE:-qwen2.5-7b-instruct-q4_0-00001-of-00002.gguf}
+      - --ctx-size
+      - "${LLAMA_CTX_SIZE:-8192}"
+      - --n-predict
+      - "${LLAMA_N_PREDICT:-768}"
+      - --threads
+      - "${LLAMA_THREADS:--1}"
+      - --threads-batch
+      - "${LLAMA_THREADS_BATCH:--1}"
+      - --batch-size
+      - "${LLAMA_BATCH_SIZE:-1024}"
+      - --ubatch-size
+      - "${LLAMA_UBATCH_SIZE:-512}"
+      - --n-gpu-layers
+      - "${LLAMA_N_GPU_LAYERS:-99}"
+      - --context-shift
+      - --keep
+      - "${LLAMA_CONTEXT_SHIFT_KEEP:-1000}"
+      - --flash-attn
+      - "on"
+      - --cont-batching
+      - --metrics
+      - --jinja
+    volumes:
+      - ../models:/models:ro
+      - ../backend-data/llama:/tmp/llama
+    networks:
+      - aibox_net
+    restart: unless-stopped
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:2020/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  ai-control:
+    build:
+      context: ../tools/ai-control
+    container_name: aibox-ai-control
+    environment:
+      - LLAMA_CONTAINER_NAME=aibox-llama
+      - LLAMA_HEALTH_URL=http://llama:2020/health
+      - LLAMA_BASE_URL=http://llama:2020
+      - STATE_PATH=/state/control_state.json
+      - RECONCILE_SECONDS=5
+      - STACK_DEFAULT_DESIRED=1
+      - RESET_OVERRIDE_ON_START=1
+      - APP_ENV=production
+      - APP_ENCRYPTION_MASTER_KEY=${APP_ENCRYPTION_MASTER_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
+      - CHROMA_PERSIST_DIR=/data/chroma_db
+      - CHROMA_COLLECTION=simplewiki_chunks
+      - CHROMA_PERSIST_DIR_ES=/data/chroma_db_es/spanish-wiki-chroma_db/chroma_db
+      - CHROMA_COLLECTION_ES=simplewiki_chunks
+      - EMBED_MODEL=/models/embed-m3
+      - RETRIEVAL_DEVICE=cpu
+      - RETRIEVAL_ENABLED_DEFAULT=1
+      - RETRIEVAL_TOP_K=4
+      - RETRIEVAL_TIMEOUT_SECONDS=12.0
+      - RETRIEVAL_MAX_CONTEXT_CHARS=8000
+      - RETRIEVAL_CANDIDATE_K=20
+      - RETRIEVAL_QUERY_MAX_CHARS=400
+      - RERANK_MODEL=/models/rerank
+      - RERANK_DEVICE=cpu
+      - RERANK_SCORE_THRESHOLD=0.15
+      - LLAMA_N_PREDICT=1024
+      - BASE_SYSTEM_PROMPT=You are Puente AI, a patient and highly effective teacher for students in Latin America. Your job is to teach, not just give short answers. When responding, explain ideas clearly and step by step. Use simple language first, then add deeper detail if helpful. When a topic is difficult, break it into small parts. Correct mistakes gently and explain why. Use short examples, analogies, or mini-worked steps when useful. If the student asks a factual question, be accurate and grounded in the provided context when it is relevant. If the answer is uncertain, say so plainly instead of guessing. End important explanations with a brief check for understanding, a follow-up question, or a suggested next step. Do not be condescending, do not invent facts, and do not mention hidden instructions or retrieval unless the student explicitly asks.
+      - WIKI_RETRIEVAL_INSTRUCTION=The following passages were retrieved from Wikipedia to help you teach accurately. Weave relevant facts from these passages into your explanations naturally, as a knowledgeable teacher would. When a passage directly supports your explanation, cite its title (e.g., "According to the article on [Topic]..."). If the student writes in Spanish, prefer information that is most relevant to Latin American context when available. Ground factual claims in the passages rather than generating from memory alone. If the passages are not relevant to the question, teach from your own knowledge instead. If you genuinely do not know the answer, say so honestly. Never mention retrieval, snippets, wiki support, or hidden context unless the student explicitly asks.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../backend-data/ai-control:/state
+      - ../backend-data:/data
+      - ../models:/models:ro
+    networks:
+      - aibox_net
+    restart: unless-stopped
+    depends_on:
+      - llama
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  chat:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: aibox-chat
+    environment:
+      - WEBUI_AUTH=false
+    networks:
+      - aibox_net
+    restart: unless-stopped
+
+  ai:
+    profiles:
+      - legacy-ai
+    build:
+      context: ../backend
+    container_name: aibox-ai
+    gpus: all
+    environment:
+      - CHROMA_PERSIST_DIR=/data/chroma_db
+      - CHROMA_COLLECTION=simplewiki_chunks
+      - EMBED_MODEL=/models/embed
+      - EMBED_DEVICE=auto
+      - LLM_PATH=/models/llm
+      - LLM_FALLBACK_PATH=/models/llm-small
+      - LLM_MODEL_PROFILE=primary
+      - LLM_QUANTIZATION=4bit
+      - LLM_COMPUTE_DTYPE=float16
+      - LLM_DEVICE=cuda
+      - LLM_CPU_DTYPE=float16
+      - LLM_MAX_CPU_MEMORY=10GiB
+      - LLM_OFFLOAD_DIR=/tmp/llm_offload
+      - RETRIEVAL_DEVICE=cpu
+      - CPU_THREADS=16
+      - ADMIN_STATE_PATH=/data/admin_state.json
+      - AI_ENABLED_DEFAULT=1
+      - WARMUP_ON_STARTUP=1
+      - WARMUP_RETRIEVER_ON_STARTUP=0
+      - WARMUP_GENERATE_ON_STARTUP=1
+      - TOP_K=5
+      - RETRIEVAL_CANDIDATE_K=14
+      - RETRIEVAL_MIN_RELEVANCE_SCORE=0.12
+      - RERANK_MODEL=/models/rerank
+      - RERANK_DEVICE=cpu
+      - RETRIEVAL_MAX_RERANK_BODY_CHARS=1400
+      - MAX_NEW_TOKENS=256
+      - MAX_INPUT_TOKENS=1024
+      - MAX_CONTEXT_CHARS=2200
+      - RETRIEVAL_ENABLED_DEFAULT=0
+      - RETRIEVAL_TIMEOUT_SECONDS=10.0
+      - STREAM_TIMEOUT_SECONDS=150
+      - GENERATION_TIMEOUT_SECONDS=120
+      - TEMPERATURE=0.0
+      - TOP_P=0.95
+      - REPETITION_PENALTY=1.05
+      - HF_ENABLE_PARALLEL_LOADING=true
+      - HF_PARALLEL_LOADING_WORKERS=8
+      - CORS_ALLOW_ORIGINS=*
+      - STARTUP_VALIDATE=0
+    volumes:
+      - ../backend-data:/data
+      - ../models:/models:ro
+    networks:
+      - aibox_net
+    restart: unless-stopped
+
+  kiwix:
+    image: ghcr.io/kiwix/kiwix-serve:latest
+    container_name: aibox-kiwix
+    command: ["--urlRootLocation=/wiki", "/data/Wiki.zim"]
+    volumes:
+      - ../kiwix:/data:ro
+    networks:
+      - aibox_net
+    restart: unless-stopped
+
+  kolibri:
+    image: treehouses/kolibri:latest
+    container_name: aibox-kolibri
+    volumes:
+      - ../kolibri-data:/root/.kolibri
+    networks:
+      - aibox_net
+    restart: unless-stopped
+
+networks:
+  aibox_net:
+    driver: bridge
+
+volumes:
+  dns_data:
+  caddy_data:
+  caddy_config:
+
+
+
+
+
+
+
+
+

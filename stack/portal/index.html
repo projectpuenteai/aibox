@@ -1,0 +1,2991 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Project Puente AI</title>
+    <style>
+      :root {
+        --bg: #eaf2fb;
+        --bg-mid: #e2edf9;
+        --bg-end: #d6e4f6;
+        --header-bg: rgba(255, 255, 255, 0.95);
+        --header-border: #dbe4ef;
+        --text: #0f172a;
+        --text-soft: #475569;
+        --text-muted: #64748b;
+        --panel: #ffffff;
+        --panel-border: #d9e5f3;
+        --panel-soft: #f8fbff;
+        --panel-accent: #edf4ff;
+        --accent: #2f74db;
+        --accent-strong: #1b4f9c;
+        --accent-soft: #eef4fb;
+        --danger: #b42318;
+        --danger-soft: #fff1f2;
+        --shadow: 0 24px 70px rgba(27, 76, 138, 0.12);
+        --shell-border: rgba(255, 255, 255, 0.72);
+        --welcome-title: linear-gradient(90deg, #2a66c8, #1e56aa, #163d7a);
+        --accent-bar: linear-gradient(90deg, #6aa2f0, #2f74db, #1b4f9c);
+        --glow-a: rgba(61, 125, 219, 0.16);
+        --glow-b: rgba(28, 79, 149, 0.14);
+        --glow-c: rgba(115, 167, 239, 0.12);
+        --input-bg: #ffffff;
+        --input-border: #cbd5e1;
+        --selected-bg: color-mix(in srgb, var(--accent) 10%, var(--panel));
+        --selected-border: #2f74db;
+        --selected-shadow: 0 10px 30px rgba(47, 116, 219, 0.12);
+      }
+
+      html[data-theme="dark"] {
+        --bg: #0c1730;
+        --bg-mid: #132742;
+        --bg-end: #0f1f36;
+        --header-bg: rgba(18, 35, 61, 0.95);
+        --header-border: #223a5e;
+        --text: #f8fafc;
+        --text-soft: #cbd5e1;
+        --text-muted: #94a3b8;
+        --panel: #162844;
+        --panel-border: #294669;
+        --panel-soft: #14263f;
+        --panel-accent: #173154;
+        --accent: #5b8ff5;
+        --accent-strong: #7aa6ff;
+        --accent-soft: #162844;
+        --danger: #fca5a5;
+        --danger-soft: rgba(127, 29, 29, 0.32);
+        --shadow: 0 24px 70px rgba(3, 10, 25, 0.35);
+        --shell-border: rgba(41, 70, 105, 0.9);
+        --welcome-title: linear-gradient(90deg, #8ab7ff, #68a0ff, #c0d7ff);
+        --accent-bar: linear-gradient(90deg, #5b8ff5, #2f74db, #7aa6ff);
+        --glow-a: rgba(42, 102, 200, 0.18);
+        --glow-b: rgba(18, 59, 122, 0.18);
+        --glow-c: rgba(33, 79, 148, 0.14);
+        --input-bg: #10213a;
+        --input-border: #35557f;
+        --selected-bg: color-mix(in srgb, var(--accent) 22%, var(--panel));
+        --selected-border: #7db1ff;
+        --selected-shadow: 0 14px 34px rgba(0, 0, 0, 0.22);
+      }
+
+      * { box-sizing: border-box; }
+      html, body { min-height: 100%; }
+      body {
+        margin: 0;
+        font-family: Aptos, "Segoe UI", Tahoma, sans-serif;
+        background: linear-gradient(135deg, var(--bg) 0%, var(--bg-mid) 48%, var(--bg-end) 100%);
+        color: var(--text);
+      }
+      button, input { font: inherit; }
+      a { color: inherit; }
+      .hidden { display: none !important; }
+      .app {
+        position: relative;
+        min-height: 100vh;
+      }
+      .outer-page {
+        position: relative;
+        min-height: 100vh;
+        overflow: visible;
+        padding: 20px 20px 48px;
+      }
+      .page-inner {
+        position: relative;
+        z-index: 1;
+        max-width: 1120px;
+        margin: 0 auto;
+      }
+      .outer-shell {
+        position: relative;
+        z-index: 1;
+        border-radius: 30px;
+        border: 1px solid var(--shell-border);
+        background: color-mix(in srgb, var(--panel) 84%, transparent);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(16px);
+      }
+      .topbar {
+        border-bottom: 1px solid var(--header-border);
+      }
+      .topbar-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 20px 24px;
+        flex-wrap: wrap;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .brand img {
+        width: 48px;
+        height: 48px;
+        border-radius: 999px;
+        object-fit: cover;
+      }
+      .brand-title {
+        font-size: 1.5rem;
+        font-weight: 700;
+        letter-spacing: -0.03em;
+      }
+      .brand-copy {
+        display: grid;
+        gap: 2px;
+      }
+      .brand-meta {
+        min-height: 1.1em;
+        font-size: 0.92rem;
+        color: var(--text-soft);
+      }
+      .header-actions {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+      .header-btn, .lang-btn, .pill-btn, .submit-btn, .tool-link, .admin-btn, .ghost-link {
+        appearance: none;
+        border: 1px solid var(--panel-border);
+        border-radius: 16px;
+        min-height: 44px;
+        padding: 0 16px;
+        background: var(--panel);
+        color: var(--text);
+        cursor: pointer;
+        text-decoration: none;
+        transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+      }
+      .topbar .header-btn,
+      .topbar .lang-btn {
+        min-height: 58px;
+        border-radius: 22px;
+        padding: 0 22px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 650;
+      }
+      .header-btn:hover, .lang-btn:hover, .pill-btn:hover, .submit-btn:hover, .tool-link:hover, .admin-btn:hover, .ghost-link:hover {
+        transform: translateY(-1px);
+        border-color: rgba(47, 116, 219, 0.45);
+      }
+      .lang-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        background: var(--accent-soft);
+        color: var(--text-soft);
+        font-weight: 600;
+      }
+      .submit-btn, .tool-link.primary, .admin-btn.primary {
+        border-color: var(--accent);
+        background: linear-gradient(90deg, #4b84e4 0%, var(--accent) 100%);
+        color: #ffffff;
+        box-shadow: 0 16px 32px rgba(47, 116, 219, 0.22);
+      }
+      .header-btn.danger, .admin-btn.danger {
+        background: var(--danger-soft);
+        border-color: rgba(180, 35, 24, 0.2);
+        color: var(--danger);
+      }
+      .icon-btn {
+        width: 58px;
+        min-width: 58px;
+        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .btn-inline {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+      }
+      .btn-icon,
+      #themeToggleIcon {
+        display: inline-flex;
+        width: 22px;
+        height: 22px;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 22px;
+      }
+      .btn-inline svg,
+      #themeToggleIcon svg,
+      .icon svg {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+      .glow {
+        position: fixed;
+        border-radius: 999px;
+        filter: blur(78px);
+        pointer-events: none;
+        z-index: 0;
+      }
+      .glow.a { left: -120px; top: 28px; width: 280px; height: 280px; background: var(--glow-a); }
+      .glow.b { right: -80px; top: 64px; width: 320px; height: 320px; background: var(--glow-b); }
+      .glow.c { left: 50%; bottom: -72px; width: 280px; height: 280px; transform: translateX(-50%); background: var(--glow-c); }
+      .shell-content {
+        padding: 20px 28px 28px;
+      }
+      .auth-shell {
+        width: 100%;
+      }
+      .welcome-shell, .card-shell, .dashboard-shell, .admin-shell {
+        border: 1px solid var(--panel-border);
+        background: color-mix(in srgb, var(--panel) 94%, transparent);
+        box-shadow: 0 18px 42px rgba(27, 76, 138, 0.08);
+      }
+      .welcome-shell {
+        display: grid;
+        grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
+        gap: 24px;
+        width: min(1080px, 100%);
+        margin: 0 auto;
+        border-radius: 36px;
+        padding: 26px;
+      }
+      .welcome-panel {
+        position: relative;
+        overflow: hidden;
+        border-radius: 30px;
+        border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--panel-border));
+        background:
+          radial-gradient(circle at top left, color-mix(in srgb, var(--accent) 18%, transparent), transparent 48%),
+          linear-gradient(160deg, color-mix(in srgb, var(--panel) 92%, transparent), color-mix(in srgb, var(--panel-soft) 96%, transparent));
+        padding: 34px;
+      }
+      .welcome-panel::after {
+        content: "";
+        position: absolute;
+        right: -46px;
+        bottom: -46px;
+        width: 180px;
+        height: 180px;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--accent) 16%, transparent);
+        filter: blur(20px);
+      }
+      .welcome-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 14px;
+        border-radius: 999px;
+        border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--panel-border));
+        background: color-mix(in srgb, var(--panel) 86%, transparent);
+        color: var(--accent-strong);
+        font-size: 0.82rem;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+      .welcome-brand {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        margin-top: 26px;
+      }
+      .welcome-logo-wrap {
+        width: 92px;
+        height: 92px;
+        display: grid;
+        place-items: center;
+        border-radius: 28px;
+        border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--panel-border));
+        background: color-mix(in srgb, var(--panel) 96%, transparent);
+        box-shadow: 0 16px 34px rgba(27, 76, 138, 0.1);
+      }
+      .welcome-logo {
+        width: 64px;
+        height: 64px;
+        border-radius: 999px;
+        object-fit: cover;
+        background: #ffffff;
+      }
+      .welcome-title {
+        margin: 28px 0 0;
+        max-width: 10ch;
+        font-size: clamp(2.8rem, 5vw, 4.15rem);
+        line-height: 0.98;
+        font-weight: 760;
+        letter-spacing: -0.06em;
+        background: var(--welcome-title);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      .welcome-subtitle {
+        margin: 18px 0 0;
+        max-width: 34rem;
+        font-size: 1.12rem;
+        line-height: 1.75;
+        color: var(--text-soft);
+      }
+      .accent-bar {
+        width: 120px;
+        height: 6px;
+        margin: 24px 0 0;
+        border-radius: 999px;
+        background: var(--accent-bar);
+      }
+      .welcome-foot {
+        display: grid;
+        gap: 14px;
+        margin-top: 32px;
+      }
+      .welcome-foot-card {
+        padding: 18px 20px;
+        border-radius: 22px;
+        border: 1px solid color-mix(in srgb, var(--accent) 14%, var(--panel-border));
+        background: color-mix(in srgb, var(--panel) 86%, transparent);
+        color: var(--text-soft);
+        line-height: 1.65;
+      }
+      .welcome-foot-card strong {
+        display: block;
+        margin-bottom: 6px;
+        color: var(--text);
+        font-size: 0.95rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .welcome-actions {
+        display: grid;
+        gap: 16px;
+        align-content: center;
+      }
+      .action-list {
+        display: grid;
+        gap: 16px;
+      }
+      .action-card {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        width: 100%;
+        padding: 22px 22px 22px 20px;
+        border: 1px solid var(--panel-border);
+        border-radius: 28px;
+        background: linear-gradient(180deg, color-mix(in srgb, var(--panel) 98%, transparent), color-mix(in srgb, var(--panel-soft) 96%, transparent));
+        color: inherit;
+        text-align: left;
+        cursor: pointer;
+        box-shadow: 0 14px 28px rgba(27, 76, 138, 0.08);
+        transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+      }
+      .action-card:hover {
+        transform: translateY(-2px);
+        border-color: color-mix(in srgb, var(--accent) 36%, var(--panel-border));
+        box-shadow: 0 20px 36px rgba(27, 76, 138, 0.14);
+      }
+      .action-icon {
+        width: 72px;
+        height: 72px;
+        flex: 0 0 72px;
+        display: grid;
+        place-items: center;
+        border-radius: 24px;
+        background: var(--panel-accent);
+        color: var(--accent);
+      }
+      .action-title {
+        font-size: 1.45rem;
+        font-weight: 720;
+        letter-spacing: -0.03em;
+      }
+      .action-desc {
+        margin-top: 6px;
+        font-size: 1rem;
+        line-height: 1.6;
+        color: var(--text-muted);
+      }
+      .auth-flow {
+        display: flex;
+        justify-content: center;
+        width: 100%;
+      }
+      .card-shell {
+        width: min(1040px, 100%);
+        border-radius: 32px;
+        padding: 22px;
+      }
+      .create-card {
+        width: min(1120px, 100%);
+      }
+      .compact-card {
+        width: min(760px, 100%);
+      }
+      .flow-grid {
+        display: grid;
+        grid-template-columns: minmax(240px, 0.85fr) minmax(0, 1.15fr);
+        gap: 22px;
+        align-items: start;
+      }
+      .compact-card .flow-grid {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .flow-sidebar {
+        position: sticky;
+        top: 20px;
+        display: grid;
+        gap: 16px;
+      }
+      .back-row {
+        display: flex;
+        justify-content: flex-start;
+      }
+      .ghost-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        background: color-mix(in srgb, var(--panel) 95%, transparent);
+        color: var(--text-soft);
+        font-weight: 600;
+      }
+      .flow-hero {
+        position: relative;
+        overflow: hidden;
+        border-radius: 28px;
+        border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--panel-border));
+        background:
+          radial-gradient(circle at top right, color-mix(in srgb, var(--accent) 18%, transparent), transparent 44%),
+          linear-gradient(160deg, color-mix(in srgb, var(--panel) 97%, transparent), color-mix(in srgb, var(--panel-soft) 98%, transparent));
+        padding: 24px;
+      }
+      .flow-hero img {
+        width: 74px;
+        height: 74px;
+        border-radius: 24px;
+        object-fit: cover;
+      }
+      .flow-kicker {
+        margin-top: 16px;
+        font-size: 0.8rem;
+        font-weight: 700;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--text-muted);
+      }
+      .card-header {
+        margin-top: 12px;
+      }
+      .card-header h2 {
+        margin: 0;
+        font-size: clamp(2.2rem, 4vw, 3.2rem);
+        line-height: 0.98;
+        letter-spacing: -0.05em;
+      }
+      .card-header p {
+        margin: 14px 0 0;
+        font-size: 1.02rem;
+        line-height: 1.72;
+        color: var(--text-soft);
+      }
+      .flow-side-note {
+        padding: 18px 20px;
+        border-radius: 22px;
+        border: 1px solid color-mix(in srgb, var(--accent) 14%, var(--panel-border));
+        background: color-mix(in srgb, var(--panel-accent) 52%, var(--panel));
+        color: var(--text-soft);
+        line-height: 1.65;
+      }
+      .flow-content {
+        display: grid;
+        gap: 16px;
+      }
+      .create-layout {
+        display: grid;
+        gap: 20px;
+      }
+      .create-top {
+        display: grid;
+        gap: 14px;
+      }
+      .create-hero {
+        padding: 28px;
+      }
+      .create-body {
+        display: grid;
+        gap: 16px;
+      }
+      .create-body .section-panel,
+      .create-body .submit-area {
+        width: 100%;
+      }
+      .section-panel {
+        margin: 0;
+        padding: 22px;
+        border: 1px solid var(--panel-border);
+        border-radius: 26px;
+        background: linear-gradient(180deg, color-mix(in srgb, var(--panel) 98%, transparent), color-mix(in srgb, var(--panel-soft) 98%, transparent));
+      }
+      .section-panel.remember {
+        background: color-mix(in srgb, var(--panel-accent) 45%, var(--panel));
+      }
+      .section-panel h3 {
+        margin: 0;
+        font-size: 1.18rem;
+        letter-spacing: -0.02em;
+      }
+      .section-panel p, .section-panel .helper {
+        margin: 10px 0 0;
+        color: var(--text-soft);
+        line-height: 1.72;
+      }
+      .helper { color: var(--text-muted); }
+      .pref-grid {
+        display: grid;
+        gap: 12px;
+        margin-top: 18px;
+      }
+      .pref-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .pill-btn {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        min-height: 84px;
+        padding: 20px 22px;
+        background: color-mix(in srgb, var(--panel) 98%, transparent);
+        color: var(--text-soft);
+        font-size: 1.02rem;
+        font-weight: 700;
+        text-align: left;
+        box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--panel-border) 70%, transparent);
+      }
+      .pill-btn.selected {
+        border-color: var(--selected-border);
+        background: var(--selected-bg);
+        color: var(--text);
+        box-shadow: var(--selected-shadow);
+        transform: translateY(-1px);
+      }
+      .pill-btn.selected .pill-main {
+        color: var(--text);
+      }
+      .pill-btn .check {
+        opacity: 0;
+        color: var(--selected-border);
+        flex: 0 0 auto;
+      }
+      .pill-btn.selected .check {
+        opacity: 1;
+      }
+      .pill-main {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        font-size: 1.02rem;
+        line-height: 1.35;
+      }
+      .pill-main .icon {
+        width: 24px;
+        height: 24px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 24px;
+      }
+      .field {
+        margin-top: 16px;
+      }
+      .field label {
+        display: block;
+        margin-bottom: 8px;
+        font-size: 0.95rem;
+        font-weight: 600;
+        color: var(--text-soft);
+      }
+      .field input {
+        width: 100%;
+        min-height: 60px;
+        padding: 14px 18px;
+        border: 1px solid var(--input-border);
+        border-radius: 22px;
+        background: var(--input-bg);
+        color: var(--text);
+        outline: none;
+      }
+      .field input:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(47, 116, 219, 0.15);
+      }
+      .error {
+        margin-top: 10px;
+        min-height: 22px;
+        color: var(--danger);
+        font-size: 0.95rem;
+      }
+      .inline-error {
+        margin-top: 8px;
+        color: var(--danger);
+        font-size: 0.92rem;
+      }
+      .submit-area {
+        display: grid;
+        gap: 14px;
+      }
+      .submit-btn {
+        width: 100%;
+        min-height: 64px;
+        font-size: 1.05rem;
+        font-weight: 700;
+      }
+      .note-box {
+        padding: 16px 18px;
+        border: 1px solid color-mix(in srgb, var(--accent) 14%, var(--panel-border));
+        border-radius: 20px;
+        background: color-mix(in srgb, var(--panel-accent) 34%, var(--panel));
+        color: var(--text-soft);
+        line-height: 1.68;
+      }
+      .portal-shell,
+      .portal-admin-shell {
+        display: grid;
+        gap: 24px;
+      }
+      .portal-surface,
+      .admin-surface,
+      .runtime-surface,
+      .accounts-surface,
+      .expand-surface,
+      .account-item,
+      .stat-card,
+      .portal-tool-card {
+        border: 1px solid var(--panel-border);
+        background: linear-gradient(180deg, color-mix(in srgb, var(--panel) 98%, transparent), color-mix(in srgb, var(--panel-soft) 96%, transparent));
+        box-shadow: 0 14px 28px rgba(27, 76, 138, 0.08);
+      }
+      .portal-surface,
+      .admin-surface {
+        border-radius: 30px;
+        padding: 30px;
+      }
+      .portal-eyebrow,
+      .admin-eyebrow,
+      .label-caps {
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: var(--text-muted);
+      }
+      .portal-heading,
+      .admin-heading {
+        margin: 14px 0 0;
+        font-size: clamp(2.4rem, 5vw, 3.35rem);
+        line-height: 1.02;
+        letter-spacing: -0.05em;
+      }
+      .portal-subheading,
+      .admin-subheading,
+      .surface-subtitle {
+        margin: 16px 0 0;
+        max-width: 760px;
+        font-size: 1.08rem;
+        line-height: 1.7;
+        color: var(--text-soft);
+      }
+      .portal-tool-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 24px;
+      }
+      .portal-tool-card {
+        min-height: 295px;
+        border-radius: 28px;
+        padding: 32px 28px;
+        text-decoration: none;
+        color: inherit;
+        transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+      }
+      .portal-tool-card:hover {
+        transform: translateY(-3px);
+        border-color: color-mix(in srgb, var(--accent) 36%, var(--panel-border));
+        box-shadow: 0 22px 38px rgba(27, 76, 138, 0.16);
+      }
+      .portal-tool-inner {
+        min-height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+      }
+      .portal-tool-icon {
+        width: 108px;
+        height: 108px;
+        margin-bottom: 34px;
+        display: grid;
+        place-items: center;
+        border-radius: 32px;
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+      .portal-tool-icon svg {
+        width: 72px;
+        height: 72px;
+        display: block;
+      }
+      .portal-tool-title {
+        font-size: 2.2rem;
+        font-weight: 700;
+        letter-spacing: -0.04em;
+      }
+      .portal-tool-body {
+        margin-top: 18px;
+        font-size: 1.45rem;
+        color: var(--text-soft);
+      }
+      .portal-admin-shell {
+        align-content: start;
+      }
+      .admin-head-row,
+      .surface-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        flex-wrap: wrap;
+      }
+      .surface-title {
+        margin: 0;
+        font-size: 1.75rem;
+        letter-spacing: -0.03em;
+      }
+      .surface-actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .runtime-surface,
+      .accounts-surface,
+      .expand-surface {
+        border-radius: 24px;
+        padding: 24px;
+      }
+      .expand-surface {
+        display: grid;
+        gap: 18px;
+        align-content: start;
+      }
+      .expand-surface.promoted {
+        border-color: color-mix(in srgb, var(--accent) 28%, var(--panel-border));
+        box-shadow: 0 22px 44px rgba(27, 76, 138, 0.12);
+      }
+      .expand-surface.promoted .log-card {
+        min-height: min(56vh, 540px);
+      }
+      .expand-surface.demoted {
+        opacity: 0.88;
+      }
+      .status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 16px;
+        border-radius: 999px;
+        border: 1px solid var(--panel-border);
+        font-size: 0.95rem;
+        font-weight: 700;
+      }
+      .status-pill.good {
+        background: #e8f7ee;
+        border-color: #b7e2c4;
+        color: #166534;
+      }
+      .status-pill.okay {
+        background: #fff8db;
+        border-color: #f6dd8d;
+        color: #9a6700;
+      }
+      .status-pill.stopped {
+        background: var(--danger-soft);
+        border-color: rgba(180, 35, 24, 0.2);
+        color: var(--danger);
+      }
+      .status-pill.restarting {
+        background: var(--accent-soft);
+        border-color: rgba(47, 116, 219, 0.3);
+        color: var(--accent-strong);
+      }
+      html[data-theme="dark"] .status-pill.good {
+        background: #11311e;
+        border-color: #235437;
+        color: #86efac;
+      }
+      html[data-theme="dark"] .status-pill.okay {
+        background: #32280b;
+        border-color: #665013;
+        color: #facc15;
+      }
+      .status-pill svg {
+        width: 12px;
+        height: 12px;
+      }
+      .status-pill.restarting svg {
+        animation: pulse-dot 1.1s ease-in-out infinite;
+      }
+      .runtime-stats {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        margin-top: 22px;
+      }
+      .stat-card {
+        border-radius: 20px;
+        padding: 16px;
+        background: color-mix(in srgb, var(--panel) 99%, transparent);
+      }
+      .stat-card .value {
+        margin-top: 10px;
+        font-size: 1.05rem;
+        font-weight: 700;
+      }
+      .runtime-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px;
+        margin-top: 22px;
+      }
+      .runtime-btn,
+      .action-btn,
+      .search-input,
+      .mini-input,
+      .panel-toggle {
+        appearance: none;
+        border: 1px solid var(--panel-border);
+        border-radius: 18px;
+        background: var(--panel);
+        color: var(--text);
+        font: inherit;
+      }
+      .runtime-btn,
+      .action-btn,
+      .panel-toggle {
+        min-height: 48px;
+        padding: 0 16px;
+        cursor: pointer;
+        transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+      }
+      .runtime-btn {
+        min-height: 66px;
+        padding: 0 24px;
+        border-radius: 22px;
+        font-size: 1.06rem;
+        font-weight: 680;
+      }
+      .runtime-btn:hover,
+      .action-btn:hover,
+      .panel-toggle:hover {
+        transform: translateY(-1px);
+        border-color: rgba(47, 116, 219, 0.45);
+      }
+      .runtime-btn {
+        background: color-mix(in srgb, var(--panel) 96%, var(--accent-soft) 4%);
+      }
+      .runtime-btn .btn-icon {
+        width: 26px;
+        height: 26px;
+        flex-basis: 26px;
+      }
+      .runtime-btn .btn-inline,
+      .action-btn .btn-inline,
+      .panel-toggle .btn-inline {
+        justify-content: center;
+      }
+      .runtime-btn[data-active="true"] {
+        transform: translateY(-2px) scale(1.1);
+      }
+      .runtime-btn[data-active="true"][data-tone="blue"] {
+        border-color: var(--accent);
+        background: linear-gradient(90deg, #4b84e4 0%, var(--accent) 100%);
+        color: #ffffff;
+        box-shadow: 0 20px 36px rgba(47, 116, 219, 0.28);
+      }
+      .runtime-btn[data-active="true"][data-tone="green"] {
+        background: #e8f7ee;
+        border-color: #b7e2c4;
+        color: #166534;
+        box-shadow: 0 20px 34px rgba(22, 101, 52, 0.16);
+      }
+      .runtime-btn[data-active="true"][data-tone="red"] {
+        background: var(--danger-soft);
+        border-color: rgba(180, 35, 24, 0.2);
+        color: var(--danger);
+        box-shadow: 0 20px 34px rgba(180, 35, 24, 0.16);
+      }
+      html[data-theme="dark"] .runtime-btn[data-active="true"][data-tone="green"] {
+        background: #11311e;
+        border-color: #235437;
+        color: #86efac;
+      }
+      .runtime-btn[data-effect="pop"][data-active="true"] {
+        animation: runtime-pop 0.28s ease-out;
+      }
+      .runtime-btn[data-spin="true"][data-active="true"] .btn-icon svg {
+        animation: spin 1s linear infinite;
+      }
+      .action-btn.danger {
+        background: var(--danger-soft);
+        border-color: rgba(180, 35, 24, 0.2);
+        color: var(--danger);
+      }
+      .accounts-toolbar {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        flex-wrap: wrap;
+      }
+      .search-wrap {
+        position: relative;
+        width: min(320px, 100%);
+      }
+      .search-wrap svg {
+        position: absolute;
+        left: 16px;
+        top: 50%;
+        width: 18px;
+        height: 18px;
+        transform: translateY(-50%);
+        color: var(--text-muted);
+      }
+      .search-input {
+        width: 100%;
+        min-height: 52px;
+        padding: 0 16px 0 46px;
+        outline: none;
+        background: var(--input-bg);
+        border-color: var(--input-border);
+      }
+      .search-input:focus,
+      .mini-input:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(47, 116, 219, 0.15);
+      }
+      .accounts-list {
+        display: grid;
+        gap: 16px;
+        margin-top: 22px;
+      }
+      .account-item {
+        border-radius: 26px;
+        padding: 20px;
+        background: color-mix(in srgb, var(--panel) 99%, transparent);
+      }
+      .account-grid {
+        display: grid;
+        gap: 18px;
+        grid-template-columns: minmax(0, 1.15fr) minmax(120px, 0.5fr) minmax(0, 0.8fr) minmax(120px, 0.38fr) minmax(0, 1.2fr);
+        align-items: start;
+      }
+      .account-name {
+        font-size: 1.1rem;
+        font-weight: 700;
+      }
+      .account-meta {
+        margin-top: 4px;
+        color: var(--text-soft);
+      }
+      .account-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .action-btn[data-active="true"] {
+        border-color: var(--accent);
+        background: linear-gradient(90deg, #4b84e4 0%, var(--accent) 100%);
+        color: #ffffff;
+        box-shadow: 0 16px 32px rgba(47, 116, 219, 0.18);
+      }
+      .account-form-row {
+        margin-top: 16px;
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .mini-input {
+        min-height: 48px;
+        padding: 0 14px;
+        background: var(--input-bg);
+        border-color: var(--input-border);
+        color: var(--text);
+        outline: none;
+      }
+      .mini-input.flex {
+        flex: 1 1 240px;
+      }
+      .mini-input.small {
+        width: 150px;
+      }
+      .delete-confirm {
+        margin-top: 16px;
+        padding: 16px;
+        border-radius: 20px;
+        border: 1px solid rgba(180, 35, 24, 0.18);
+        background: var(--danger-soft);
+        color: var(--text);
+      }
+      .delete-confirm-text {
+        font-size: 0.98rem;
+        line-height: 1.6;
+      }
+      .panel-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 24px;
+        align-items: start;
+      }
+      .panel-grid.has-expanded {
+        grid-template-columns: 1fr;
+        gap: 18px;
+      }
+      .panel-grid.has-expanded .expand-surface.demoted {
+        max-width: 100%;
+        justify-self: stretch;
+      }
+      .panel-meta {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .panel-badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 38px;
+        padding: 0 14px;
+        border-radius: 999px;
+        border: 1px solid var(--panel-border);
+        background: color-mix(in srgb, var(--panel) 92%, var(--accent-soft) 8%);
+        color: var(--text-soft);
+        font-size: 0.86rem;
+        font-weight: 700;
+      }
+      .panel-toggle {
+        min-width: 120px;
+      }
+      .log-card {
+        margin-top: 18px;
+        padding: 18px;
+        border-radius: 22px;
+        border: 1px solid var(--panel-border);
+        background: color-mix(in srgb, var(--panel-soft) 90%, var(--panel));
+        color: var(--text-soft);
+        font: 12px/1.7 Consolas, "Courier New", monospace;
+        white-space: pre-wrap;
+      }
+      .empty-note {
+        margin-top: 18px;
+        padding: 18px;
+        border-radius: 20px;
+        border: 1px dashed var(--panel-border);
+        color: var(--text-soft);
+        background: color-mix(in srgb, var(--panel) 92%, transparent);
+      }
+      @keyframes spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
+      @keyframes runtime-pop {
+        0% { transform: translateY(-1px) scale(1); }
+        50% { transform: translateY(-1px) scale(1.08); }
+        100% { transform: translateY(-1px) scale(1.04); }
+      }
+      @keyframes pulse-dot {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.55; transform: scale(1.22); }
+      }
+      .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        padding: 0;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        border: 0;
+      }
+      .icon {
+        width: 24px;
+        height: 24px;
+        display: inline-block;
+      }
+      @media (max-width: 980px) {
+        .welcome-shell,
+        .flow-grid,
+        .compact-card .flow-grid,
+        .pref-grid.two,
+        .portal-tool-grid,
+        .panel-grid,
+        .runtime-stats {
+          grid-template-columns: 1fr;
+        }
+        .panel-grid.has-expanded .expand-surface.demoted {
+          max-width: 100%;
+          justify-self: stretch;
+        }
+        .flow-sidebar {
+          position: static;
+        }
+        .create-top {
+          gap: 12px;
+        }
+        .create-hero {
+          padding: 20px;
+        }
+        .account-grid {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+      @media (max-width: 640px) {
+        .outer-page { padding: 10px 10px 32px; }
+        .outer-shell { border-radius: 22px; }
+        .shell-content { padding: 16px; }
+        .topbar-inner { padding: 16px; }
+        .welcome-shell, .card-shell, .portal-surface, .admin-surface, .runtime-surface, .accounts-surface, .expand-surface { padding: 20px; }
+        .welcome-panel,
+        .flow-hero,
+        .section-panel { padding: 20px; }
+        .create-hero {
+          padding: 20px;
+        }
+        .brand-title { font-size: 1.15rem; }
+        .welcome-title { font-size: 2.4rem; }
+        .welcome-brand { margin-top: 18px; }
+        .action-card { align-items: flex-start; }
+        .action-icon { width: 64px; height: 64px; flex-basis: 64px; }
+        .action-title { font-size: 1.3rem; }
+        .portal-tool-title { font-size: 1.75rem; }
+        .portal-tool-body { font-size: 1.1rem; }
+        .account-grid { grid-template-columns: 1fr; }
+        .pill-btn {
+          min-height: 78px;
+          padding: 18px 20px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <div class="outer-page">
+        <div class="glow a"></div>
+        <div class="glow b"></div>
+        <div class="glow c"></div>
+
+        <div class="page-inner">
+          <div class="outer-shell">
+          <header class="topbar">
+            <div class="topbar-inner">
+              <div class="brand">
+                <img src="/assets/circlelogo.png" alt="Project Puente AI logo" />
+                <div class="brand-copy">
+                  <div class="brand-title" id="brandTitle">Project Puente AI</div>
+                  <div class="brand-meta" id="brandMeta"></div>
+                </div>
+              </div>
+              <div class="header-actions">
+                <button id="langToggleBtn" class="lang-btn" type="button">
+                  <span class="icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M3 5h12" />
+                      <path d="M9 3v2" />
+                      <path d="M7 10c1.5-1.2 2.9-3.3 4-6" />
+                      <path d="M9.5 11.5c-1.7-1.5-2.9-3.1-3.5-4.5" />
+                      <path d="M14 17h7" />
+                      <path d="M17.5 14l-3.5 7" />
+                      <path d="M21 21l-3.5-7" />
+                    </svg>
+                  </span>
+                  <span id="langToggleLabel">ES</span>
+                </button>
+                <button id="adminToggleBtn" class="header-btn hidden" type="button"></button>
+                <button id="themeToggleBtn" class="header-btn icon-btn hidden" type="button" aria-label="Toggle theme" title="Toggle theme">
+                  <span id="themeToggleIcon" class="icon" aria-hidden="true"></span>
+                </button>
+                <button id="logoutBtn" class="header-btn danger hidden" type="button"></button>
+              </div>
+            </div>
+          </header>
+
+          <div class="shell-content">
+            <section id="authSection" class="auth-shell">
+              <div id="welcomeScreen" class="welcome-shell">
+                <div class="welcome-panel">
+                  <div class="welcome-badge">Project Puente AI</div>
+                  <div class="welcome-brand">
+                    <div class="welcome-logo-wrap">
+                      <img class="welcome-logo" src="/assets/circlelogo.png" alt="Project Puente AI logo" />
+                    </div>
+                  </div>
+                  <h1 id="welcomeTitle" class="welcome-title"></h1>
+                  <p id="welcomeSubtitle" class="welcome-subtitle"></p>
+                  <div class="accent-bar"></div>
+                </div>
+                <div class="welcome-actions">
+                  <div class="action-list">
+                    <button class="action-card" type="button" data-screen="create">
+                      <div class="action-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M15 12h6" /><path d="M18 9v6" /><path d="M4 20v-1a4 4 0 0 1 4-4h3" /><circle cx="9" cy="7" r="4" />
+                        </svg>
+                      </div>
+                      <div>
+                        <div class="action-title" id="createCardTitle"></div>
+                        <div class="action-desc" id="createCardDesc"></div>
+                      </div>
+                    </button>
+                    <button class="action-card" type="button" data-screen="login">
+                      <div class="action-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M10 17V7a2 2 0 0 1 2-2h5a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-5a2 2 0 0 1-2-2Z" /><path d="M5 12h9" /><path d="M8 9l-3 3 3 3" />
+                        </svg>
+                      </div>
+                      <div>
+                        <div class="action-title" id="loginCardTitle"></div>
+                        <div class="action-desc" id="loginCardDesc"></div>
+                      </div>
+                    </button>
+                    <button class="action-card" type="button" data-screen="guest">
+                      <div class="action-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M18 20a6 6 0 0 0-12 0" /><circle cx="12" cy="10" r="4" />
+                        </svg>
+                      </div>
+                      <div>
+                        <div class="action-title" id="guestCardTitle"></div>
+                        <div class="action-desc" id="guestCardDesc"></div>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div id="createScreen" class="hidden auth-flow">
+                <div class="card-shell create-card">
+                  <div class="create-layout">
+                    <div class="create-top">
+                      <div class="back-row">
+                        <button class="ghost-link" type="button" data-screen="welcome">
+                          <span class="icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6" /></svg>
+                          </span>
+                          <span id="createBackLabel"></span>
+                        </button>
+                      </div>
+                      <div class="flow-hero create-hero">
+                        <img src="/assets/circlelogo.png" alt="Project Puente AI logo" />
+                        <div class="flow-kicker">Project Puente AI</div>
+                        <div class="card-header">
+                          <h2 id="createTitle"></h2>
+                          <p id="createIntro"></p>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="create-body">
+                      <div class="section-panel">
+                        <h3 id="languageChoiceTitle"></h3>
+                        <p id="languageChoiceDesc"></p>
+                        <div class="pref-grid two">
+                          <button id="prefSpanishBtn" class="pill-btn" type="button"></button>
+                          <button id="prefEnglishBtn" class="pill-btn" type="button"></button>
+                        </div>
+                      </div>
+
+                      <div class="section-panel">
+                        <h3 id="themeChoiceTitle"></h3>
+                        <p id="themeChoiceDesc"></p>
+                        <div class="pref-grid two">
+                          <button id="themeLightBtn" class="pill-btn" type="button"></button>
+                          <button id="themeDarkBtn" class="pill-btn" type="button"></button>
+                        </div>
+                      </div>
+
+                      <form id="signupForm" class="create-form flow-content">
+                        <div class="section-panel">
+                          <h3 id="usernameStep"></h3>
+                          <p id="usernameBody"></p>
+                          <div class="helper" id="usernameExample"></div>
+                          <div class="field">
+                            <label for="signupUser" id="usernameLabel"></label>
+                            <input id="signupUser" autocomplete="username" />
+                          </div>
+                        </div>
+
+                        <div class="section-panel">
+                          <h3 id="passwordStep"></h3>
+                          <p id="passwordBody"></p>
+                          <div class="field">
+                            <label for="signupPass" id="passwordLabel"></label>
+                            <input id="signupPass" type="password" autocomplete="new-password" />
+                          </div>
+                          <div id="passwordInlineError" class="inline-error"></div>
+                        </div>
+
+                        <div class="section-panel remember">
+                          <h3 id="rememberStep"></h3>
+                          <p id="rememberBody"></p>
+                        </div>
+
+                        <div class="section-panel">
+                          <h3 id="confirmStep"></h3>
+                          <p id="confirmBody"></p>
+                          <div class="field">
+                            <label for="signupConfirm" id="confirmLabel"></label>
+                            <input id="signupConfirm" type="password" autocomplete="new-password" />
+                          </div>
+                          <div id="confirmInlineError" class="inline-error"></div>
+                        </div>
+
+                        <div class="submit-area">
+                          <button id="createAccountBtn" class="submit-btn" type="submit"></button>
+                          <div id="forgotNote" class="note-box"></div>
+                          <div id="signupError" class="error"></div>
+                        </div>
+                      </form>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div id="loginScreen" class="hidden auth-flow">
+                <div class="card-shell compact-card">
+                  <div class="flow-grid">
+                    <aside class="flow-sidebar">
+                      <div class="back-row">
+                        <button class="ghost-link" type="button" data-screen="welcome">
+                          <span class="icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6" /></svg>
+                          </span>
+                          <span id="loginBackLabel"></span>
+                        </button>
+                      </div>
+                      <div class="flow-hero">
+                        <img src="/assets/circlelogo.png" alt="Project Puente AI logo" />
+                        <div class="flow-kicker">Project Puente AI</div>
+                        <div class="card-header">
+                          <h2 id="loginTitle"></h2>
+                          <p id="loginIntro"></p>
+                        </div>
+                      </div>
+                    </aside>
+                    <form id="loginForm" class="flow-content">
+                      <div class="section-panel">
+                        <div class="field">
+                          <label for="loginUser" id="loginUserLabel"></label>
+                          <input id="loginUser" autocomplete="username" />
+                        </div>
+                        <div class="field">
+                          <label for="loginPass" id="loginPassLabel"></label>
+                          <input id="loginPass" type="password" autocomplete="current-password" />
+                        </div>
+                      </div>
+                      <div class="submit-area">
+                        <button id="loginSubmitBtn" class="submit-btn" type="submit"></button>
+                        <div id="loginForgotNote" class="note-box"></div>
+                        <div id="loginError" class="error"></div>
+                      </div>
+                    </form>
+                  </div>
+                </div>
+              </div>
+
+              <div id="guestScreen" class="hidden auth-flow">
+                <div class="card-shell compact-card">
+                  <div class="flow-grid">
+                    <aside class="flow-sidebar">
+                      <div class="back-row">
+                        <button class="ghost-link" type="button" data-screen="welcome">
+                          <span class="icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6" /></svg>
+                          </span>
+                          <span id="guestBackLabel"></span>
+                        </button>
+                      </div>
+                      <div class="flow-hero">
+                        <img src="/assets/circlelogo.png" alt="Project Puente AI logo" />
+                        <div class="flow-kicker">Project Puente AI</div>
+                        <div class="card-header">
+                          <h2 id="guestTitle"></h2>
+                          <p id="guestIntro"></p>
+                        </div>
+                      </div>
+                    </aside>
+                    <div class="flow-content">
+                      <div class="submit-area">
+                        <button id="guestLoginBtn" class="submit-btn" type="button"></button>
+                        <div id="guestError" class="error"></div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section id="portalSection" class="portal-shell hidden"></section>
+
+            <section id="adminSection" class="portal-admin-shell hidden"></section>
+          </div>
+        </div>
+      </div>
+      </div>
+    </div>
+
+    <script>
+      const APP_API = "/ai/api/v1/app";
+      const AI_ADMIN_API = "/ai/api/v1/admin/ai-enabled";
+      const AI_ADMIN_STATUS_API = "/ai/api/v1/admin/status";
+      const AI_ADMIN_RUNTIME_API = "/ai/api/v1/admin/runtime";
+      const STORAGE_KEYS = {
+        language: "puente-language",
+        theme: "puente-theme"
+      };
+
+      const copy = {
+        en: {
+          brand: "Project Puente AI",
+          toggleLanguage: "ES",
+          welcomeTitle: "Welcome!",
+          welcomeSubtitle: "What would you like to do?",
+          createTitle: "Create Account",
+          createDesc: "I am new here",
+          loginTitle: "Log In",
+          loginDesc: "I already have an account",
+          guestTitle: "Continue as Guest",
+          guestDesc: "Try it without an account",
+          back: "Back",
+          createMyAccount: "Create My Account",
+          createIntro: "We will help you make your account. Please choose a username and password that you can remember later.",
+          languageChoiceTitle: "Choose your language",
+          languageChoiceDesc: "You can make Spanish your default language.",
+          defaultSpanish: "Make Spanish my default language",
+          defaultEnglish: "Keep English as my default language",
+          themeChoiceTitle: "Choose your theme",
+          themeChoiceDesc: "Your theme choice will be saved and used on future pages.",
+          lightTheme: "Light Theme",
+          darkTheme: "Dark Theme",
+          usernameStep: "1. Choose a username",
+          usernameBody: "Pick something easy to remember. You can use your first name and a number.",
+          usernameExample: "Example: maria15",
+          usernameLabel: "Username",
+          usernamePlaceholder: "Type your username",
+          passwordStep: "2. Create a password",
+          passwordBody: "Choose a password you can remember. It must be at least 4 characters.",
+          passwordLabel: "Password",
+          passwordPlaceholder: "Type your password",
+          rememberStep: "3. Remember your password",
+          rememberBody: "This is very important. You will need your password every time you log in. Write it down in a safe place or memorize it carefully.",
+          confirmStep: "4. Type your password again",
+          confirmBody: "This helps make sure there are no mistakes.",
+          confirmLabel: "Type your password again",
+          confirmPlaceholder: "Type the same password again",
+          forgot: "Forgot your password? Ask your teacher or admin to reset your password.",
+          loginIntro: "Enter your username and password.",
+          guestIntro: "Guest access is temporary. Your work may not stay saved for a long time.",
+          createAccountButton: "Create My Account",
+          loginButton: "Log In",
+          guestButton: "Continue as Guest",
+          passwordTooShort: "Password must be at least 4 characters.",
+          passwordMismatch: "The two passwords must match.",
+          usernameRequired: "Please enter a username.",
+          passwordRequired: "Please enter a password.",
+          guestCreating: "Creating Guest...",
+          sessionGreeting: "Hello, {username}",
+          sessionMeta: "Role: {role} | Storage used: {bytes} bytes",
+          portalAdmin: "Admin Console",
+          headerAdmin: "Admin",
+          headerLogout: "Log Out",
+          toolChatTitle: "Ask a Question",
+          toolChatDesc: "Chat with the local AI model.",
+          toolChatLink: "Open AI Chat",
+          toolDocsTitle: "Open Docs",
+          toolDocsDesc: "Create and save markdown documents.",
+          toolDocsLink: "Open Docs",
+          toolWikiTitle: "Read Wikipedia",
+          toolWikiDesc: "Browse local wiki content.",
+          toolWikiLink: "Open Wiki",
+          toolLearnTitle: "Take Courses",
+          toolLearnDesc: "Use the learning portal.",
+          toolLearnLink: "Open Courses",
+          adminTitle: "Admin Console",
+          refreshAdmin: "Refresh",
+          refreshEvents: "Refresh Events",
+          runtimeTitle: "AI Runtime",
+          runtimeRefresh: "Refresh",
+          runtimeToggle: "Toggle On/Off",
+          runtimeStart: "Start",
+          runtimeStop: "Stop",
+          runtimeRestart: "Restart",
+          runtimeAuto: "Auto",
+          accountsTitle: "Accounts",
+          storageInsightsTitle: "Storage Insights",
+          eventsTitle: "Security / Abuse Events",
+          userHead: "User",
+          roleHead: "Role",
+          storageHead: "Storage",
+          lockHead: "Lock",
+          actionsHead: "Actions",
+          noUsers: "No users found.",
+          noRestrictions: "No active restrictions",
+          docsBlockedUntil: "Docs blocked until {value}",
+          aiBlockedUntil: "AI send blocked until {value}",
+          aiCooldownUntil: "AI cooldown until {value}",
+          newPasswordPlaceholder: "New password",
+          resetButton: "Reset",
+          lockReasonPlaceholder: "Lock reason",
+          minutesPlaceholder: "Minutes",
+          lockButton: "Lock",
+          unlockReasonPlaceholder: "Unlock reason",
+          unlockButton: "Unlock",
+          resetFailed: "Reset failed",
+          lockFailed: "Lock failed",
+          unlockFailed: "Unlock failed",
+          lockReasonRequired: "Lock reason is required.",
+          aiActionFailed: "AI runtime action failed.",
+          aiRuntimeUnavailable: "AI runtime status unavailable.",
+          noSecurityEvents: "No security events yet.",
+          noStorageData: "No storage insight data yet.",
+          topUsersByStorage: "Top Users By Storage",
+          largestDocuments: "Largest Documents",
+          largestChats: "Largest Chats",
+          checkingSession: "Checking session...",
+          loginFailed: "Login failed",
+          signupFailed: "Signup failed",
+          guestFailed: "Guest access failed",
+          guestUnavailable: "Guest access is unavailable right now.",
+          topUsersLine: "- {username} ({bytes} bytes)",
+          largestDocumentLine: "- {username}: {title} | {bytes} bytes | type={type}",
+          largestChatLine: "- {username}: {title} | {bytes} bytes | tokens={tokens}",
+          securityEventLine: "[{when}] {severity} {eventType}\nuser={user} ip={ip}\nendpoint={endpoint}\ndetail={detail}"
+        },
+        es: {
+          brand: "Project Puente AI",
+          toggleLanguage: "EN",
+          welcomeTitle: "¡Bienvenido!",
+          welcomeSubtitle: "¿Qué te gustaría hacer?",
+          createTitle: "Crear Cuenta",
+          createDesc: "Soy nuevo aquí",
+          loginTitle: "Iniciar Sesión",
+          loginDesc: "Ya tengo una cuenta",
+          guestTitle: "Continuar como Invitado",
+          guestDesc: "Probar sin una cuenta",
+          back: "Volver",
+          createMyAccount: "Crear Mi Cuenta",
+          createIntro: "Te ayudaremos a crear tu cuenta. Elige un nombre de usuario y una contraseña que puedas recordar más tarde.",
+          languageChoiceTitle: "Elige tu idioma",
+          languageChoiceDesc: "Puedes poner el español como idioma predeterminado.",
+          defaultSpanish: "Poner español como mi idioma predeterminado",
+          defaultEnglish: "Mantener inglés como mi idioma predeterminado",
+          themeChoiceTitle: "Elige tu tema",
+          themeChoiceDesc: "Tu tema se guardará y se usará en otras páginas.",
+          lightTheme: "Tema Claro",
+          darkTheme: "Tema Oscuro",
+          usernameStep: "1. Elige un nombre de usuario",
+          usernameBody: "Elige algo fácil de recordar. Puedes usar tu nombre y un número.",
+          usernameExample: "Ejemplo: maria15",
+          usernameLabel: "Nombre de usuario",
+          usernamePlaceholder: "Escribe tu nombre de usuario",
+          passwordStep: "2. Crea una contraseña",
+          passwordBody: "Elige una contraseña que puedas recordar. Debe tener al menos 4 caracteres.",
+          passwordLabel: "Contraseña",
+          passwordPlaceholder: "Escribe tu contraseña",
+          rememberStep: "3. Recuerda tu contraseña",
+          rememberBody: "Esto es muy importante. Necesitarás tu contraseña cada vez que inicies sesión. Escríbela en un lugar seguro o memorízala con cuidado.",
+          confirmStep: "4. Escribe tu contraseña otra vez",
+          confirmBody: "Esto ayuda a asegurarse de que no haya errores.",
+          confirmLabel: "Escribe tu contraseña otra vez",
+          confirmPlaceholder: "Escribe la misma contraseña otra vez",
+          forgot: "¿Olvidaste tu contraseña? Pídele a tu maestro o administrador que restablezca tu contraseña.",
+          loginIntro: "Escribe tu nombre de usuario y tu contraseña.",
+          guestIntro: "El acceso de invitado es temporal. Es posible que tu trabajo no se guarde por mucho tiempo.",
+          createAccountButton: "Crear Mi Cuenta",
+          loginButton: "Iniciar Sesión",
+          guestButton: "Continuar como Invitado",
+          passwordTooShort: "La contraseña debe tener al menos 4 caracteres.",
+          passwordMismatch: "Las dos contraseñas deben coincidir.",
+          usernameRequired: "Por favor escribe un nombre de usuario.",
+          passwordRequired: "Por favor escribe una contraseña.",
+          guestCreating: "Creando invitado...",
+          sessionGreeting: "Hola, {username}",
+          sessionMeta: "Rol: {role} | Almacenamiento usado: {bytes} bytes",
+          portalAdmin: "Consola de Administración",
+          headerAdmin: "Admin",
+          headerLogout: "Cerrar Sesión",
+          toolChatTitle: "Haz una Pregunta",
+          toolChatDesc: "Chatea con el modelo local de IA.",
+          toolChatLink: "Abrir Chat de IA",
+          toolDocsTitle: "Abrir Docs",
+          toolDocsDesc: "Crea y guarda documentos markdown.",
+          toolDocsLink: "Abrir Docs",
+          toolWikiTitle: "Leer Wikipedia",
+          toolWikiDesc: "Navega contenido local de wiki.",
+          toolWikiLink: "Abrir Wiki",
+          toolLearnTitle: "Tomar Cursos",
+          toolLearnDesc: "Usa el portal de aprendizaje.",
+          toolLearnLink: "Abrir Cursos",
+          adminTitle: "Consola de Administración",
+          refreshAdmin: "Actualizar",
+          refreshEvents: "Actualizar Eventos",
+          runtimeTitle: "Tiempo de Ejecución de IA",
+          runtimeRefresh: "Actualizar",
+          runtimeToggle: "Activar / Desactivar",
+          runtimeStart: "Iniciar",
+          runtimeStop: "Detener",
+          runtimeRestart: "Reiniciar",
+          runtimeAuto: "Auto",
+          accountsTitle: "Cuentas",
+          storageInsightsTitle: "Información de Almacenamiento",
+          eventsTitle: "Eventos de Seguridad / Abuso",
+          userHead: "Usuario",
+          roleHead: "Rol",
+          storageHead: "Almacenamiento",
+          lockHead: "Bloqueo",
+          actionsHead: "Acciones",
+          noUsers: "No se encontraron usuarios.",
+          noRestrictions: "Sin restricciones activas",
+          docsBlockedUntil: "Docs bloqueados hasta {value}",
+          aiBlockedUntil: "Envío a IA bloqueado hasta {value}",
+          aiCooldownUntil: "Enfriamiento de IA hasta {value}",
+          newPasswordPlaceholder: "Nueva contraseña",
+          resetButton: "Restablecer",
+          lockReasonPlaceholder: "Razón del bloqueo",
+          minutesPlaceholder: "Minutos",
+          lockButton: "Bloquear",
+          unlockReasonPlaceholder: "Razón para desbloquear",
+          unlockButton: "Desbloquear",
+          resetFailed: "No se pudo restablecer",
+          lockFailed: "No se pudo bloquear",
+          unlockFailed: "No se pudo desbloquear",
+          lockReasonRequired: "La razón del bloqueo es obligatoria.",
+          aiActionFailed: "La acción del tiempo de ejecución falló.",
+          aiRuntimeUnavailable: "El estado de la IA no está disponible.",
+          noSecurityEvents: "Todavía no hay eventos de seguridad.",
+          noStorageData: "Todavía no hay datos de almacenamiento.",
+          topUsersByStorage: "Usuarios con Más Almacenamiento",
+          largestDocuments: "Documentos Más Grandes",
+          largestChats: "Chats Más Grandes",
+          checkingSession: "Revisando la sesión...",
+          loginFailed: "No se pudo iniciar sesión",
+          signupFailed: "No se pudo crear la cuenta",
+          guestFailed: "No se pudo acceder como invitado",
+          guestUnavailable: "El acceso de invitado no está disponible ahora mismo.",
+          topUsersLine: "- {username} ({bytes} bytes)",
+          largestDocumentLine: "- {username}: {title} | {bytes} bytes | tipo={type}",
+          largestChatLine: "- {username}: {title} | {bytes} bytes | tokens={tokens}",
+          securityEventLine: "[{when}] {severity} {eventType}\nuser={user} ip={ip}\nendpoint={endpoint}\ndetail={detail}"
+        }
+      };
+
+      Object.assign(copy.en, {
+        brandSubtitlePortal: "Learning portal",
+        brandSubtitleAdmin: "Admin console",
+        headerPortal: "Portal",
+        portalEyebrow: "Main Portal",
+        portalHeading: "Choose a tool",
+        portalSubheading: "Start with one of the four main learning tools below.",
+        portalAdmin: "Admin Console",
+        toolChatDesc: "Talk to an AI helper",
+        toolDocsDesc: "Read helpful documents",
+        toolWikiDesc: "Learn about anything",
+        toolLearnDesc: "Study at your own pace",
+        adminEyebrow: "Control Center",
+        adminIntro: "Manage runtime, accounts, storage insights, and security events.",
+        adminTitle: "Admin Console",
+        runtimeDesc: "Clear status and controls instead of raw text blocks.",
+        runtimeHealth: "Health",
+        runtimeMode: "Mode",
+        runtimeLlama: "Llama",
+        runtimeReason: "Reason",
+        runtimeRunning: "Running",
+        runtimeOkay: "Okay",
+        runtimeStopped: "Stopped",
+        runtimeRestarting: "Restarting",
+        runtimeUnknown: "Unknown",
+        accountsIntro: "Simplified actions: reset password, lock, unlock, and delete.",
+        searchUsers: "Search users",
+        accountHolder: "Account holder",
+        accountRole: "Role",
+        accountStorage: "Storage",
+        accountLock: "Lock",
+        savePassword: "Save Password",
+        applyLock: "Apply Lock",
+        unlockAccount: "Unlock Account",
+        deleteButton: "Delete",
+        confirmDelete: "Confirm Delete",
+        permanentlyDelete: "Permanently Delete",
+        cancel: "Cancel",
+        deleteWarning: "This permanently deletes {username}.",
+        deleteFailed: "Delete failed",
+        noAccountsMatch: "No accounts match your search.",
+        noAccountsFound: "No users found.",
+        storageSubtitle: "Important information in a readable system log style.",
+        securitySubtitle: "Recent moderation and account actions.",
+        expand: "Expand",
+        collapse: "Collapse",
+        lockNone: "No",
+        lockPermanent: "Permanent"
+      });
+
+      Object.assign(copy.es, {
+        brandSubtitlePortal: "Portal de aprendizaje",
+        brandSubtitleAdmin: "Consola de administración",
+        headerPortal: "Portal",
+        portalEyebrow: "Portal Principal",
+        portalHeading: "Elige una herramienta",
+        portalSubheading: "Empieza con una de las cuatro herramientas principales de aprendizaje.",
+        portalAdmin: "Consola de Administración",
+        headerLogout: "Cerrar sesión",
+        toolChatTitle: "Haz una pregunta",
+        toolChatDesc: "Habla con un ayudante de IA",
+        toolDocsTitle: "Abrir Docs",
+        toolDocsDesc: "Lee documentos útiles",
+        toolWikiTitle: "Leer Wikipedia",
+        toolWikiDesc: "Aprende sobre cualquier tema",
+        toolLearnTitle: "Tomar cursos",
+        toolLearnDesc: "Estudia a tu propio ritmo",
+        adminEyebrow: "Centro de control",
+        adminIntro: "Administra el tiempo de ejecución, las cuentas, el almacenamiento y los eventos de seguridad.",
+        adminTitle: "Consola de Administración",
+        runtimeTitle: "Tiempo de ejecución de IA",
+        runtimeDesc: "Estado y controles claros en lugar de bloques de texto sin formato.",
+        runtimeHealth: "Salud",
+        runtimeMode: "Modo",
+        runtimeLlama: "Llama",
+        runtimeReason: "Razón",
+        runtimeRefresh: "Actualizar",
+        runtimeToggle: "Activar / Desactivar",
+        runtimeStart: "Iniciar",
+        runtimeStop: "Detener",
+        runtimeRestart: "Reiniciar",
+        runtimeAuto: "Auto",
+        runtimeRunning: "En ejecución",
+        runtimeOkay: "Aceptable",
+        runtimeStopped: "Detenido",
+        runtimeRestarting: "Reiniciando",
+        runtimeUnknown: "Desconocido",
+        accountsTitle: "Cuentas",
+        accountsIntro: "Acciones simplificadas: restablecer contraseña, bloquear, desbloquear y eliminar.",
+        searchUsers: "Buscar usuarios",
+        accountHolder: "Titular",
+        accountRole: "Rol",
+        accountStorage: "Almacenamiento",
+        accountLock: "Bloqueo",
+        savePassword: "Guardar contraseña",
+        applyLock: "Aplicar bloqueo",
+        unlockAccount: "Desbloquear cuenta",
+        deleteButton: "Eliminar",
+        confirmDelete: "Confirmar eliminación",
+        permanentlyDelete: "Eliminar permanentemente",
+        cancel: "Cancelar",
+        deleteWarning: "Esto elimina permanentemente a {username}.",
+        deleteFailed: "No se pudo eliminar",
+        noAccountsMatch: "Ninguna cuenta coincide con tu búsqueda.",
+        noAccountsFound: "No se encontraron usuarios.",
+        storageInsightsTitle: "Información de almacenamiento",
+        storageSubtitle: "Información importante en un formato legible tipo registro del sistema.",
+        eventsTitle: "Eventos de seguridad / abuso",
+        securitySubtitle: "Acciones recientes de moderación y cuentas.",
+        expand: "Expandir",
+        collapse: "Contraer",
+        lockNone: "No",
+        lockPermanent: "Permanente",
+        resetFailed: "No se pudo restablecer la contraseña",
+        lockFailed: "No se pudo bloquear la cuenta",
+        unlockFailed: "No se pudo desbloquear la cuenta",
+        aiActionFailed: "La acción del tiempo de ejecución falló.",
+        aiRuntimeUnavailable: "El estado de la IA no está disponible.",
+        noSecurityEvents: "Todavía no hay eventos de seguridad.",
+        noStorageData: "Todavía no hay datos de almacenamiento."
+      });
+
+      const ICONS = {
+        shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v6c0 5-3.5 7.5-7 9-3.5-1.5-7-4-7-9V6l7-3Z" /></svg>',
+        logout: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="m16 17 5-5-5-5" /><path d="M21 12H9" /></svg>',
+        moon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 1 0 9 9 9 9 0 1 1-9-9Z" /></svg>',
+        sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2" /><path d="M12 20v2" /><path d="m4.93 4.93 1.41 1.41" /><path d="m17.66 17.66 1.41 1.41" /><path d="M2 12h2" /><path d="M20 12h2" /><path d="m6.34 17.66-1.41 1.41" /><path d="m19.07 4.93-1.41 1.41" /></svg>',
+        messageSquare: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z" /></svg>',
+        fileText: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" /><path d="M14 2v6h6" /><path d="M16 13H8" /><path d="M16 17H8" /><path d="M10 9H8" /></svg>',
+        bookOpen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2Z" /><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7Z" /></svg>',
+        graduationCap: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m22 10-10-5L2 10l10 5 10-5Z" /><path d="M6 12v5c3 2 9 2 12 0v-5" /></svg>',
+        refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36" /><path d="M21 3v6h-6" /></svg>',
+        power: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v10" /><path d="M18.36 6.64a9 9 0 1 1-12.72 0" /></svg>',
+        play: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3" /></svg>',
+        square: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2" /></svg>',
+        rotate: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 2v6h6" /><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8" /></svg>',
+        settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v4" /><path d="M12 18v4" /><path d="m4.93 4.93 2.83 2.83" /><path d="m16.24 16.24 2.83 2.83" /><path d="M2 12h4" /><path d="M18 12h4" /><path d="m4.93 19.07 2.83-2.83" /><path d="m16.24 7.76 2.83-2.83" /><circle cx="12" cy="12" r="3" /></svg>',
+        search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" /></svg>',
+        key: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="15" r="4" /><path d="m10.85 12.15 8.15-8.15" /><path d="M18 5l1 1" /><path d="m15 8 1 1" /></svg>',
+        lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>',
+        unlock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 7.2-2.4" /></svg>',
+        trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="m19 6-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6" /><path d="M14 11v6" /></svg>',
+        barChart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18" /><path d="M7 15v-4" /><path d="M12 15V7" /><path d="M17 15v-8" /></svg>',
+        alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" /><path d="M12 9v4" /><path d="M12 17h.01" /></svg>',
+        chevronDown: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>',
+        chevronUp: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m18 15-6-6-6 6" /></svg>',
+        expand: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 3 6 6" /><path d="M9 21 3 15" /><path d="M21 9V3h-6" /><path d="M3 15v6h6" /></svg>',
+        shrink: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 3-6 6" /><path d="m15 21 6-6" /><path d="M3 9V3h6" /><path d="M21 15v6h-6" /></svg>',
+        circle: '<svg viewBox="0 0 12 12" fill="currentColor" aria-hidden="true"><circle cx="6" cy="6" r="5" /></svg>'
+      };
+
+      const ui = {
+        brandTitle: document.getElementById("brandTitle"),
+        brandMeta: document.getElementById("brandMeta"),
+        langToggleBtn: document.getElementById("langToggleBtn"),
+        langToggleLabel: document.getElementById("langToggleLabel"),
+        adminToggleBtn: document.getElementById("adminToggleBtn"),
+        themeToggleBtn: document.getElementById("themeToggleBtn"),
+        themeToggleIcon: document.getElementById("themeToggleIcon"),
+        logoutBtn: document.getElementById("logoutBtn"),
+        authSection: document.getElementById("authSection"),
+        portalSection: document.getElementById("portalSection"),
+        adminSection: document.getElementById("adminSection"),
+        welcomeScreen: document.getElementById("welcomeScreen"),
+        createScreen: document.getElementById("createScreen"),
+        loginScreen: document.getElementById("loginScreen"),
+        guestScreen: document.getElementById("guestScreen"),
+        welcomeTitle: document.getElementById("welcomeTitle"),
+        welcomeSubtitle: document.getElementById("welcomeSubtitle"),
+        createCardTitle: document.getElementById("createCardTitle"),
+        createCardDesc: document.getElementById("createCardDesc"),
+        loginCardTitle: document.getElementById("loginCardTitle"),
+        loginCardDesc: document.getElementById("loginCardDesc"),
+        guestCardTitle: document.getElementById("guestCardTitle"),
+        guestCardDesc: document.getElementById("guestCardDesc"),
+        createBackLabel: document.getElementById("createBackLabel"),
+        createTitle: document.getElementById("createTitle"),
+        createIntro: document.getElementById("createIntro"),
+        languageChoiceTitle: document.getElementById("languageChoiceTitle"),
+        languageChoiceDesc: document.getElementById("languageChoiceDesc"),
+        prefSpanishBtn: document.getElementById("prefSpanishBtn"),
+        prefEnglishBtn: document.getElementById("prefEnglishBtn"),
+        themeChoiceTitle: document.getElementById("themeChoiceTitle"),
+        themeChoiceDesc: document.getElementById("themeChoiceDesc"),
+        themeLightBtn: document.getElementById("themeLightBtn"),
+        themeDarkBtn: document.getElementById("themeDarkBtn"),
+        usernameStep: document.getElementById("usernameStep"),
+        usernameBody: document.getElementById("usernameBody"),
+        usernameExample: document.getElementById("usernameExample"),
+        usernameLabel: document.getElementById("usernameLabel"),
+        signupUser: document.getElementById("signupUser"),
+        passwordStep: document.getElementById("passwordStep"),
+        passwordBody: document.getElementById("passwordBody"),
+        passwordLabel: document.getElementById("passwordLabel"),
+        signupPass: document.getElementById("signupPass"),
+        passwordInlineError: document.getElementById("passwordInlineError"),
+        rememberStep: document.getElementById("rememberStep"),
+        rememberBody: document.getElementById("rememberBody"),
+        confirmStep: document.getElementById("confirmStep"),
+        confirmBody: document.getElementById("confirmBody"),
+        confirmLabel: document.getElementById("confirmLabel"),
+        signupConfirm: document.getElementById("signupConfirm"),
+        confirmInlineError: document.getElementById("confirmInlineError"),
+        createAccountBtn: document.getElementById("createAccountBtn"),
+        forgotNote: document.getElementById("forgotNote"),
+        signupForm: document.getElementById("signupForm"),
+        signupError: document.getElementById("signupError"),
+        loginBackLabel: document.getElementById("loginBackLabel"),
+        loginTitle: document.getElementById("loginTitle"),
+        loginIntro: document.getElementById("loginIntro"),
+        loginUserLabel: document.getElementById("loginUserLabel"),
+        loginPassLabel: document.getElementById("loginPassLabel"),
+        loginUser: document.getElementById("loginUser"),
+        loginPass: document.getElementById("loginPass"),
+        loginSubmitBtn: document.getElementById("loginSubmitBtn"),
+        loginForgotNote: document.getElementById("loginForgotNote"),
+        loginForm: document.getElementById("loginForm"),
+        loginError: document.getElementById("loginError"),
+        guestBackLabel: document.getElementById("guestBackLabel"),
+        guestTitle: document.getElementById("guestTitle"),
+        guestIntro: document.getElementById("guestIntro"),
+        guestLoginBtn: document.getElementById("guestLoginBtn"),
+        guestError: document.getElementById("guestError")
+      };
+
+      const state = {
+        screen: "welcome",
+        language: "es",
+        preferredLanguage: "es",
+        theme: "light",
+        user: null,
+        adminVisible: false,
+        aiStatus: null,
+        users: [],
+        events: [],
+        insights: null,
+        accountsQuery: "",
+        storageExpanded: false,
+        securityExpanded: false,
+        pendingAiAction: null,
+        accountUi: {}
+      };
+
+      function getCopy() {
+        return copy[state.language] || copy.en;
+      }
+
+      function format(text, vars = {}) {
+        return String(text || "").replace(/\{(\w+)\}/g, (_, key) => String(vars[key] ?? ""));
+      }
+
+      function escapeHtml(value) {
+        return String(value || "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/\"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function icon(name) {
+        return ICONS[name] || "";
+      }
+
+      function buttonLabel(iconName, label) {
+        return `<span class="btn-inline"><span class="btn-icon">${icon(iconName)}</span><span>${escapeHtml(label)}</span></span>`;
+      }
+
+      function readLocalPreferences() {
+        try {
+          const language = localStorage.getItem(STORAGE_KEYS.language);
+          const theme = localStorage.getItem(STORAGE_KEYS.theme);
+          if (language === "en" || language === "es") {
+            state.language = language;
+            state.preferredLanguage = language;
+          } else {
+            state.language = "es";
+            state.preferredLanguage = "es";
+          }
+          if (theme === "light" || theme === "dark") {
+            state.theme = theme;
+          }
+        } catch {}
+      }
+
+      function writeLocalPreferences() {
+        try {
+          localStorage.setItem(STORAGE_KEYS.language, state.language);
+          localStorage.setItem(STORAGE_KEYS.theme, state.theme);
+        } catch {}
+      }
+
+      function normalizeRoleLabel(role) {
+        if (state.language === "es") {
+          if (role === "admin") return "admin";
+          if (role === "guest") return "invitado";
+          return "usuario";
+        }
+        return role || "user";
+      }
+
+      function formatDateTime(value) {
+        if (!value) return "";
+        try {
+          const date = new Date(value);
+          if (Number.isNaN(date.getTime())) return String(value);
+          return date.toLocaleString(state.language === "es" ? "es-ES" : "en-US");
+        } catch {
+          return String(value);
+        }
+      }
+
+      function renderThemeToggle() {
+        const t = getCopy();
+        const isDark = state.theme === "dark";
+        ui.themeToggleIcon.innerHTML = isDark ? icon("sun") : icon("moon");
+        ui.themeToggleBtn.setAttribute("aria-label", isDark ? t.lightTheme : t.darkTheme);
+        ui.themeToggleBtn.setAttribute("title", isDark ? t.lightTheme : t.darkTheme);
+      }
+
+      function applyTheme(theme) {
+        state.theme = theme === "dark" ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", state.theme);
+        writeLocalPreferences();
+        renderThemeToggle();
+      }
+
+      async function persistPreferences(overrides = {}) {
+        if (!state.user) return;
+        const payload = {
+          preferred_language: overrides.preferred_language || state.language,
+          preferred_theme: overrides.preferred_theme || state.theme
+        };
+        const response = await api("/auth/preferences", "POST", payload);
+        if (response && response.user) {
+          state.user = { ...state.user, ...response.user };
+          syncPreferencesFromUser(response.user);
+        }
+      }
+
+      function syncPreferencesFromUser(user) {
+        if (!user) return;
+        const preferredLanguage = user.preferred_language === "es" ? "es" : "en";
+        const preferredTheme = user.preferred_theme === "dark" ? "dark" : "light";
+        state.language = preferredLanguage;
+        state.preferredLanguage = preferredLanguage;
+        applyTheme(preferredTheme);
+        writeLocalPreferences();
+      }
+
+      function setLanguage(nextLanguage, persist = false) {
+        state.language = nextLanguage === "es" ? "es" : "en";
+        state.preferredLanguage = state.language;
+        writeLocalPreferences();
+        renderStaticText();
+        renderAuthScreen();
+        renderPortal();
+        if (persist && state.user) {
+          persistPreferences({ preferred_language: state.language }).catch(() => {});
+        }
+      }
+
+      function setCreateTheme(nextTheme) {
+        applyTheme(nextTheme);
+        populatePreferenceButtons();
+        if (state.user) {
+          persistPreferences({ preferred_theme: state.theme }).catch(() => {});
+        }
+      }
+
+      function setScreen(screen) {
+        state.screen = screen;
+        renderAuthScreen();
+      }
+
+      function populatePreferenceButtons() {
+        const t = getCopy();
+        const selectedIcon = '<span class="check" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></svg></span>';
+        ui.prefSpanishBtn.classList.toggle("selected", state.preferredLanguage === "es");
+        ui.prefEnglishBtn.classList.toggle("selected", state.preferredLanguage === "en");
+        ui.themeLightBtn.classList.toggle("selected", state.theme === "light");
+        ui.themeDarkBtn.classList.toggle("selected", state.theme === "dark");
+        ui.prefSpanishBtn.innerHTML = `<span>${escapeHtml(t.defaultSpanish)}</span>${selectedIcon}`;
+        ui.prefEnglishBtn.innerHTML = `<span>${escapeHtml(t.defaultEnglish)}</span>${selectedIcon}`;
+        ui.themeLightBtn.innerHTML = `<span class="pill-main"><span class="icon">${icon("sun")}</span><span>${escapeHtml(t.lightTheme)}</span></span>${selectedIcon}`;
+        ui.themeDarkBtn.innerHTML = `<span class="pill-main"><span class="icon">${icon("moon")}</span><span>${escapeHtml(t.darkTheme)}</span></span>${selectedIcon}`;
+      }
+
+      function setHeaderContext() {
+        const t = getCopy();
+        ui.brandTitle.textContent = t.brand;
+        renderThemeToggle();
+        if (!state.user) {
+          ui.brandMeta.textContent = "";
+          ui.langToggleBtn.classList.remove("hidden");
+          ui.themeToggleBtn.classList.add("hidden");
+          ui.logoutBtn.classList.add("hidden");
+          ui.adminToggleBtn.classList.add("hidden");
+          ui.adminToggleBtn.innerHTML = "";
+          ui.logoutBtn.innerHTML = "";
+          return;
+        }
+        const isAdmin = state.user.role === "admin";
+        ui.brandMeta.textContent = isAdmin && state.adminVisible ? t.brandSubtitleAdmin : t.brandSubtitlePortal;
+        ui.langToggleBtn.classList.add("hidden");
+        ui.themeToggleBtn.classList.remove("hidden");
+        ui.logoutBtn.classList.remove("hidden");
+        ui.logoutBtn.innerHTML = buttonLabel("logout", t.headerLogout);
+        if (isAdmin) {
+          const label = state.adminVisible ? t.headerPortal : t.headerAdmin;
+          ui.adminToggleBtn.classList.remove("hidden");
+          ui.adminToggleBtn.innerHTML = buttonLabel("shield", label);
+        } else {
+          ui.adminToggleBtn.classList.add("hidden");
+          ui.adminToggleBtn.innerHTML = "";
+        }
+      }
+
+      function renderStaticText() {
+        const t = getCopy();
+        document.documentElement.lang = state.language;
+        document.title = t.brand;
+        ui.langToggleLabel.textContent = t.toggleLanguage;
+        ui.welcomeTitle.textContent = t.welcomeTitle;
+        ui.welcomeSubtitle.textContent = t.welcomeSubtitle;
+        ui.createCardTitle.textContent = t.createTitle;
+        ui.createCardDesc.textContent = t.createDesc;
+        ui.loginCardTitle.textContent = t.loginTitle;
+        ui.loginCardDesc.textContent = t.loginDesc;
+        ui.guestCardTitle.textContent = t.guestTitle;
+        ui.guestCardDesc.textContent = t.guestDesc;
+        ui.createBackLabel.textContent = t.back;
+        ui.createTitle.textContent = t.createMyAccount;
+        ui.createIntro.textContent = t.createIntro;
+        ui.languageChoiceTitle.textContent = t.languageChoiceTitle;
+        ui.languageChoiceDesc.textContent = t.languageChoiceDesc;
+        ui.themeChoiceTitle.textContent = t.themeChoiceTitle;
+        ui.themeChoiceDesc.textContent = t.themeChoiceDesc;
+        ui.usernameStep.textContent = t.usernameStep;
+        ui.usernameBody.textContent = t.usernameBody;
+        ui.usernameExample.textContent = t.usernameExample;
+        ui.usernameLabel.textContent = t.usernameLabel;
+        ui.signupUser.placeholder = t.usernamePlaceholder;
+        ui.passwordStep.textContent = t.passwordStep;
+        ui.passwordBody.textContent = t.passwordBody;
+        ui.passwordLabel.textContent = t.passwordLabel;
+        ui.signupPass.placeholder = t.passwordPlaceholder;
+        ui.rememberStep.textContent = t.rememberStep;
+        ui.rememberBody.textContent = t.rememberBody;
+        ui.confirmStep.textContent = t.confirmStep;
+        ui.confirmBody.textContent = t.confirmBody;
+        ui.confirmLabel.textContent = t.confirmLabel;
+        ui.signupConfirm.placeholder = t.confirmPlaceholder;
+        ui.createAccountBtn.textContent = t.createAccountButton;
+        ui.forgotNote.textContent = t.forgot;
+        ui.loginBackLabel.textContent = t.back;
+        ui.loginTitle.textContent = t.loginTitle;
+        ui.loginIntro.textContent = t.loginIntro;
+        ui.loginUserLabel.textContent = t.usernameLabel;
+        ui.loginPassLabel.textContent = t.passwordLabel;
+        ui.loginSubmitBtn.textContent = t.loginButton;
+        ui.loginForgotNote.textContent = t.forgot;
+        ui.guestBackLabel.textContent = t.back;
+        ui.guestTitle.textContent = t.guestTitle;
+        ui.guestIntro.textContent = t.guestIntro;
+        ui.guestLoginBtn.textContent = t.guestButton;
+        populatePreferenceButtons();
+        setHeaderContext();
+      }
+
+      function renderAuthScreen() {
+        ui.welcomeScreen.classList.toggle("hidden", state.screen !== "welcome");
+        ui.createScreen.classList.toggle("hidden", state.screen !== "create");
+        ui.loginScreen.classList.toggle("hidden", state.screen !== "login");
+        ui.guestScreen.classList.toggle("hidden", state.screen !== "guest");
+      }
+
+      function renderPortalSection() {
+        const t = getCopy();
+        const cards = [
+          { href: "/ai/", iconName: "messageSquare", title: t.toolChatTitle, body: t.toolChatDesc },
+          { href: "/docs/", iconName: "fileText", title: t.toolDocsTitle, body: t.toolDocsDesc },
+          { href: "/wiki-app/", iconName: "bookOpen", title: t.toolWikiTitle, body: t.toolWikiDesc },
+          { href: "/learn-app/", iconName: "graduationCap", title: t.toolLearnTitle, body: t.toolLearnDesc }
+        ];
+        ui.portalSection.innerHTML = `
+          <div class="portal-surface">
+            <div class="portal-eyebrow">${escapeHtml(t.portalEyebrow)}</div>
+            <h1 class="portal-heading">${escapeHtml(t.portalHeading)}</h1>
+            <p class="portal-subheading">${escapeHtml(t.portalSubheading)}</p>
+          </div>
+          <div class="portal-tool-grid">
+            ${cards.map((card) => `
+              <a class="portal-tool-card" href="${card.href}">
+                <div class="portal-tool-inner">
+                  <div class="portal-tool-icon">${icon(card.iconName)}</div>
+                  <div class="portal-tool-title">${escapeHtml(card.title)}</div>
+                  <div class="portal-tool-body">${escapeHtml(card.body)}</div>
+                </div>
+              </a>
+            `).join("")}
+          </div>
+        `;
+      }
+
+      function getRuntimePresentation() {
+        const t = getCopy();
+        const payload = state.aiStatus || {};
+        const health = payload.health;
+        const llamaState = String(payload.llama_state || "").toLowerCase();
+        let key = "okay";
+        if (llamaState.includes("restart")) {
+          key = "restarting";
+        } else if (payload.enabled === false || llamaState === "stopped" || String(health).toLowerCase() === "false") {
+          key = "stopped";
+        } else if (String(health).toLowerCase() === "true") {
+          key = "good";
+        }
+        const labels = {
+          good: t.runtimeRunning,
+          okay: t.runtimeOkay,
+          stopped: t.runtimeStopped,
+          restarting: t.runtimeRestarting
+        };
+        return {
+          key,
+          label: labels[key],
+          healthValue: health == null ? t.runtimeUnknown : String(health),
+          modeValue: payload.override_mode || "auto",
+          llamaValue: payload.llama_state || t.runtimeUnknown,
+          reasonValue: payload.status_reason || t.runtimeUnknown
+        };
+      }
+
+      function getAccountUi(uid) {
+        if (!state.accountUi[uid]) {
+          state.accountUi[uid] = {
+            panel: null,
+            pendingDelete: false,
+            resetPassword: "",
+            lockReason: "",
+            lockDuration: "30",
+            unlockReason: ""
+          };
+        }
+        return state.accountUi[uid];
+      }
+
+      function filteredUsers() {
+        const query = (state.accountsQuery || "").trim().toLowerCase();
+        if (!query) return state.users;
+        return state.users.filter((user) => {
+          return [user.username, user.role].some((value) => String(value || "").toLowerCase().includes(query));
+        });
+      }
+
+      function buildRestrictionLine(user, t) {
+        const docsBlock = user.docs_write_blocked_until ? format(t.docsBlockedUntil, { value: user.docs_write_blocked_until }) : "";
+        const aiBlock = user.ai_send_blocked_until
+          ? format(t.aiBlockedUntil, { value: user.ai_send_blocked_until })
+          : (user.ai_prompt_cooldown_until ? format(t.aiCooldownUntil, { value: user.ai_prompt_cooldown_until }) : "");
+        return [docsBlock, aiBlock].filter(Boolean).join(" | ") || t.noRestrictions;
+      }
+
+      function buildLockLabel(user, t) {
+        if (Number(user.manual_lock_permanent || 0) === 1) {
+          return t.lockPermanent;
+        }
+        const value = user.manual_locked_until || user.locked_until;
+        return value ? formatDateTime(value) : t.lockNone;
+      }
+
+      function buildStorageLog(t) {
+        const payload = state.insights;
+        if (!payload || typeof payload !== "object") return t.noStorageData;
+        const userLimit = state.storageExpanded ? 10 : 3;
+        const fileLimit = state.storageExpanded ? 5 : 3;
+        const topUsers = Array.isArray(payload.top_users) ? payload.top_users.slice(0, userLimit) : [];
+        const docs = Array.isArray(payload.largest_documents) ? payload.largest_documents.slice(0, fileLimit) : [];
+        const chats = Array.isArray(payload.largest_chats) ? payload.largest_chats.slice(0, fileLimit) : [];
+        const lines = [t.topUsersByStorage];
+        for (const user of topUsers) {
+          lines.push(format(t.topUsersLine, {
+            username: user.username,
+            bytes: Number(user.storage_bytes_used || 0).toLocaleString()
+          }));
+        }
+        lines.push("", t.largestDocuments);
+        for (const doc of docs) {
+          lines.push(format(t.largestDocumentLine, {
+            username: doc.username,
+            title: doc.title,
+            bytes: Number(doc.size_bytes || 0).toLocaleString(),
+            type: doc.type
+          }));
+        }
+        lines.push("", t.largestChats);
+        for (const chat of chats) {
+          lines.push(format(t.largestChatLine, {
+            username: chat.username,
+            title: chat.title,
+            bytes: Number(chat.size_bytes || 0).toLocaleString(),
+            tokens: Number(chat.token_count_estimate || 0).toLocaleString()
+          }));
+        }
+        return lines.join("\n");
+      }
+
+      function buildEventsLog(t) {
+        if (!state.events.length) return t.noSecurityEvents;
+        const limit = state.securityExpanded ? 12 : 4;
+        return state.events.slice(0, limit).map((event) => {
+          const when = event.created_at ? formatDateTime(event.created_at) : "unknown";
+          return format(t.securityEventLine, {
+            when,
+            severity: event.severity || "info",
+            eventType: event.event_type || "event",
+            user: event.username || event.user_id || "unknown",
+            ip: event.ip || "",
+            endpoint: event.endpoint || "",
+            detail: event.detail || ""
+          });
+        }).join("\n\n");
+      }
+
+      function getExpandedAdminPanel() {
+        if (state.storageExpanded) return "storage";
+        if (state.securityExpanded) return "security";
+        return null;
+      }
+
+      function renderAccountsMarkup(t) {
+        const users = filteredUsers();
+        if (!state.users.length) {
+          return `<div class="empty-note">${escapeHtml(t.noAccountsFound)}</div>`;
+        }
+        if (!users.length) {
+          return `<div class="empty-note">${escapeHtml(t.noAccountsMatch)}</div>`;
+        }
+        return users.map((user) => {
+          const view = getAccountUi(user.id);
+          const restrictions = buildRestrictionLine(user, t);
+          const lockLabel = buildLockLabel(user, t);
+          const isAdmin = user.role === "admin";
+          const deleteLabel = view.pendingDelete ? t.confirmDelete : t.deleteButton;
+          return `
+            <article class="account-item">
+              <div class="account-grid">
+                <div>
+                  <div class="account-name">${escapeHtml(user.username)}</div>
+                  <div class="account-meta">${escapeHtml(t.accountHolder)}</div>
+                </div>
+                <div>
+                  <div class="label-caps">${escapeHtml(t.accountRole)}</div>
+                  <div class="account-meta" style="margin-top:10px; font-size:1rem; color:var(--text); font-weight:700;">${escapeHtml(normalizeRoleLabel(user.role || "user"))}</div>
+                </div>
+                <div>
+                  <div class="label-caps">${escapeHtml(t.accountStorage)}</div>
+                  <div class="account-meta" style="margin-top:10px; font-size:1rem; color:var(--text); font-weight:700;">${Number(user.storage_bytes_used || 0).toLocaleString()} bytes</div>
+                  <div class="account-meta">${escapeHtml(restrictions)}</div>
+                </div>
+                <div>
+                  <div class="label-caps">${escapeHtml(t.accountLock)}</div>
+                  <div class="account-meta" style="margin-top:10px; font-size:1rem; color:var(--text); font-weight:700;">${escapeHtml(lockLabel)}</div>
+                </div>
+                <div>
+                  <div class="account-actions">
+                    <button class="action-btn" type="button" data-user-id="${escapeHtml(user.id)}" data-account-panel="reset" data-active="${view.panel === "reset" ? "true" : "false"}">${buttonLabel("key", t.resetButton)}</button>
+                    <button class="action-btn" type="button" data-user-id="${escapeHtml(user.id)}" data-account-panel="lock" data-active="${view.panel === "lock" ? "true" : "false"}">${buttonLabel("lock", t.lockButton)}</button>
+                    <button class="action-btn" type="button" data-user-id="${escapeHtml(user.id)}" data-account-panel="unlock" data-active="${view.panel === "unlock" ? "true" : "false"}">${buttonLabel("unlock", t.unlockButton)}</button>
+                    ${!isAdmin ? `<button class="action-btn danger" type="button" data-user-id="${escapeHtml(user.id)}" data-account-delete-toggle="true" data-active="${view.pendingDelete ? "true" : "false"}">${buttonLabel("trash", deleteLabel)}</button>` : ""}
+                  </div>
+                  ${view.panel === "reset" ? `
+                    <div class="account-form-row">
+                      <input class="mini-input flex" type="password" value="${escapeHtml(view.resetPassword)}" placeholder="${escapeHtml(t.newPasswordPlaceholder)}" data-user-id="${escapeHtml(user.id)}" data-account-field="resetPassword" />
+                      <button class="action-btn primary" type="button" data-user-id="${escapeHtml(user.id)}" data-account-submit="reset">${buttonLabel("key", t.savePassword)}</button>
+                    </div>
+                  ` : ""}
+                  ${view.panel === "lock" ? `
+                    <div class="account-form-row">
+                      <input class="mini-input flex" value="${escapeHtml(view.lockReason)}" placeholder="${escapeHtml(t.lockReasonPlaceholder)}" data-user-id="${escapeHtml(user.id)}" data-account-field="lockReason" />
+                      <input class="mini-input small" type="number" min="1" max="525600" value="${escapeHtml(view.lockDuration)}" placeholder="${escapeHtml(t.minutesPlaceholder)}" data-user-id="${escapeHtml(user.id)}" data-account-field="lockDuration" />
+                      <button class="action-btn" type="button" data-user-id="${escapeHtml(user.id)}" data-account-submit="lock">${buttonLabel("lock", t.applyLock)}</button>
+                    </div>
+                  ` : ""}
+                  ${view.panel === "unlock" ? `
+                    <div class="account-form-row">
+                      <input class="mini-input flex" value="${escapeHtml(view.unlockReason)}" placeholder="${escapeHtml(t.unlockReasonPlaceholder)}" data-user-id="${escapeHtml(user.id)}" data-account-field="unlockReason" />
+                      <button class="action-btn" type="button" data-user-id="${escapeHtml(user.id)}" data-account-submit="unlock">${buttonLabel("unlock", t.unlockAccount)}</button>
+                    </div>
+                  ` : ""}
+                  ${!isAdmin && view.pendingDelete ? `
+                    <div class="delete-confirm">
+                      <div class="delete-confirm-text">${escapeHtml(format(t.deleteWarning, { username: user.username }))}</div>
+                      <div class="account-form-row">
+                        <button class="action-btn" type="button" data-user-id="${escapeHtml(user.id)}" data-account-delete-cancel="true">${buttonLabel("shield", t.cancel)}</button>
+                        <button class="action-btn danger" type="button" data-user-id="${escapeHtml(user.id)}" data-account-delete-confirm="true">${buttonLabel("trash", t.permanentlyDelete)}</button>
+                      </div>
+                    </div>
+                  ` : ""}
+                </div>
+              </div>
+            </article>
+          `;
+        }).join("");
+      }
+
+      function renderAdminSection() {
+        const t = getCopy();
+        const runtime = getRuntimePresentation();
+        const expandedPanel = getExpandedAdminPanel();
+        const hasExpanded = !!expandedPanel;
+        const storageBadge = state.language === "es" ? "Información" : "Insights";
+        const eventsBadge = state.language === "es"
+          ? `${Math.min(state.events.length, 3)} recientes`
+          : `${Math.min(state.events.length, 3)} recent`;
+        const storageMarkup = `
+          <div class="expand-surface ${expandedPanel === "storage" ? "promoted" : hasExpanded ? "demoted" : ""}">
+            <div class="surface-head">
+              <div>
+                <h2 class="surface-title">${escapeHtml(t.storageInsightsTitle)}</h2>
+                <p class="surface-subtitle">${escapeHtml(t.storageSubtitle)}</p>
+              </div>
+              <div class="panel-meta">
+                <span class="panel-badge">${escapeHtml(storageBadge)}</span>
+                <button class="panel-toggle" type="button" data-panel-toggle="storage">${buttonLabel(expandedPanel === "storage" ? "shrink" : "expand", expandedPanel === "storage" ? t.collapse : t.expand)}</button>
+              </div>
+            </div>
+            <div class="log-card">${escapeHtml(buildStorageLog(t))}</div>
+          </div>
+        `;
+        const securityMarkup = `
+          <div class="expand-surface ${expandedPanel === "security" ? "promoted" : hasExpanded ? "demoted" : ""}">
+            <div class="surface-head">
+              <div>
+                <h2 class="surface-title">${escapeHtml(t.eventsTitle)}</h2>
+                <p class="surface-subtitle">${escapeHtml(t.securitySubtitle)}</p>
+              </div>
+              <div class="panel-meta">
+                <span class="panel-badge">${escapeHtml(eventsBadge)}</span>
+                <button class="panel-toggle" type="button" data-panel-toggle="security">${buttonLabel(expandedPanel === "security" ? "shrink" : "expand", expandedPanel === "security" ? t.collapse : t.expand)}</button>
+              </div>
+            </div>
+            <div class="log-card">${escapeHtml(buildEventsLog(t))}</div>
+          </div>
+        `;
+        const panelMarkup = expandedPanel === "security"
+          ? `${securityMarkup}${storageMarkup}`
+          : `${storageMarkup}${securityMarkup}`;
+        ui.adminSection.innerHTML = `
+          <div class="admin-surface">
+            <div class="admin-head-row">
+              <div>
+                <div class="admin-eyebrow">${escapeHtml(t.adminEyebrow)}</div>
+                <h1 class="admin-heading">${escapeHtml(t.adminTitle)}</h1>
+                <p class="admin-subheading">${escapeHtml(t.adminIntro)}</p>
+              </div>
+              <div class="surface-actions">
+                <button class="header-btn" type="button" data-admin-refresh="all">${buttonLabel("refresh", t.refreshAdmin)}</button>
+                <button class="header-btn" type="button" data-admin-refresh="events">${buttonLabel("alert", t.refreshEvents)}</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="runtime-surface">
+            <div class="surface-head">
+              <div>
+                <h2 class="surface-title">${escapeHtml(t.runtimeTitle)}</h2>
+                <p class="surface-subtitle">${escapeHtml(t.runtimeDesc)}</p>
+              </div>
+              <div class="status-pill ${runtime.key}"><span>${icon("circle")}</span><span>${escapeHtml(runtime.label)}</span></div>
+            </div>
+            <div class="runtime-stats">
+              <div class="stat-card"><div class="label-caps">${escapeHtml(t.runtimeHealth)}</div><div class="value">${escapeHtml(runtime.healthValue)}</div></div>
+              <div class="stat-card"><div class="label-caps">${escapeHtml(t.runtimeMode)}</div><div class="value">${escapeHtml(runtime.modeValue)}</div></div>
+              <div class="stat-card"><div class="label-caps">${escapeHtml(t.runtimeLlama)}</div><div class="value">${escapeHtml(runtime.llamaValue)}</div></div>
+              <div class="stat-card"><div class="label-caps">${escapeHtml(t.runtimeReason)}</div><div class="value">${escapeHtml(runtime.reasonValue)}</div></div>
+            </div>
+            <div class="runtime-actions">
+              <button class="runtime-btn" type="button" data-ai-action="refresh" data-tone="blue" data-spin="true" data-active="${state.pendingAiAction === "refresh" ? "true" : "false"}">${buttonLabel("refresh", t.runtimeRefresh)}</button>
+              <button class="runtime-btn" type="button" data-ai-action="toggle" data-tone="blue" data-effect="pop" data-active="${state.pendingAiAction === "toggle" ? "true" : "false"}">${buttonLabel("power", t.runtimeToggle)}</button>
+              <button class="runtime-btn" type="button" data-ai-action="start" data-tone="green" data-effect="pop" data-active="${state.pendingAiAction === "start" ? "true" : "false"}">${buttonLabel("play", t.runtimeStart)}</button>
+              <button class="runtime-btn" type="button" data-ai-action="stop" data-tone="red" data-effect="pop" data-active="${state.pendingAiAction === "stop" ? "true" : "false"}">${buttonLabel("square", t.runtimeStop)}</button>
+              <button class="runtime-btn" type="button" data-ai-action="restart" data-tone="blue" data-spin="true" data-active="${state.pendingAiAction === "restart" ? "true" : "false"}">${buttonLabel("rotate", t.runtimeRestart)}</button>
+              <button class="runtime-btn" type="button" data-ai-action="clear-override" data-tone="blue" data-effect="pop" data-active="${state.pendingAiAction === "clear-override" ? "true" : "false"}">${buttonLabel("settings", t.runtimeAuto)}</button>
+            </div>
+          </div>
+
+          <div class="accounts-surface">
+            <div class="accounts-toolbar">
+              <div>
+                <h2 class="surface-title">${escapeHtml(t.accountsTitle)}</h2>
+                <p class="surface-subtitle">${escapeHtml(t.accountsIntro)}</p>
+              </div>
+              <div class="search-wrap">
+                ${icon("search")}
+                <input id="accountsSearch" class="search-input" value="${escapeHtml(state.accountsQuery)}" placeholder="${escapeHtml(t.searchUsers)}" />
+              </div>
+            </div>
+            <div class="accounts-list">${renderAccountsMarkup(t)}</div>
+          </div>
+
+          <div class="panel-grid ${hasExpanded ? "has-expanded" : ""}">
+            ${panelMarkup}
+          </div>
+        `;
+      }
+
+      function renderPortal() {
+        if (!state.user) {
+          ui.authSection.classList.remove("hidden");
+          ui.portalSection.classList.add("hidden");
+          ui.adminSection.classList.add("hidden");
+          setHeaderContext();
+          return;
+        }
+        if (state.user.role !== "admin") {
+          state.adminVisible = false;
+        }
+        ui.authSection.classList.add("hidden");
+        setHeaderContext();
+        renderPortalSection();
+        if (state.user.role === "admin" && state.adminVisible) {
+          ui.portalSection.classList.add("hidden");
+          ui.adminSection.classList.remove("hidden");
+          renderAdminSection();
+          return;
+        }
+        ui.portalSection.classList.remove("hidden");
+        ui.adminSection.classList.add("hidden");
+      }
+
+      async function api(path, method = "GET", body = undefined) {
+        const cfg = { method, credentials: "same-origin", headers: {} };
+        if (body !== undefined) {
+          cfg.headers["Content-Type"] = "application/json";
+          cfg.body = JSON.stringify(body);
+        }
+        const response = await fetch(APP_API + path, cfg);
+        const text = await response.text();
+        let payload = {};
+        try { payload = text ? JSON.parse(text) : {}; } catch { payload = {}; }
+        if (!response.ok) {
+          const error = new Error(payload.detail || payload.message || text || `Request failed (${response.status})`);
+          error.status = response.status;
+          error.payload = payload;
+          throw error;
+        }
+        return payload;
+      }
+
+      async function refreshSession() {
+        try {
+          const payload = await api("/auth/me");
+          state.user = payload.user || null;
+          if (state.user) {
+            syncPreferencesFromUser(state.user);
+          }
+        } catch {
+          state.user = null;
+        }
+        if (!state.user) {
+          state.adminVisible = false;
+          state.aiStatus = null;
+          state.users = [];
+          state.events = [];
+          state.insights = null;
+          state.accountsQuery = "";
+          state.accountUi = {};
+        }
+        renderStaticText();
+        renderAuthScreen();
+        renderPortal();
+      }
+
+      function validateSignupForm() {
+        const t = getCopy();
+        const username = (ui.signupUser.value || "").trim();
+        const password = ui.signupPass.value || "";
+        const confirm = ui.signupConfirm.value || "";
+        let valid = true;
+        ui.signupError.textContent = "";
+        ui.passwordInlineError.textContent = "";
+        ui.confirmInlineError.textContent = "";
+        if (!username) {
+          ui.signupError.textContent = t.usernameRequired;
+          valid = false;
+        }
+        if (!password) {
+          ui.passwordInlineError.textContent = t.passwordRequired;
+          valid = false;
+        } else if (password.length < 4) {
+          ui.passwordInlineError.textContent = t.passwordTooShort;
+          valid = false;
+        }
+        if (confirm !== password) {
+          ui.confirmInlineError.textContent = t.passwordMismatch;
+          valid = false;
+        }
+        return valid;
+      }
+
+      function createRandomString(length = 8) {
+        const alphabet = "abcdefghjkmnpqrstuvwxyz23456789";
+        const chars = [];
+        if (window.crypto && typeof window.crypto.getRandomValues === "function") {
+          const values = new Uint8Array(length);
+          window.crypto.getRandomValues(values);
+          for (const value of values) {
+            chars.push(alphabet[value % alphabet.length]);
+          }
+          return chars.join("");
+        }
+        for (let i = 0; i < length; i += 1) {
+          chars.push(alphabet[Math.floor(Math.random() * alphabet.length)]);
+        }
+        return chars.join("");
+      }
+
+      function createGuestCredentials() {
+        return {
+          username: `guest-${Date.now().toString(36)}-${createRandomString(6)}`,
+          password: `guest-${createRandomString(18)}${createRandomString(6)}`
+        };
+      }
+
+      async function continueAsGuest() {
+        const t = getCopy();
+        ui.guestError.textContent = "";
+        ui.guestLoginBtn.disabled = true;
+        ui.guestLoginBtn.textContent = t.guestCreating;
+        try {
+          let lastError = null;
+          for (let attempt = 0; attempt < 5; attempt += 1) {
+            const creds = createGuestCredentials();
+            try {
+              await api("/auth/signup", "POST", {
+                username: creds.username,
+                password: creds.password,
+                role: "guest",
+                preferred_language: state.language,
+                preferred_theme: "light"
+              });
+              await api("/auth/login", "POST", { username: creds.username, password: creds.password });
+              ui.loginUser.value = "";
+              ui.loginPass.value = "";
+              await refreshSession();
+              return;
+            } catch (error) {
+              lastError = error;
+              if (Number(error?.status || 0) === 409) continue;
+              throw error;
+            }
+          }
+          throw lastError || new Error(t.guestUnavailable);
+        } catch (error) {
+          ui.guestError.textContent = error instanceof Error ? error.message : t.guestFailed;
+        } finally {
+          ui.guestLoginBtn.disabled = false;
+          ui.guestLoginBtn.textContent = t.guestButton;
+        }
+      }
+
+      async function loadAdminData() {
+        if (!state.user || state.user.role !== "admin") return;
+        const [usersPayload, eventsPayload, insightsPayload] = await Promise.all([
+          api("/admin/users").catch(() => ({ users: [] })),
+          api("/admin/security-events?limit=120").catch(() => ({ events: [] })),
+          api("/admin/storage-insights").catch(() => ({}))
+        ]);
+        state.users = Array.isArray(usersPayload.users) ? usersPayload.users : [];
+        state.events = Array.isArray(eventsPayload.events) ? eventsPayload.events : [];
+        state.insights = insightsPayload || null;
+        const nextUi = {};
+        for (const user of state.users) {
+          if (state.accountUi[user.id]) {
+            nextUi[user.id] = state.accountUi[user.id];
+          }
+        }
+        state.accountUi = nextUi;
+        if (state.adminVisible) {
+          renderAdminSection();
+        }
+      }
+
+      async function loadAiStatus() {
+        const t = getCopy();
+        try {
+          const response = await fetch(AI_ADMIN_STATUS_API, { method: "GET" });
+          if (!response.ok) throw new Error("status failed");
+          state.aiStatus = await response.json();
+        } catch {
+          state.aiStatus = {
+            health: t.runtimeUnknown,
+            override_mode: "auto",
+            llama_state: t.runtimeUnknown,
+            status_reason: t.aiRuntimeUnavailable,
+            enabled: false
+          };
+        }
+        if (state.adminVisible) {
+          renderAdminSection();
+        }
+      }
+
+      async function runAiAction(action) {
+        const t = getCopy();
+        const startedAt = Date.now();
+        state.pendingAiAction = action;
+        renderAdminSection();
+        try {
+          if (action === "refresh") {
+            await loadAiStatus();
+            return;
+          }
+          if (action === "toggle") {
+            const enabled = !(state.aiStatus && state.aiStatus.enabled);
+            const response = await fetch(AI_ADMIN_API, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ enabled })
+            });
+            if (!response.ok) throw new Error("toggle failed");
+            await loadAiStatus();
+            return;
+          }
+          const response = await fetch(`${AI_ADMIN_RUNTIME_API}/${action}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" }
+          });
+          if (!response.ok) throw new Error("runtime failed");
+          await loadAiStatus();
+        } catch (error) {
+          alert(error instanceof Error ? error.message : t.aiActionFailed);
+        } finally {
+          const elapsed = Date.now() - startedAt;
+          if (elapsed < 420) {
+            await new Promise((resolve) => setTimeout(resolve, 420 - elapsed));
+          }
+          state.pendingAiAction = null;
+          if (state.adminVisible) {
+            renderAdminSection();
+          }
+        }
+      }
+
+      async function toggleAdminSection() {
+        if (!state.user || state.user.role !== "admin") return;
+        state.adminVisible = !state.adminVisible;
+        renderPortal();
+        if (state.adminVisible) {
+          await Promise.all([loadAdminData(), loadAiStatus()]);
+        }
+      }
+
+      function updateAccountField(uid, field, value) {
+        const view = getAccountUi(uid);
+        view[field] = value;
+      }
+
+      async function handleAccountSubmit(uid, action) {
+        const t = getCopy();
+        const view = getAccountUi(uid);
+        if (action === "reset") {
+          if ((view.resetPassword || "").length < 4) {
+            alert(t.passwordTooShort);
+            return;
+          }
+          try {
+            await api(`/admin/users/${encodeURIComponent(uid)}/reset-password`, "POST", { password: view.resetPassword });
+            view.resetPassword = "";
+            view.panel = null;
+            await loadAdminData();
+          } catch (error) {
+            alert(error instanceof Error ? error.message : t.resetFailed);
+          }
+          return;
+        }
+        if (action === "lock") {
+          const reason = String(view.lockReason || "").trim();
+          const duration = Number(view.lockDuration || "30");
+          if (!reason) {
+            alert(t.lockReasonRequired);
+            return;
+          }
+          try {
+            await api(`/admin/users/${encodeURIComponent(uid)}/lock`, "POST", {
+              reason,
+              duration_minutes: Math.max(1, Math.min(525600, Number.isFinite(duration) ? duration : 30))
+            });
+            view.lockReason = "";
+            view.lockDuration = "30";
+            view.panel = null;
+            await loadAdminData();
+          } catch (error) {
+            alert(error instanceof Error ? error.message : t.lockFailed);
+          }
+          return;
+        }
+        if (action === "unlock") {
+          try {
+            await api(`/admin/users/${encodeURIComponent(uid)}/unlock`, "POST", { reason: view.unlockReason || "" });
+            view.unlockReason = "";
+            view.panel = null;
+            await loadAdminData();
+          } catch (error) {
+            alert(error instanceof Error ? error.message : t.unlockFailed);
+          }
+        }
+      }
+
+      async function handleDelete(uid) {
+        const t = getCopy();
+        try {
+          await api(`/admin/users/${encodeURIComponent(uid)}/delete`, "POST");
+          delete state.accountUi[uid];
+          await loadAdminData();
+        } catch (error) {
+          alert(error instanceof Error ? error.message : t.deleteFailed);
+        }
+      }
+
+      ui.langToggleBtn.addEventListener("click", () => {
+        const nextLanguage = state.language === "en" ? "es" : "en";
+        setLanguage(nextLanguage, !!state.user);
+      });
+
+      ui.themeToggleBtn.addEventListener("click", () => {
+        applyTheme(state.theme === "dark" ? "light" : "dark");
+        if (state.user) {
+          persistPreferences({ preferred_theme: state.theme }).catch(() => {});
+        }
+        renderPortal();
+      });
+
+      document.querySelectorAll("[data-screen]").forEach((button) => {
+        button.addEventListener("click", () => {
+          setScreen(button.getAttribute("data-screen") || "welcome");
+        });
+      });
+
+      ui.prefSpanishBtn.addEventListener("click", () => setLanguage("es", false));
+      ui.prefEnglishBtn.addEventListener("click", () => setLanguage("en", false));
+      ui.themeLightBtn.addEventListener("click", () => setCreateTheme("light"));
+      ui.themeDarkBtn.addEventListener("click", () => setCreateTheme("dark"));
+
+      ui.signupForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const t = getCopy();
+        if (!validateSignupForm()) return;
+        ui.signupError.textContent = "";
+        try {
+          await api("/auth/signup", "POST", {
+            username: ui.signupUser.value,
+            password: ui.signupPass.value,
+            role: "user",
+            preferred_language: state.preferredLanguage,
+            preferred_theme: state.theme
+          });
+          await api("/auth/login", "POST", { username: ui.signupUser.value, password: ui.signupPass.value });
+          ui.signupUser.value = "";
+          ui.signupPass.value = "";
+          ui.signupConfirm.value = "";
+          writeLocalPreferences();
+          await refreshSession();
+        } catch (error) {
+          ui.signupError.textContent = error instanceof Error ? error.message : t.signupFailed;
+        }
+      });
+
+      ui.loginForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const t = getCopy();
+        ui.loginError.textContent = "";
+        try {
+          await api("/auth/login", "POST", { username: ui.loginUser.value, password: ui.loginPass.value });
+          ui.loginUser.value = "";
+          ui.loginPass.value = "";
+          await refreshSession();
+        } catch (error) {
+          ui.loginError.textContent = error instanceof Error ? error.message : t.loginFailed;
+        }
+      });
+
+      ui.guestLoginBtn.addEventListener("click", () => {
+        continueAsGuest();
+      });
+
+      ui.logoutBtn.addEventListener("click", async () => {
+        try { await api("/auth/logout", "POST"); } catch {}
+        state.user = null;
+        state.adminVisible = false;
+        state.users = [];
+        state.events = [];
+        state.insights = null;
+        state.aiStatus = null;
+        renderStaticText();
+        renderPortal();
+        setScreen("welcome");
+      });
+
+      ui.adminToggleBtn.addEventListener("click", () => {
+        toggleAdminSection().catch((error) => {
+          alert(error instanceof Error ? error.message : "Admin toggle failed");
+        });
+      });
+
+      ui.adminSection.addEventListener("input", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement)) return;
+        if (target.id === "accountsSearch") {
+          state.accountsQuery = target.value;
+          renderAdminSection();
+          return;
+        }
+        const uid = target.getAttribute("data-user-id");
+        const field = target.getAttribute("data-account-field");
+        if (!uid || !field) return;
+        updateAccountField(uid, field, target.value);
+      });
+
+      ui.adminSection.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        const button = target.closest("button");
+        if (!button) return;
+
+        const refreshType = button.getAttribute("data-admin-refresh");
+        if (refreshType === "all") {
+          await Promise.all([loadAdminData(), loadAiStatus()]);
+          return;
+        }
+        if (refreshType === "events") {
+          await loadAdminData();
+          return;
+        }
+
+        const panelToggle = button.getAttribute("data-panel-toggle");
+        if (panelToggle === "storage") {
+          const nextValue = !state.storageExpanded;
+          state.storageExpanded = nextValue;
+          state.securityExpanded = false;
+          renderAdminSection();
+          return;
+        }
+        if (panelToggle === "security") {
+          const nextValue = !state.securityExpanded;
+          state.securityExpanded = nextValue;
+          state.storageExpanded = false;
+          renderAdminSection();
+          return;
+        }
+
+        const aiAction = button.getAttribute("data-ai-action");
+        if (aiAction) {
+          await runAiAction(aiAction);
+          return;
+        }
+
+        const uid = button.getAttribute("data-user-id");
+        if (!uid) return;
+        const panel = button.getAttribute("data-account-panel");
+        if (panel) {
+          const view = getAccountUi(uid);
+          view.pendingDelete = false;
+          view.panel = view.panel === panel ? null : panel;
+          renderAdminSection();
+          return;
+        }
+        if (button.hasAttribute("data-account-delete-toggle")) {
+          const view = getAccountUi(uid);
+          view.panel = null;
+          view.pendingDelete = !view.pendingDelete;
+          renderAdminSection();
+          return;
+        }
+        if (button.hasAttribute("data-account-delete-cancel")) {
+          const view = getAccountUi(uid);
+          view.pendingDelete = false;
+          renderAdminSection();
+          return;
+        }
+        if (button.hasAttribute("data-account-delete-confirm")) {
+          await handleDelete(uid);
+          return;
+        }
+        const submitAction = button.getAttribute("data-account-submit");
+        if (submitAction) {
+          await handleAccountSubmit(uid, submitAction);
+        }
+      });
+
+      readLocalPreferences();
+      applyTheme(state.theme || "light");
+      renderStaticText();
+      setScreen("welcome");
+      refreshSession();
+    </script>
+  </body>
+</html>
+
+

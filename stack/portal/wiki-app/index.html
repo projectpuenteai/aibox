@@ -1,0 +1,144 @@
+﻿<!-- Lightweight shell page that embeds the local Kiwix wiki in an iframe. -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Wiki</title>
+  <style>
+    :root {
+      --line: #d8deea;
+      --bg: #f4f7fd;
+      --panel: #ffffff;
+      --text: #112038;
+      --accent: #1d5fd1;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .shell {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+    .bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 14px;
+    }
+    .title {
+      font-weight: 700;
+    }
+    .sub {
+      color: #5a6780;
+    }
+    .actions {
+      display: flex;
+      gap: 8px;
+    }
+    a.btn {
+      text-decoration: none;
+      border: 1px solid var(--line);
+      background: #f8faff;
+      color: var(--text);
+      border-radius: 8px;
+      padding: 7px 12px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    a.btn.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    iframe {
+      width: 100%;
+      height: 100%;
+      border: 0;
+      background: #fff;
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="bar">
+      <div class="left">
+        <span id="pageTitle" class="title">Wiki</span>
+        <span id="pageSub" class="sub">Kiwix</span>
+      </div>
+      <div class="actions">
+        <a id="openLink" class="btn" href="/wiki/" target="_blank" rel="noopener">Open Full Page</a>
+        <a id="homeLink" class="btn primary" href="/">Back to Home</a>
+      </div>
+    </header>
+    <iframe id="wikiFrame" src="/wiki/" title="Kiwix Wiki"></iframe>
+  </main>
+  <script>
+    const STORAGE_KEYS = { language: "puente-language" };
+    const copy = {
+      en: {
+        title: "Wiki",
+        subtitle: "Kiwix",
+        openFullPage: "Open Full Page",
+        backToHome: "Back to Home",
+        iframeTitle: "Kiwix Wiki"
+      },
+      es: {
+        title: "Wiki",
+        subtitle: "Kiwix",
+        openFullPage: "Abrir página completa",
+        backToHome: "Volver al inicio",
+        iframeTitle: "Wiki de Kiwix"
+      }
+    };
+
+    function getLanguage() {
+      try {
+        const value = localStorage.getItem(STORAGE_KEYS.language);
+        return value === "es" ? "es" : "en";
+      } catch {
+        return "en";
+      }
+    }
+
+    function applyLanguage(language = getLanguage()) {
+      const t = copy[language] || copy.en;
+      document.documentElement.lang = language;
+      document.title = t.title;
+      document.getElementById("pageTitle").textContent = t.title;
+      document.getElementById("pageSub").textContent = t.subtitle;
+      document.getElementById("openLink").textContent = t.openFullPage;
+      document.getElementById("homeLink").textContent = t.backToHome;
+      document.getElementById("wikiFrame").setAttribute("title", t.iframeTitle);
+    }
+
+    async function syncLanguageFromUser() {
+      try {
+        const response = await fetch("/ai/api/v1/app/auth/me", { credentials: "same-origin" });
+        if (!response.ok) return;
+        const data = await response.json();
+        const language = data?.user?.preferred_language === "es" ? "es" : getLanguage();
+        try { localStorage.setItem(STORAGE_KEYS.language, language); } catch {}
+        applyLanguage(language);
+      } catch {}
+    }
+
+    applyLanguage();
+    syncLanguageFromUser();
+  </script>
+</body>
+</html>
+

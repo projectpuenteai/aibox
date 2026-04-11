@@ -1,0 +1,47 @@
+# Python
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+
+# Node / frontend build artifacts
+**/node_modules/
+
+# Local env overrides
+**/.env
+**/.env.*
+!stack/.env.example
+
+# Runtime data and local state
+backend-data/**
+!backend-data/
+!backend-data/.gitkeep
+kolibri-data/**
+!kolibri-data/
+models/**
+!models/
+!models/.gitkeep
+export/backend-data/**
+!export/backend-data/
+!export/backend-data/.gitkeep
+export/models/**
+!export/models/
+!export/models/.gitkeep
+runtime/**
+aibox/**
+kiwix/**
+chroma_db.zip
+
+# Caches
+**/.cache/
+
+# Logs and scratch files
+*.log
+*.tmp
+*.bak
+stack/Caddyfile.dir-backup-*/
+backend-data/_tmp_*
+
+# OS junk
+desktop.ini
+Thumbs.db
+.DS_Store

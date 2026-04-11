@@ -1,0 +1,50 @@
+:80 {
+  # ---- Reverse proxy routes ----
+  handle_path /chat/* {
+    reverse_proxy chat:3000
+  }
+
+  redir /wiki /wiki/
+
+  handle /wiki/* {
+    reverse_proxy kiwix:8080
+  }
+
+  @learn_root path /learn /learn/
+  redir @learn_root /kolibri/
+  @learn_sub path_regexp learn_sub ^/learn/(.*)$
+  redir @learn_sub /kolibri/{re.learn_sub.1}
+
+  redir /kolibri /kolibri/
+
+  handle_path /kolibri/* {
+    reverse_proxy kolibri:8080 {
+      header_down Location ^/(.*)$ /kolibri/$1
+    }
+  }
+
+  # Backward compatibility: if Kolibri-rooted locale links are hit directly,
+  # send users back under the /kolibri prefix.
+  @kolibri_locale {
+    path_regexp kolibri_locale ^/[a-z]{2}(?:-[A-Za-z0-9]+)?(?:/.*)?$
+    not path /ai /ai/* /chat /chat/* /wiki /wiki/* /learn /learn/* /kolibri /kolibri/*
+  }
+  handle @kolibri_locale {
+    redir * /kolibri{uri}
+  }
+
+  # Kolibri static/content endpoints may still be rooted at /
+  handle /api/* {
+    reverse_proxy kolibri:8080
+  }
+  handle /static/* {
+    reverse_proxy kolibri:8080
+  }
+  handle /content/* {
+    reverse_proxy kolibri:8080
+  }
+
+  # ---- Portal homepage fallback ----
+  root * /srv/portal
+  file_server
+}
