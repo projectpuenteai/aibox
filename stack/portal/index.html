@@ -1175,9 +1175,70 @@
           padding: 18px 20px;
         }
       }
+
+      /* ── Loading overlay ─────────────────────────────── */
+      #loading-overlay {
+        position: fixed; inset: 0; z-index: 9999;
+        background: #eaf2fb;
+        display: none;
+        align-items: center; justify-content: center;
+        font-family: Aptos, "Segoe UI", Tahoma, sans-serif;
+      }
+      .loading-panel {
+        background: #ffffff;
+        border-radius: 20px;
+        padding: 48px 40px;
+        box-shadow: 0 24px 70px rgba(27,76,138,0.12);
+        border: 1px solid #d9e5f3;
+        display: flex; flex-direction: column;
+        align-items: center; gap: 20px;
+        max-width: 400px; width: 90%;
+        text-align: center;
+      }
+      .loading-logo { width: 96px; height: 96px; border-radius: 50%; }
+      .loading-title { margin: 0; font-size: 1.4rem; font-weight: 700; color: #0f172a; }
+      .loading-spinner {
+        width: 44px; height: 44px;
+        border: 4px solid #dbe4ef;
+        border-top-color: #2f74db;
+        border-radius: 50%;
+        animation: ld-spin 0.9s linear infinite;
+      }
+      @keyframes ld-spin { to { transform: rotate(360deg); } }
+      .loading-text {
+        font-size: 0.95rem; color: #475569; margin: 0; line-height: 1.6;
+        animation: ld-pulse 2s ease-in-out infinite;
+      }
+      @keyframes ld-pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+      .loading-progress-track {
+        width: 100%; height: 8px;
+        background: #dbe4ef; border-radius: 99px; overflow: hidden;
+      }
+      .loading-progress-fill {
+        height: 100%;
+        background: linear-gradient(90deg, #6aa2f0, #2f74db);
+        border-radius: 99px; width: 0%;
+        transition: width 0.5s ease;
+      }
+      .loading-pct { font-size: 0.85rem; color: #64748b; font-weight: 600; }
     </style>
   </head>
   <body>
+    <div id="loading-overlay">
+      <div class="loading-panel">
+        <img src="/assets/circlelogo.png" class="loading-logo" alt="Project Puente AI">
+        <h1 class="loading-title">Project Puente AI</h1>
+        <div class="loading-spinner"></div>
+        <p class="loading-text">
+          Por favor espera... sistema cargando<br>
+          Please wait... system loading
+        </p>
+        <div class="loading-progress-track">
+          <div class="loading-progress-fill" id="loadingProgressFill"></div>
+        </div>
+        <div class="loading-pct" id="loadingPct">0%</div>
+      </div>
+    </div>
     <div class="app">
       <div class="outer-page">
         <div class="glow a"></div>
@@ -1731,6 +1792,29 @@
         noAccountsFound: "No users found.",
         storageSubtitle: "Important information in a readable system log style.",
         securitySubtitle: "Recent moderation and account actions.",
+        analyticsTitle: "Usage Analytics",
+        analyticsSubtitle: "Daily impact totals across accounts, chat, docs, wiki, and learn.",
+        analyticsDateFrom: "From",
+        analyticsDateTo: "To",
+        analyticsExportCsv: "Export CSV",
+        analyticsExportJson: "Export JSON",
+        analyticsNoData: "No analytics data yet for this range.",
+        analyticsActiveUsers: "Active Users",
+        analyticsAccountsCreated: "Accounts Created",
+        analyticsChatsStarted: "Chats Started",
+        analyticsCompletions: "Completed Chats",
+        analyticsStops: "Stopped Chats",
+        analyticsDocsCreated: "Docs Created",
+        analyticsDocsUpdated: "Docs Updated",
+        analyticsWikiOpens: "Wiki Opens",
+        analyticsLearnOpens: "Learn Opens",
+        analyticsDailyLog: "Daily Activity Log",
+        analyticsBreakdowns: "Breakdowns",
+        analyticsBySurface: "By Surface",
+        analyticsByRole: "By Role",
+        analyticsByLanguage: "By Language",
+        analyticsExportFailed: "Analytics export failed.",
+        analyticsLoadFailed: "Analytics failed to load.",
         expand: "Expand",
         collapse: "Collapse",
         lockNone: "No",
@@ -1796,6 +1880,29 @@
         storageSubtitle: "Información importante en un formato legible tipo registro del sistema.",
         eventsTitle: "Eventos de seguridad / abuso",
         securitySubtitle: "Acciones recientes de moderación y cuentas.",
+        analyticsTitle: "Analíticas de uso",
+        analyticsSubtitle: "Totales diarios de impacto en cuentas, chat, docs, wiki y aprender.",
+        analyticsDateFrom: "Desde",
+        analyticsDateTo: "Hasta",
+        analyticsExportCsv: "Exportar CSV",
+        analyticsExportJson: "Exportar JSON",
+        analyticsNoData: "Todavía no hay datos analíticos para este rango.",
+        analyticsActiveUsers: "Usuarios activos",
+        analyticsAccountsCreated: "Cuentas creadas",
+        analyticsChatsStarted: "Chats iniciados",
+        analyticsCompletions: "Chats completados",
+        analyticsStops: "Chats detenidos",
+        analyticsDocsCreated: "Docs creados",
+        analyticsDocsUpdated: "Docs actualizados",
+        analyticsWikiOpens: "Aperturas de Wiki",
+        analyticsLearnOpens: "Aperturas de Aprender",
+        analyticsDailyLog: "Registro diario de actividad",
+        analyticsBreakdowns: "Desgloses",
+        analyticsBySurface: "Por superficie",
+        analyticsByRole: "Por rol",
+        analyticsByLanguage: "Por idioma",
+        analyticsExportFailed: "La exportación analítica falló.",
+        analyticsLoadFailed: "No se pudieron cargar las analíticas.",
         expand: "Expandir",
         collapse: "Contraer",
         lockNone: "No",
@@ -1923,12 +2030,20 @@
         users: [],
         events: [],
         insights: null,
+        analyticsSummary: null,
+        analyticsTimeseries: [],
+        analyticsDateFrom: "",
+        analyticsDateTo: "",
+        analyticsError: "",
         accountsQuery: "",
         storageExpanded: false,
         securityExpanded: false,
         pendingAiAction: null,
         accountUi: {}
       };
+      const ADMIN_AUTO_REFRESH_MS = 5000;
+      let adminAutoRefreshTimer = null;
+      let adminAutoRefreshInFlight = false;
 
       function getCopy() {
         return copy[state.language] || copy.en;
@@ -1953,6 +2068,91 @@
 
       function buttonLabel(iconName, label) {
         return `<span class="btn-inline"><span class="btn-icon">${icon(iconName)}</span><span>${escapeHtml(label)}</span></span>`;
+      }
+
+      function formatNumber(value) {
+        return Number(value || 0).toLocaleString();
+      }
+
+      function isoDateOffset(days) {
+        const value = new Date();
+        value.setDate(value.getDate() + days);
+        return value.toISOString().slice(0, 10);
+      }
+
+      function ensureAnalyticsRange() {
+        if (!state.analyticsDateTo) {
+          state.analyticsDateTo = isoDateOffset(0);
+        }
+        if (!state.analyticsDateFrom) {
+          state.analyticsDateFrom = isoDateOffset(-13);
+        }
+      }
+
+      function analyticsBreakdownLines(items, keyName) {
+        if (!Array.isArray(items) || !items.length) return ["- none"];
+        return items.map((item) => `- ${item[keyName] || "unknown"}: ${formatNumber(item.value)}`);
+      }
+
+      function buildAnalyticsDailyLog(t) {
+        if (!Array.isArray(state.analyticsTimeseries) || !state.analyticsTimeseries.length) {
+          return t.analyticsNoData;
+        }
+        return state.analyticsTimeseries.map((row) => {
+          return [
+            `[${row.day || "unknown"}] active=${formatNumber(row.active_users)}`,
+            `accounts=${formatNumber(row.accounts_created)} logins=${formatNumber(row.logins_succeeded)} chats=${formatNumber(row.chat_sessions_created)} complete=${formatNumber(row.chat_completion_succeeded)} stopped=${formatNumber(row.chat_completion_stopped)}`,
+            `docs_created=${formatNumber(row.documents_created)} docs_updated=${formatNumber(row.documents_updated)} docs_deleted=${formatNumber(row.documents_deleted)} docs_restored=${formatNumber(row.documents_restored)} wiki=${formatNumber(row.wiki_shell_open)} learn=${formatNumber(row.learn_shell_open)}`
+          ].join("\n");
+        }).join("\n\n");
+      }
+
+      function buildAnalyticsBreakdowns(t) {
+        const summary = state.analyticsSummary || {};
+        return [
+          t.analyticsBySurface,
+          ...analyticsBreakdownLines(summary.by_surface, "surface"),
+          "",
+          t.analyticsByRole,
+          ...analyticsBreakdownLines(summary.by_role, "role"),
+          "",
+          t.analyticsByLanguage,
+          ...analyticsBreakdownLines(summary.by_language, "language")
+        ].join("\n");
+      }
+
+      function postAnalyticsEvent(eventName, surface, metadata = {}) {
+        const payload = JSON.stringify({ event_name: eventName, surface, metadata });
+        try {
+          if (navigator.sendBeacon) {
+            const blob = new Blob([payload], { type: "application/json" });
+            if (navigator.sendBeacon(`${APP_API}/analytics/events`, blob)) {
+              return;
+            }
+          }
+        } catch {}
+        fetch(`${APP_API}/analytics/events`, {
+          method: "POST",
+          credentials: "same-origin",
+          keepalive: true,
+          headers: { "Content-Type": "application/json" },
+          body: payload
+        }).catch(() => {});
+      }
+
+      function stopAdminAutoRefresh() {
+        if (adminAutoRefreshTimer) {
+          clearInterval(adminAutoRefreshTimer);
+          adminAutoRefreshTimer = null;
+        }
+      }
+
+      function syncAdminAutoRefresh() {
+        stopAdminAutoRefresh();
+        if (!state.user || state.user.role !== "admin" || !state.adminVisible) return;
+        adminAutoRefreshTimer = setInterval(() => {
+          refreshAdminConsole().catch(() => {});
+        }, ADMIN_AUTO_REFRESH_MS);
       }
 
       function readLocalPreferences() {
@@ -2167,10 +2367,10 @@
       function renderPortalSection() {
         const t = getCopy();
         const cards = [
-          { href: "/ai/", iconName: "messageSquare", title: t.toolChatTitle, body: t.toolChatDesc },
-          { href: "/docs/", iconName: "fileText", title: t.toolDocsTitle, body: t.toolDocsDesc },
-          { href: "/wiki-app/", iconName: "bookOpen", title: t.toolWikiTitle, body: t.toolWikiDesc },
-          { href: "/learn-app/", iconName: "graduationCap", title: t.toolLearnTitle, body: t.toolLearnDesc }
+          { id: "chat", href: "/ai/", iconName: "messageSquare", title: t.toolChatTitle, body: t.toolChatDesc },
+          { id: "docs", href: "/docs/", iconName: "fileText", title: t.toolDocsTitle, body: t.toolDocsDesc },
+          { id: "wiki", href: "/wiki-app/", iconName: "bookOpen", title: t.toolWikiTitle, body: t.toolWikiDesc },
+          { id: "learn", href: "/learn-app/", iconName: "graduationCap", title: t.toolLearnTitle, body: t.toolLearnDesc }
         ];
         ui.portalSection.innerHTML = `
           <div class="portal-surface">
@@ -2180,7 +2380,7 @@
           </div>
           <div class="portal-tool-grid">
             ${cards.map((card) => `
-              <a class="portal-tool-card" href="${card.href}">
+              <a class="portal-tool-card" href="${card.href}" data-tool-id="${card.id}">
                 <div class="portal-tool-inner">
                   <div class="portal-tool-icon">${icon(card.iconName)}</div>
                   <div class="portal-tool-title">${escapeHtml(card.title)}</div>
@@ -2312,6 +2512,50 @@
         }).join("\n\n");
       }
 
+      function buildAnalyticsMarkup(t) {
+        const analyticsTotals = (state.analyticsSummary && state.analyticsSummary.totals) || {};
+        return `
+          <div class="expand-surface">
+            <div class="surface-head">
+              <div>
+                <h2 class="surface-title">${escapeHtml(t.analyticsTitle)}</h2>
+                <p class="surface-subtitle">${escapeHtml(t.analyticsSubtitle)}</p>
+              </div>
+              <div class="panel-meta">
+                <label class="label-caps" for="adminAnalyticsFrom">${escapeHtml(t.analyticsDateFrom)}</label>
+                <input id="adminAnalyticsFrom" class="mini-input" type="date" value="${escapeHtml(state.analyticsDateFrom)}" />
+                <label class="label-caps" for="adminAnalyticsTo">${escapeHtml(t.analyticsDateTo)}</label>
+                <input id="adminAnalyticsTo" class="mini-input" type="date" value="${escapeHtml(state.analyticsDateTo)}" />
+                <button class="action-btn" type="button" data-analytics-export="csv">${buttonLabel("barChart", t.analyticsExportCsv)}</button>
+                <button class="action-btn" type="button" data-analytics-export="json">${buttonLabel("barChart", t.analyticsExportJson)}</button>
+              </div>
+            </div>
+            ${state.analyticsError ? `<div class="empty-note" style="margin-top:14px;">${escapeHtml(state.analyticsError)}</div>` : ""}
+            <div class="runtime-stats">
+              <div class="stat-card"><div class="label-caps">${escapeHtml(t.analyticsActiveUsers)}</div><div class="value">${formatNumber(analyticsTotals.active_users)}</div></div>
+              <div class="stat-card"><div class="label-caps">${escapeHtml(t.analyticsAccountsCreated)}</div><div class="value">${formatNumber(analyticsTotals.accounts_created)}</div></div>
+              <div class="stat-card"><div class="label-caps">${escapeHtml(t.analyticsChatsStarted)}</div><div class="value">${formatNumber(analyticsTotals.chat_sessions_created)}</div></div>
+              <div class="stat-card"><div class="label-caps">${escapeHtml(t.analyticsCompletions)}</div><div class="value">${formatNumber(analyticsTotals.chat_completion_succeeded)}</div></div>
+              <div class="stat-card"><div class="label-caps">${escapeHtml(t.analyticsStops)}</div><div class="value">${formatNumber(analyticsTotals.chat_completion_stopped)}</div></div>
+              <div class="stat-card"><div class="label-caps">${escapeHtml(t.analyticsDocsCreated)}</div><div class="value">${formatNumber(analyticsTotals.documents_created)}</div></div>
+              <div class="stat-card"><div class="label-caps">${escapeHtml(t.analyticsDocsUpdated)}</div><div class="value">${formatNumber(analyticsTotals.documents_updated)}</div></div>
+              <div class="stat-card"><div class="label-caps">${escapeHtml(t.analyticsWikiOpens)}</div><div class="value">${formatNumber(analyticsTotals.wiki_shell_open)}</div></div>
+              <div class="stat-card"><div class="label-caps">${escapeHtml(t.analyticsLearnOpens)}</div><div class="value">${formatNumber(analyticsTotals.learn_shell_open)}</div></div>
+            </div>
+            <div class="panel-grid" style="margin-top:20px;">
+              <div>
+                <div class="label-caps">${escapeHtml(t.analyticsDailyLog)}</div>
+                <div class="log-card">${escapeHtml(buildAnalyticsDailyLog(t))}</div>
+              </div>
+              <div>
+                <div class="label-caps">${escapeHtml(t.analyticsBreakdowns)}</div>
+                <div class="log-card">${escapeHtml(buildAnalyticsBreakdowns(t))}</div>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
       function getExpandedAdminPanel() {
         if (state.storageExpanded) return "storage";
         if (state.securityExpanded) return "security";
@@ -2395,6 +2639,7 @@
       }
 
       function renderAdminSection() {
+        ensureAnalyticsRange();
         const t = getCopy();
         const runtime = getRuntimePresentation();
         const expandedPanel = getExpandedAdminPanel();
@@ -2444,12 +2689,10 @@
                 <h1 class="admin-heading">${escapeHtml(t.adminTitle)}</h1>
                 <p class="admin-subheading">${escapeHtml(t.adminIntro)}</p>
               </div>
-              <div class="surface-actions">
-                <button class="header-btn" type="button" data-admin-refresh="all">${buttonLabel("refresh", t.refreshAdmin)}</button>
-                <button class="header-btn" type="button" data-admin-refresh="events">${buttonLabel("alert", t.refreshEvents)}</button>
-              </div>
             </div>
           </div>
+
+          ${buildAnalyticsMarkup(t)}
 
           <div class="runtime-surface">
             <div class="surface-head">
@@ -2554,9 +2797,13 @@
           state.users = [];
           state.events = [];
           state.insights = null;
+          state.analyticsSummary = null;
+          state.analyticsTimeseries = [];
+          state.analyticsError = "";
           state.accountsQuery = "";
           state.accountUi = {};
         }
+        syncAdminAutoRefresh();
         renderStaticText();
         renderAuthScreen();
         renderPortal();
@@ -2652,14 +2899,25 @@
 
       async function loadAdminData() {
         if (!state.user || state.user.role !== "admin") return;
-        const [usersPayload, eventsPayload, insightsPayload] = await Promise.all([
+        ensureAnalyticsRange();
+        const query = new URLSearchParams({
+          date_from: state.analyticsDateFrom,
+          date_to: state.analyticsDateTo
+        }).toString();
+        let analyticsFailed = false;
+        const [usersPayload, eventsPayload, insightsPayload, analyticsSummaryPayload, analyticsTimeseriesPayload] = await Promise.all([
           api("/admin/users").catch(() => ({ users: [] })),
           api("/admin/security-events?limit=120").catch(() => ({ events: [] })),
-          api("/admin/storage-insights").catch(() => ({}))
+          api("/admin/storage-insights").catch(() => ({})),
+          api(`/admin/analytics/summary?${query}`).catch(() => { analyticsFailed = true; return { summary: { totals: {}, by_surface: [], by_role: [], by_language: [] } }; }),
+          api(`/admin/analytics/timeseries?${query}`).catch(() => { analyticsFailed = true; return { timeseries: [] }; })
         ]);
         state.users = Array.isArray(usersPayload.users) ? usersPayload.users : [];
         state.events = Array.isArray(eventsPayload.events) ? eventsPayload.events : [];
         state.insights = insightsPayload || null;
+        state.analyticsSummary = analyticsSummaryPayload.summary || { totals: {}, by_surface: [], by_role: [], by_language: [] };
+        state.analyticsTimeseries = Array.isArray(analyticsTimeseriesPayload.timeseries) ? analyticsTimeseriesPayload.timeseries : [];
+        state.analyticsError = analyticsFailed ? getCopy().analyticsLoadFailed : "";
         const nextUi = {};
         for (const user of state.users) {
           if (state.accountUi[user.id]) {
@@ -2689,6 +2947,17 @@
         }
         if (state.adminVisible) {
           renderAdminSection();
+        }
+      }
+
+      async function refreshAdminConsole() {
+        if (!state.user || state.user.role !== "admin" || !state.adminVisible) return;
+        if (adminAutoRefreshInFlight) return;
+        adminAutoRefreshInFlight = true;
+        try {
+          await Promise.all([loadAdminData(), loadAiStatus()]);
+        } finally {
+          adminAutoRefreshInFlight = false;
         }
       }
 
@@ -2736,9 +3005,10 @@
       async function toggleAdminSection() {
         if (!state.user || state.user.role !== "admin") return;
         state.adminVisible = !state.adminVisible;
+        syncAdminAutoRefresh();
         renderPortal();
         if (state.adminVisible) {
-          await Promise.all([loadAdminData(), loadAiStatus()]);
+          await refreshAdminConsole();
         }
       }
 
@@ -2879,9 +3149,13 @@
         try { await api("/auth/logout", "POST"); } catch {}
         state.user = null;
         state.adminVisible = false;
+        stopAdminAutoRefresh();
         state.users = [];
         state.events = [];
         state.insights = null;
+        state.analyticsSummary = null;
+        state.analyticsTimeseries = [];
+        state.analyticsError = "";
         state.aiStatus = null;
         renderStaticText();
         renderPortal();
@@ -2902,6 +3176,12 @@
           renderAdminSection();
           return;
         }
+        if (target.id === "adminAnalyticsFrom" || target.id === "adminAnalyticsTo") {
+          if (target.id === "adminAnalyticsFrom") state.analyticsDateFrom = target.value;
+          if (target.id === "adminAnalyticsTo") state.analyticsDateTo = target.value;
+          loadAdminData().catch(() => {});
+          return;
+        }
         const uid = target.getAttribute("data-user-id");
         const field = target.getAttribute("data-account-field");
         if (!uid || !field) return;
@@ -2913,16 +3193,6 @@
         if (!(target instanceof Element)) return;
         const button = target.closest("button");
         if (!button) return;
-
-        const refreshType = button.getAttribute("data-admin-refresh");
-        if (refreshType === "all") {
-          await Promise.all([loadAdminData(), loadAiStatus()]);
-          return;
-        }
-        if (refreshType === "events") {
-          await loadAdminData();
-          return;
-        }
 
         const panelToggle = button.getAttribute("data-panel-toggle");
         if (panelToggle === "storage") {
@@ -2943,6 +3213,34 @@
         const aiAction = button.getAttribute("data-ai-action");
         if (aiAction) {
           await runAiAction(aiAction);
+          return;
+        }
+
+        const analyticsExport = button.getAttribute("data-analytics-export");
+        if (analyticsExport) {
+          try {
+            ensureAnalyticsRange();
+            const query = new URLSearchParams({
+              date_from: state.analyticsDateFrom,
+              date_to: state.analyticsDateTo,
+              export_format: analyticsExport
+            }).toString();
+            const response = await fetch(`${APP_API}/admin/analytics/export?${query}`, { credentials: "same-origin" });
+            if (!response.ok) throw new Error(getCopy().analyticsExportFailed);
+            const blob = await response.blob();
+            const href = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = href;
+            link.download = analyticsExport === "csv"
+              ? `aibox-analytics-${state.analyticsDateFrom}-to-${state.analyticsDateTo}.csv`
+              : `aibox-analytics-${state.analyticsDateFrom}-to-${state.analyticsDateTo}.json`;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            URL.revokeObjectURL(href);
+          } catch (error) {
+            alert(error instanceof Error ? error.message : getCopy().analyticsExportFailed);
+          }
           return;
         }
 
@@ -2979,13 +3277,83 @@
         }
       });
 
+      ui.portalSection.addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        const card = target.closest(".portal-tool-card");
+        if (!card) return;
+        postAnalyticsEvent("portal_tool_open", "portal", {
+          tool_id: card.getAttribute("data-tool-id") || "unknown",
+          href: card.getAttribute("href") || ""
+        });
+      });
+
+      // ── Backend loading screen ────────────────────────────
+      (function () {
+        var _loadStart = 0;
+        var _loadTimer = null;
+
+        function _loadPct(elapsedMs) {
+          var t = elapsedMs / 1000;
+          return Math.min(Math.round(5 + 83 * (1 - Math.exp(-t / 35))), 90);
+        }
+
+        function _tickProgress() {
+          var pct = _loadPct(Date.now() - _loadStart);
+          var fill = document.getElementById("loadingProgressFill");
+          var lbl  = document.getElementById("loadingPct");
+          if (fill) fill.style.width = pct + "%";
+          if (lbl)  lbl.textContent  = pct + "%";
+        }
+
+        function showLoadingOverlay() {
+          var el = document.getElementById("loading-overlay");
+          if (!el) return;
+          _loadStart = Date.now();
+          el.style.display = "flex";
+          _tickProgress();
+          _loadTimer = setInterval(_tickProgress, 500);
+        }
+
+        function hideLoadingOverlay() {
+          var el = document.getElementById("loading-overlay");
+          if (!el) return;
+          clearInterval(_loadTimer);
+          var fill = document.getElementById("loadingProgressFill");
+          var lbl  = document.getElementById("loadingPct");
+          if (fill) fill.style.width = "100%";
+          if (lbl)  lbl.textContent  = "100%";
+          setTimeout(function () { el.style.display = "none"; }, 600);
+        }
+
+        async function checkBackendReady() {
+          try {
+            var res = await fetch("/ai/api/health", { cache: "no-store" });
+            if (!res.ok) return false;
+            var data = await res.json().catch(function () { return null; });
+            return !!(data && data.readiness_ok === true);
+          } catch (_) { return false; }
+        }
+
+        async function pollUntilReady(onReady) {
+          var ready = await checkBackendReady();
+          if (ready) { onReady(); return; }
+          showLoadingOverlay();
+          (async function poll() {
+            var ok = await checkBackendReady();
+            if (ok) { hideLoadingOverlay(); setTimeout(onReady, 650); }
+            else    { setTimeout(poll, 3000); }
+          })();
+        }
+
+        window._waitForBackend = pollUntilReady;
+      })();
+
       readLocalPreferences();
       applyTheme(state.theme || "light");
       renderStaticText();
       setScreen("welcome");
-      refreshSession();
+      window._waitForBackend(refreshSession);
     </script>
   </body>
 </html>
-
-

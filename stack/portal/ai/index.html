@@ -107,6 +107,9 @@
     .input { flex:1; min-height:22px; max-height:200px; border:none; background:transparent; padding:8px 0 7px; font:inherit; font-size:15px; color:var(--text); resize:none; outline:none; line-height:1.4; }
     .input::placeholder { color:var(--muted); }
     .composer-actions { display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:nowrap; }
+    .char-counter { font-size:11px; color:var(--muted); text-align:right; padding:2px 8px 0; transition:color 120ms ease; }
+    .char-counter.near-limit { color:var(--warn,#d97706); }
+    .char-counter.over-limit { color:var(--danger,#dc2626); font-weight:600; }
     .thinking-toggle { width:40px; height:40px; min-height:40px; border-radius:14px; padding:0; background:var(--panel-soft); box-shadow:none; display:inline-flex; align-items:center; justify-content:center; color:var(--muted); }
     .thinking-toggle:hover { color:var(--accent-strong); }
     .thinking-toggle svg { width:18px; height:18px; }
@@ -216,6 +219,7 @@
               autocomplete="off"
               rows="1"
             ></textarea>
+            <div id="charCounter" class="char-counter" aria-live="polite"></div>
             <div class="composer-actions">
               <button id="ragToggleBtn" class="btn thinking-toggle" type="button" aria-pressed="false" aria-label="Thinking Mode" title="Thinking Mode">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.75c.64.45 1 1.18 1 1.95V17h6v-.3c0-.78.37-1.52 1.02-1.98A7 7 0 0 0 12 2Z"/></svg>
@@ -283,6 +287,7 @@
         composerPlaceholder: "Message Project Puente AI...",
         thinkingMode: "Thinking Mode",
         sendMessage: "Send message",
+        stopped: "Stopped.",
         loading: "Loading...",
         adminDiagnostics: "Admin Diagnostics",
         noDiagnosticsLoaded: "No diagnostics loaded.",
@@ -456,6 +461,9 @@
         responseReceived: "Response received.",
         accountLocked: "Account is locked.",
         rateLimitReached: "Rate limit reached.",
+        promptTooLong: "Message too long ({count} / 7000 characters)",
+        promptCharCounter: "{count} / 7000",
+        promptCharCounterOver: "{count} / 7000 — too long",
         requestFailed: "Request failed",
         failedToSwitchChatScope: "Failed to switch chat scope",
         failedToOpenFolder: "Failed to open folder",
@@ -489,6 +497,7 @@
         composerPlaceholder: "Escribe a Project Puente AI...",
         thinkingMode: "Modo pensar",
         sendMessage: "Enviar mensaje",
+        stopped: "Detenido.",
         loading: "Cargando...",
         adminDiagnostics: "Diagnósticos de administrador",
         noDiagnosticsLoaded: "No hay diagnósticos cargados.",
@@ -662,6 +671,9 @@
         responseReceived: "Respuesta recibida.",
         accountLocked: "La cuenta está bloqueada.",
         rateLimitReached: "Se alcanzó el límite de velocidad.",
+        promptTooLong: "Mensaje demasiado largo ({count} / 7000 caracteres)",
+        promptCharCounter: "{count} / 7000",
+        promptCharCounterOver: "{count} / 7000 — demasiado largo",
         requestFailed: "La solicitud falló",
         failedToSwitchChatScope: "No se pudo cambiar el alcance del chat",
         failedToOpenFolder: "No se pudo abrir la carpeta",
@@ -678,7 +690,7 @@
         chatLabel: "Chat",
         modelLabel: "Modelo",
         runtimeLabel: "Ejecución",
-        stopLabel: "Detención",
+        stopLabel: "Detener",
         valueLabel: "Valor",
         stageLabel: "etapa"
       }
@@ -698,6 +710,7 @@
       messages: document.getElementById("messages"),
       composer: document.getElementById("composer"),
       prompt: document.getElementById("prompt"),
+      charCounter: document.getElementById("charCounter"),
       sendBtn: document.getElementById("sendBtn"),
       status: document.getElementById("status"),
       diagnosticsDock: document.getElementById("diagnosticsDock"),
@@ -723,6 +736,8 @@
       activeChatMessages: [],
       activeChatDeleted: false,
       sending: false,
+      stopRequested: false,
+      promptOverLimit: false,
       ragEnabled: false,
       lastDiagnostics: null,
       diagnosticsHistoryByChat: {},
@@ -733,6 +748,7 @@
     let mathTypesetRunId = 0;
     let mathTypesetQueue = Promise.resolve();
     let activePopover = null;
+    let activeGenerationController = null;
     function getCopy() {
       return copy[state.language] || copy.en;
     }
@@ -951,7 +967,7 @@
       ui.prompt.placeholder = text("composerPlaceholder");
       ui.ragToggleBtn.setAttribute("aria-label", text("thinkingMode"));
       ui.ragToggleBtn.setAttribute("title", text("thinkingMode"));
-      ui.sendBtn.setAttribute("aria-label", text("sendMessage"));
+      renderComposerState();
       if (!state.sending && (!ui.status.textContent || ui.status.textContent === copy.en.loading || ui.status.textContent === copy.es.loading)) {
         ui.status.textContent = text("loading");
       }
@@ -1195,6 +1211,27 @@
       }
     }
 
+    function renderSendButton() {
+      const label = state.sending ? text("stopLabel") : text("sendMessage");
+      const iconMarkup = state.sending
+        ? '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 7h10v10H7z"/></svg>'
+        : '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3.478 2.405a.75.75 0 0 0-.926.94l2.432 7.905H13.5a.75.75 0 0 1 0 1.5H4.984l-2.432 7.905a.75.75 0 0 0 .926.94l18.04-8.01a.75.75 0 0 0 0-1.36L3.478 2.405Z"/></svg>';
+      ui.sendBtn.type = state.sending ? "button" : "submit";
+      ui.sendBtn.setAttribute("aria-label", label);
+      ui.sendBtn.setAttribute("title", label);
+      ui.sendBtn.innerHTML = iconMarkup;
+    }
+
+    function stopActiveGeneration() {
+      if (!state.sending || !activeGenerationController) return;
+      state.stopRequested = true;
+      postAnalyticsEvent("chat_completion_stopped", "chat", {
+        chat_id: state.activeChatId || "",
+        scope: state.activeScope || "all"
+      });
+      activeGenerationController.abort();
+    }
+
     function renderActiveChatTitle() {
       ui.chatTitle.textContent = state.activeChatTitle || text("chatTitle");
     }
@@ -1337,13 +1374,34 @@
 
       ui.chatList.innerHTML = `${createRow}${rows}`;
     }
+    function updateCharCounter() {
+      if (!ui.charCounter) return;
+      const raw = ui.prompt ? (ui.prompt.value || "") : "";
+      const count = raw.replace(/[ \n\t\r]/g, "").length;
+      state.promptOverLimit = count > 7000;
+      if (count === 0) {
+        ui.charCounter.textContent = "";
+        ui.charCounter.className = "char-counter";
+      } else if (state.promptOverLimit) {
+        ui.charCounter.textContent = text("promptCharCounterOver").replace("{count}", count);
+        ui.charCounter.className = "char-counter over-limit";
+      } else if (count > 5600) {
+        ui.charCounter.textContent = text("promptCharCounter").replace("{count}", count);
+        ui.charCounter.className = "char-counter near-limit";
+      } else {
+        ui.charCounter.textContent = "";
+        ui.charCounter.className = "char-counter";
+      }
+    }
     function renderComposerState() {
       const readOnly = !!state.activeChatDeleted || state.activeScope === "trash";
-      ui.prompt.disabled = readOnly || state.sending;
-      ui.sendBtn.disabled = readOnly || state.sending;
+      ui.prompt.disabled = readOnly;
+      ui.sendBtn.disabled = readOnly || (!state.sending && state.promptOverLimit);
       ui.prompt.placeholder = state.activeScope === "trash"
         ? text("restoreTrashedPrompt")
         : (state.activeChatDeleted ? text("restoreChatPrompt") : text("composerPlaceholder"));
+      renderSendButton();
+      updateCharCounter();
     }
     function renderMessageBody(message, index, userInitial) {
       const role = String(message.role || "ai").toLowerCase() === "user" ? "user" : "ai";
@@ -2132,6 +2190,25 @@
       return json;
     }
 
+    function postAnalyticsEvent(eventName, surface, metadata = {}) {
+      const payload = JSON.stringify({ event_name: eventName, surface, metadata });
+      try {
+        if (navigator.sendBeacon) {
+          const blob = new Blob([payload], { type: "application/json" });
+          if (navigator.sendBeacon(`${APP_API}/analytics/events`, blob)) {
+            return;
+          }
+        }
+      } catch {}
+      fetch(`${APP_API}/analytics/events`, {
+        method: "POST",
+        credentials: "same-origin",
+        keepalive: true,
+        headers: { "Content-Type": "application/json" },
+        body: payload
+      }).catch(() => {});
+    }
+
     function normalizeWarnings(list) {
       return Array.isArray(list) ? list.filter(Boolean) : [];
     }
@@ -2855,9 +2932,9 @@
       });
       positionPopover();
     }
-    async function sendPrompt(text) {
-      const promptText = String(text || "").trim();
-      if (!promptText || state.sending || state.activeChatDeleted || state.activeScope === "trash") return;
+    async function sendPrompt(promptValue) {
+      const promptText = String(promptValue || "").trim();
+      if (!promptText || state.sending || state.activeChatDeleted || state.activeScope === "trash" || state.promptOverLimit) return;
 
       closePopover();
       const previousChatId = state.activeChatId;
@@ -2870,8 +2947,11 @@
         ...previousMessages,
         { role: "user", content: promptText }
       ];
+      const controller = new AbortController();
 
       state.sending = true;
+      state.stopRequested = false;
+      activeGenerationController = controller;
       renderComposerState();
 
       if (!state.activeChatId) {
@@ -2902,11 +2982,13 @@
       let responseMetrics = null;
       let sawChunk = false;
       let sawTerminal = false;
+      let wasStopped = false;
 
       try {
         const response = await fetch(APP_API + "/chat/completions", {
           method: "POST",
           credentials: "same-origin",
+          signal: controller.signal,
           headers: {
             "Content-Type": "application/json",
             "Accept": "text/event-stream, application/json"
@@ -3042,35 +3124,49 @@
           await loadChat(targetChatId);
         }
       } catch (error) {
+        wasStopped = state.stopRequested || error?.name === "AbortError";
         const statusCode = Number(error?.status || 0);
         if (!responseMetrics && error?.payload) {
           responseMetrics = normalizeDiagnostics(error.payload);
         }
 
-        if (!sawChunk) {
-          state.activeChatId = previousChatId;
-          state.activeChatTitle = previousTitle;
-          state.activeChatMessages = previousMessages;
-          renderActiveChatTitle();
-          renderMessages();
-        } else if (state.activeChatMessages[assistantIndex]) {
-          state.activeChatMessages[assistantIndex].streaming = false;
-          updateStreamingMessage(assistantIndex, true, true);
-        }
-
-        if (statusCode === 423) {
-          setStatus(error instanceof Error ? error.message : text("accountLocked"), "err");
-        } else if (statusCode === 429) {
-          setStatus(error instanceof Error ? error.message : text("rateLimitReached"), "err");
+        if (wasStopped) {
+          if (!sawChunk) {
+            state.activeChatMessages = requestMessages;
+            renderMessages();
+          } else if (state.activeChatMessages[assistantIndex]) {
+            state.activeChatMessages[assistantIndex].streaming = false;
+            updateStreamingMessage(assistantIndex, true, true);
+          }
+          setStatus(text("stopped"));
         } else {
-          setStatus(error instanceof Error ? error.message : text("requestFailed"), "err");
+          if (!sawChunk) {
+            state.activeChatId = previousChatId;
+            state.activeChatTitle = previousTitle;
+            state.activeChatMessages = previousMessages;
+            renderActiveChatTitle();
+            renderMessages();
+          } else if (state.activeChatMessages[assistantIndex]) {
+            state.activeChatMessages[assistantIndex].streaming = false;
+            updateStreamingMessage(assistantIndex, true, true);
+          }
+
+          if (statusCode === 423) {
+            setStatus(error instanceof Error ? error.message : text("accountLocked"), "err");
+          } else if (statusCode === 429) {
+            setStatus(error instanceof Error ? error.message : text("rateLimitReached"), "err");
+          } else {
+            setStatus(error instanceof Error ? error.message : text("requestFailed"), "err");
+          }
         }
 
         if (responseMetrics) {
           setDiagnostics(responseMetrics, finalChatId || state.activeChatId || previousChatId);
         }
       } finally {
+        activeGenerationController = null;
         state.sending = false;
+        state.stopRequested = false;
         renderComposerState();
         ui.prompt.focus();
         renderDiagnostics();
@@ -3187,6 +3283,10 @@
       });
       ui.composer.addEventListener("submit", event => {
         event.preventDefault();
+        if (state.sending) {
+          stopActiveGeneration();
+          return;
+        }
         const text = ui.prompt.value.trim();
         if (!text) return;
         ui.prompt.value = "";
@@ -3194,10 +3294,17 @@
         sendPrompt(text);
       });
 
-      ui.prompt.addEventListener("input", autoResizeTextarea);
+      ui.sendBtn.addEventListener("click", event => {
+        if (!state.sending) return;
+        event.preventDefault();
+        stopActiveGeneration();
+      });
+
+      ui.prompt.addEventListener("input", () => { autoResizeTextarea(); renderComposerState(); });
       ui.prompt.addEventListener("keydown", event => {
         if (event.key === "Enter" && !event.shiftKey) {
           event.preventDefault();
+          if (state.sending) return;
           ui.composer.dispatchEvent(new Event("submit", { cancelable: true }));
         }
       });

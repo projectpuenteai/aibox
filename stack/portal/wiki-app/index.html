@@ -136,7 +136,28 @@
       } catch {}
     }
 
+    function postAnalyticsEvent(eventName, metadata = {}) {
+      const payload = JSON.stringify({ event_name: eventName, surface: "wiki", metadata });
+      try {
+        if (navigator.sendBeacon) {
+          const blob = new Blob([payload], { type: "application/json" });
+          if (navigator.sendBeacon("/ai/api/v1/app/analytics/events", blob)) return;
+        }
+      } catch {}
+      fetch("/ai/api/v1/app/analytics/events", {
+        method: "POST",
+        credentials: "same-origin",
+        keepalive: true,
+        headers: { "Content-Type": "application/json" },
+        body: payload
+      }).catch(() => {});
+    }
+
     applyLanguage();
+    postAnalyticsEvent("wiki_shell_open", { href: "/wiki-app/" });
+    document.getElementById("openLink").addEventListener("click", () => {
+      postAnalyticsEvent("wiki_open_full_page", { href: "/wiki/" });
+    });
     syncLanguageFromUser();
   </script>
 </body>

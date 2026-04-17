@@ -7,7 +7,9 @@ persistence, and wiki-assisted chat generation.
 """
 import asyncio
 import base64
+import csv
 import hashlib
+import io
 import json
 import logging
 import math
@@ -32,7 +34,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 logger = logging.getLogger("aibox.ai_control.storage")
@@ -134,6 +136,18 @@ class UpdateDocPayload(BaseModel):
 
 class StarDocPayload(BaseModel):
     starred: bool
+
+
+class PasteAbusePayload(BaseModel):
+    doc_id: Optional[str] = None
+    abuse_type: str  # "paste_cooldown" | "paste_duplicate" | "paste_too_long"
+    detail: Optional[str] = None
+
+
+class AnalyticsEventPayload(BaseModel):
+    event_name: str
+    surface: str
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class StorageRuntime:
@@ -241,7 +255,7 @@ class StorageRuntime:
         self.chat_create_per_min = int(os.getenv("CHAT_CREATE_PER_MIN", "20"))
         self.doc_write_bpm = int(os.getenv("DOC_WRITE_BYTES_PER_MIN", str(2 * 1024 * 1024)))
         self.chat_write_bpm = int(os.getenv("CHAT_WRITE_BYTES_PER_MIN", str(8 * 1024 * 1024)))
-        self.doc_max = int(os.getenv("DOC_FILE_MAX_BYTES", str(1 * 1024 * 1024)))
+        self.doc_max = int(os.getenv("DOC_FILE_MAX_BYTES", str(256_000)))
         self.chat_max = int(os.getenv("CHAT_FILE_MAX_BYTES", str(5 * 1024 * 1024)))
         self.max_chats = int(os.getenv("MAX_CHAT_SESSIONS_PER_USER", "200"))
         self.max_saved_chats = int(os.getenv("MAX_SAVED_CHATS_PER_USER", "10"))
@@ -252,6 +266,10 @@ class StorageRuntime:
         self.ai_block_hits = int(os.getenv("AI_BLOCK_HITS", "3"))
         self.ai_prompt_cooldown_seconds = int(os.getenv("AI_PROMPT_COOLDOWN_SECONDS", "10"))
         self.ai_send_block_seconds = int(os.getenv("AI_SEND_BLOCK_SECONDS", "300"))
+        self.max_docs = int(os.getenv("MAX_DOCS_PER_USER", "150"))
+        self.max_concurrent_generations = int(os.getenv("MAX_CONCURRENT_GENERATIONS_PER_USER", "2"))
+        self.heavy_prompt_chars = int(os.getenv("HEAVY_PROMPT_CHARS", "5000"))
+        self.heavy_prompt_hits = int(os.getenv("HEAVY_PROMPT_HITS", "3"))
         self.chat_continuation_limit = int(os.getenv("CHAT_CONTINUATION_LIMIT", "2"))
         self.chat_continue_prompt = os.getenv("CHAT_CONTINUE_PROMPT", "Continue exactly where you stopped. Do not restart or repeat prior text.")
         self.login_fail_limit = int(os.getenv("LOGIN_FAIL_LIMIT", "5"))
@@ -285,6 +303,15 @@ class StorageRuntime:
         self._chroma_client_es: Any = None
         self._wiki_collection_es: Any = None
         self._reranker: Any = None
+        self.analytics_export_version = 1
+        self.analytics_frontend_events = {
+            "portal_tool_open",
+            "wiki_shell_open",
+            "wiki_open_full_page",
+            "learn_shell_open",
+            "learn_open_full_page",
+            "chat_completion_stopped",
+        }
         self._embed_dimension: Optional[int] = None
         self._collection_dimension: Optional[int] = None
         self._chroma_count: int = 0
@@ -2008,6 +2035,13 @@ CREATE TABLE IF NOT EXISTS rate_events(id INTEGER PRIMARY KEY AUTOINCREMENT,user
 CREATE INDEX IF NOT EXISTS ix_rate_events_user_type_ts ON rate_events(user_id,event_type,created_ts);
 CREATE TABLE IF NOT EXISTS security_events(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id TEXT,username TEXT,ip TEXT,endpoint TEXT,event_type TEXT NOT NULL,severity TEXT NOT NULL,detail TEXT,observed REAL,threshold REAL,action TEXT,created_at TEXT NOT NULL,created_ts INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS cleanup_events(id INTEGER PRIMARY KEY AUTOINCREMENT,reason TEXT NOT NULL,level TEXT NOT NULL,bytes_reclaimed INTEGER NOT NULL,items_deleted INTEGER NOT NULL,used_percent REAL NOT NULL,free_bytes INTEGER NOT NULL,details TEXT,created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS usage_events(id INTEGER PRIMARY KEY AUTOINCREMENT,event_type TEXT NOT NULL,surface TEXT NOT NULL,day_bucket TEXT NOT NULL,created_at TEXT NOT NULL,created_ts INTEGER NOT NULL,user_id TEXT,username TEXT,user_role TEXT,preferred_language TEXT,session_id TEXT,value INTEGER NOT NULL DEFAULT 1,metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE INDEX IF NOT EXISTS ix_usage_events_day_event_surface ON usage_events(day_bucket,event_type,surface);
+CREATE INDEX IF NOT EXISTS ix_usage_events_user_day ON usage_events(user_id,day_bucket);
+CREATE TABLE IF NOT EXISTS analytics_daily_rollups(day_bucket TEXT NOT NULL,metric_key TEXT NOT NULL,surface TEXT NOT NULL DEFAULT '',user_role TEXT NOT NULL DEFAULT '',preferred_language TEXT NOT NULL DEFAULT '',value INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(day_bucket,metric_key,surface,user_role,preferred_language));
+CREATE TABLE IF NOT EXISTS analytics_daily_active_users(day_bucket TEXT NOT NULL,user_id TEXT NOT NULL,user_role TEXT NOT NULL DEFAULT '',preferred_language TEXT NOT NULL DEFAULT '',PRIMARY KEY(day_bucket,user_id));
+CREATE INDEX IF NOT EXISTS ix_analytics_active_users_day ON analytics_daily_active_users(day_bucket,user_role,preferred_language);
+CREATE TABLE IF NOT EXISTS analytics_exports(id TEXT PRIMARY KEY,format TEXT NOT NULL,date_from TEXT NOT NULL,date_to TEXT NOT NULL,created_at TEXT NOT NULL,created_by_user_id TEXT,status TEXT NOT NULL,file_path TEXT,metadata_json TEXT NOT NULL DEFAULT '{}');
                 """
             )
             self.ensure_column(c, "users", "preferred_language", "preferred_language TEXT NOT NULL DEFAULT 'en'")
@@ -2016,6 +2050,203 @@ CREATE TABLE IF NOT EXISTS cleanup_events(id INTEGER PRIMARY KEY AUTOINCREMENT,r
             c.execute("UPDATE users SET preferred_theme='light' WHERE preferred_theme IS NULL OR TRIM(preferred_theme)='' OR LOWER(TRIM(preferred_theme)) NOT IN ('light','dark')")
             self.migrate_chat_schema(c)
             c.execute("INSERT OR IGNORE INTO user_restrictions(user_id,updated_at) SELECT id, ? FROM users", (self.now_iso(),))
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS active_generations(
+                    request_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    started_at TEXT NOT NULL
+                )
+            """)
+            c.execute("CREATE INDEX IF NOT EXISTS ix_active_gen_user ON active_generations(user_id)")
+
+    def analytics_day_bucket(self, iso_value: Optional[str] = None) -> str:
+        try:
+            dt = datetime.fromisoformat(str(iso_value or self.now_iso()).replace("Z", "+00:00"))
+        except Exception:
+            dt = datetime.now(timezone.utc)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).date().isoformat()
+
+    def _analytics_metadata_json(self, metadata: Optional[Dict[str, Any]]) -> str:
+        safe: Dict[str, Any] = {}
+        for key, value in (metadata or {}).items():
+            if value is None:
+                continue
+            if isinstance(value, (str, int, float, bool)):
+                safe[str(key)] = value
+            else:
+                safe[str(key)] = self._clone_data(value)
+        return json.dumps(safe, ensure_ascii=False, separators=(",", ":"))
+
+    def record_analytics_event(
+        self,
+        c: sqlite3.Connection,
+        *,
+        event_type: str,
+        surface: str,
+        user: Optional[sqlite3.Row] = None,
+        created_at: Optional[str] = None,
+        value: int = 1,
+        metadata: Optional[Dict[str, Any]] = None,
+        session_id: Optional[str] = None,
+    ) -> None:
+        event_name = str(event_type or "").strip().lower()
+        surface_name = str(surface or "unknown").strip().lower()
+        created_at_value = created_at or self.now_iso()
+        day_bucket = self.analytics_day_bucket(created_at_value)
+        user_id = str(user["id"]) if user is not None and user["id"] is not None else None
+        username = str(user["username"]) if user is not None and user["username"] is not None else None
+        user_role = str(user["role"] or "") if user is not None else ""
+        preferred_language = normalize_language_preference((user["preferred_language"] if user is not None else None), default="")
+        amount = max(0, int(value or 0))
+        if not event_name or amount <= 0:
+            return
+        metadata_json = self._analytics_metadata_json(metadata)
+        c.execute(
+            "INSERT INTO usage_events(event_type,surface,day_bucket,created_at,created_ts,user_id,username,user_role,preferred_language,session_id,value,metadata_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (event_name, surface_name, day_bucket, created_at_value, self.now_ts(), user_id, username, user_role, preferred_language, session_id, amount, metadata_json),
+        )
+        c.execute(
+            """
+            INSERT INTO analytics_daily_rollups(day_bucket,metric_key,surface,user_role,preferred_language,value)
+            VALUES(?,?,?,?,?,?)
+            ON CONFLICT(day_bucket,metric_key,surface,user_role,preferred_language)
+            DO UPDATE SET value=value+excluded.value
+            """,
+            (day_bucket, event_name, surface_name, user_role, preferred_language, amount),
+        )
+        if user_id:
+            c.execute(
+                "INSERT OR IGNORE INTO analytics_daily_active_users(day_bucket,user_id,user_role,preferred_language) VALUES(?,?,?,?)",
+                (day_bucket, user_id, user_role, preferred_language),
+            )
+
+    def analytics_range(self, date_from: Optional[str], date_to: Optional[str], default_days: int = 30) -> Tuple[str, str]:
+        today = datetime.now(timezone.utc).date()
+        try:
+            end_day = datetime.fromisoformat(str(date_to)).date() if date_to else today
+        except Exception:
+            end_day = today
+        try:
+            start_day = datetime.fromisoformat(str(date_from)).date() if date_from else (end_day - timedelta(days=max(0, default_days - 1)))
+        except Exception:
+            start_day = end_day - timedelta(days=max(0, default_days - 1))
+        if start_day > end_day:
+            start_day, end_day = end_day, start_day
+        return start_day.isoformat(), end_day.isoformat()
+
+    def analytics_metric_rows(self, c: sqlite3.Connection, date_from: str, date_to: str) -> List[sqlite3.Row]:
+        return c.execute(
+            """
+            SELECT day_bucket,metric_key,surface,user_role,preferred_language,value
+            FROM analytics_daily_rollups
+            WHERE day_bucket>=? AND day_bucket<=?
+            ORDER BY day_bucket ASC, metric_key ASC, surface ASC
+            """,
+            (date_from, date_to),
+        ).fetchall()
+
+    def analytics_active_rows(self, c: sqlite3.Connection, date_from: str, date_to: str) -> List[sqlite3.Row]:
+        return c.execute(
+            """
+            SELECT day_bucket,user_role,preferred_language,COUNT(*) AS active_users
+            FROM analytics_daily_active_users
+            WHERE day_bucket>=? AND day_bucket<=?
+            GROUP BY day_bucket,user_role,preferred_language
+            ORDER BY day_bucket ASC
+            """,
+            (date_from, date_to),
+        ).fetchall()
+
+    def analytics_payload(self, c: sqlite3.Connection, date_from: str, date_to: str) -> Dict[str, Any]:
+        metric_rows = self.analytics_metric_rows(c, date_from, date_to)
+        active_rows = self.analytics_active_rows(c, date_from, date_to)
+        summary_totals: Dict[str, int] = {}
+        by_surface: Dict[str, int] = {}
+        by_role: Dict[str, int] = {}
+        by_language: Dict[str, int] = {}
+        days: Dict[str, Dict[str, Any]] = {}
+        for row in metric_rows:
+            day = str(row["day_bucket"])
+            metric = str(row["metric_key"])
+            surface = str(row["surface"] or "unknown")
+            role = str(row["user_role"] or "unknown")
+            language = str(row["preferred_language"] or "unknown")
+            value = int(row["value"] or 0)
+            bucket = days.setdefault(day, {"day": day})
+            bucket[metric] = int(bucket.get(metric, 0)) + value
+            summary_totals[metric] = summary_totals.get(metric, 0) + value
+            by_surface[surface] = by_surface.get(surface, 0) + value
+            by_role[role] = by_role.get(role, 0) + value
+            by_language[language] = by_language.get(language, 0) + value
+        active_total = 0
+        for row in active_rows:
+            day = str(row["day_bucket"])
+            count = int(row["active_users"] or 0)
+            role = str(row["user_role"] or "unknown")
+            language = str(row["preferred_language"] or "unknown")
+            bucket = days.setdefault(day, {"day": day})
+            bucket["active_users"] = int(bucket.get("active_users", 0)) + count
+            active_total += count
+            by_role[f"active:{role}"] = by_role.get(f"active:{role}", 0) + count
+            by_language[f"active:{language}"] = by_language.get(f"active:{language}", 0) + count
+        summary_totals["active_users"] = active_total
+        metrics_order = [
+            "accounts_created",
+            "logins_succeeded",
+            "chat_opened",
+            "chat_sessions_created",
+            "chat_deleted",
+            "chat_restored",
+            "chat_completion_requested",
+            "chat_completion_succeeded",
+            "chat_completion_failed",
+            "chat_completion_stopped",
+            "chat_messages_sent",
+            "chat_completion_tokens_emitted",
+            "chat_citations_emitted",
+            "documents_created",
+            "documents_opened",
+            "documents_updated",
+            "documents_starred",
+            "documents_unstarred",
+            "documents_deleted",
+            "documents_restored",
+            "documents_trash_cleared",
+            "folders_created",
+            "folders_renamed",
+            "folders_deleted",
+            "portal_tool_open",
+            "wiki_shell_open",
+            "wiki_open_full_page",
+            "learn_shell_open",
+            "learn_open_full_page",
+            "active_users",
+        ]
+        return {
+            "date_from": date_from,
+            "date_to": date_to,
+            "generated_at": self.now_iso(),
+            "metrics_version": self.analytics_export_version,
+            "summary": {
+                "totals": {key: int(summary_totals.get(key, 0)) for key in metrics_order if key in summary_totals or key == "active_users"},
+                "by_surface": [{"surface": key, "value": int(value)} for key, value in sorted(by_surface.items())],
+                "by_role": [{"role": key, "value": int(value)} for key, value in sorted(by_role.items())],
+                "by_language": [{"language": key, "value": int(value)} for key, value in sorted(by_language.items())],
+            },
+            "timeseries": [days[key] for key in sorted(days.keys())],
+        }
+
+    def analytics_csv(self, payload: Dict[str, Any]) -> str:
+        rows = list(payload.get("timeseries") or [])
+        metric_keys = sorted({key for row in rows for key in row.keys() if key != "day"})
+        out = io.StringIO()
+        writer = csv.writer(out)
+        writer.writerow(["day", *metric_keys])
+        for row in rows:
+            writer.writerow([row.get("day", ""), *[row.get(key, 0) for key in metric_keys]])
+        return out.getvalue()
     def log_event(self, c: sqlite3.Connection, *, user: Optional[sqlite3.Row] = None, ip_: str = "", endpoint: str = "", et: str, sev: str, detail: str, obs: Optional[float] = None, th: Optional[float] = None, act: str = "") -> None:
         c.execute(
             "INSERT INTO security_events(user_id,username,ip,endpoint,event_type,severity,detail,observed,threshold,action,created_at,created_ts) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -2304,6 +2535,19 @@ CREATE TABLE IF NOT EXISTS cleanup_events(id INTEGER PRIMARY KEY AUTOINCREMENT,r
             self.apply_docs_penalty(c, user, ip_, ep)
             raise HTTPException(429, "Document size exceeds limit")
         if create:
+            doc_count = int(c.execute(
+                "SELECT COUNT(*) c FROM documents WHERE user_id=? AND is_deleted=0", (user["id"],)
+            ).fetchone()["c"])
+            if doc_count >= self.max_docs:
+                lang = str(user["preferred_language"] or "en").lower()
+                msg = (f"Has alcanzado el límite de {self.max_docs} documentos"
+                       if lang == "es" else
+                       f"You have reached the maximum of {self.max_docs} documents")
+                self.log_event(c, user=user, ip_=ip_, endpoint=ep, et="docs_limit_block", sev="error",
+                    detail=f"Max docs limit reached: {doc_count}/{self.max_docs}",
+                    obs=float(doc_count), th=float(self.max_docs), act="blocked")
+                self.apply_docs_penalty(c, user, ip_, ep)
+                raise HTTPException(429, msg)
             self.check_limit(c, user, ip_, ep, "docs_per_minute", float(self.rate_count(c, user["id"], "doc_create") + 1), float(self.doc_create_per_min), warnings, scope="docs")
         self.check_limit(c, user, ip_, ep, "doc_write_bytes_per_minute", float(self.rate_bytes(c, user["id"], "doc_write") + bytes_write), float(self.doc_write_bpm), warnings, scope="docs")
         return warnings
@@ -2325,6 +2569,92 @@ CREATE TABLE IF NOT EXISTS cleanup_events(id INTEGER PRIMARY KEY AUTOINCREMENT,r
         self.check_limit(c, user, ip_, ep, "chat_write_bytes_per_minute", float(self.rate_bytes(c, user["id"], "chat_write") + bytes_write), float(self.chat_write_bpm), warnings, scope=scope)
         return warnings
 
+    # ------------------------------------------------------------------
+    # Resource-limit helpers
+    # ------------------------------------------------------------------
+
+    def _count_security_events(self, c: sqlite3.Connection, user_id: str, event_type: str, window_sec: int) -> int:
+        cutoff = self.now_ts() - window_sec
+        return int(c.execute(
+            "SELECT COUNT(*) c FROM security_events WHERE user_id=? AND event_type=? AND created_ts>=?",
+            (user_id, event_type, cutoff)
+        ).fetchone()["c"])
+
+    def _check_flag_escalation(self, c: sqlite3.Connection, user: sqlite3.Row, ip_: str, endpoint: str,
+                                event_type: str, window_sec: int, threshold: int, penalty_type: str) -> None:
+        if user["role"] == "admin":
+            return
+        count = self._count_security_events(c, user["id"], event_type, window_sec)
+        if count >= threshold:
+            if penalty_type == "ai":
+                self.apply_ai_penalty(c, user, ip_, endpoint)
+            elif penalty_type == "docs":
+                self.apply_docs_penalty(c, user, ip_, endpoint)
+            self.log_event(c, user=user, ip_=ip_, endpoint=endpoint,
+                et="auto_escalation", sev="block",
+                detail=f"Auto-escalation triggered: {event_type} count={count} in window={window_sec}s",
+                obs=float(count), th=float(threshold), act="auto_cooldown")
+
+    def check_concurrent_generations(self, c: sqlite3.Connection, user: sqlite3.Row,
+                                      ip_: str, endpoint: str, request_id: str) -> None:
+        if user["role"] == "admin":
+            return
+        stale = (datetime.now(timezone.utc) - timedelta(seconds=300)).isoformat()
+        c.execute("DELETE FROM active_generations WHERE started_at < ?", (stale,))
+        count = int(c.execute(
+            "SELECT COUNT(*) c FROM active_generations WHERE user_id=?", (user["id"],)
+        ).fetchone()["c"])
+        if count >= self.max_concurrent_generations:
+            lang = str(user["preferred_language"] or "en").lower()
+            msg = ("Por favor espera hasta que tus otros chats terminen de generar"
+                   if lang == "es" else
+                   "Please wait until your other chats finish generating")
+            self.log_event(c, user=user, ip_=ip_, endpoint=endpoint,
+                et="chat_concurrent_blocked", sev="warn",
+                detail=f"Concurrent generation limit reached: count={count}",
+                obs=float(count), th=float(self.max_concurrent_generations), act="blocked")
+            self._check_flag_escalation(c, user, ip_, endpoint,
+                "chat_concurrent_blocked", self.ai_offense_window, self.ai_block_hits, "ai")
+            raise HTTPException(429, msg)
+        c.execute(
+            "INSERT OR IGNORE INTO active_generations(request_id, user_id, started_at) VALUES(?,?,?)",
+            (request_id, user["id"], self.now_iso())
+        )
+
+    def remove_active_generation(self, request_id: str) -> None:
+        try:
+            with self.tx() as c:
+                c.execute("DELETE FROM active_generations WHERE request_id=?", (request_id,))
+        except Exception:
+            pass
+
+    def check_prompt_length(self, c: sqlite3.Connection, user: sqlite3.Row,
+                             ip_: str, endpoint: str, user_msg: str) -> None:
+        if user["role"] == "admin":
+            return
+        stripped_len = len(user_msg.replace(" ", "").replace("\n", "").replace("\t", ""))
+        lang = str(user["preferred_language"] or "en").lower()
+        if stripped_len > 7000:
+            msg = (f"El mensaje es demasiado largo ({stripped_len} / 7000 caracteres sin espacios)"
+                   if lang == "es" else
+                   f"Message is too long ({stripped_len} / 7000 characters excluding spaces)")
+            self.log_event(c, user=user, ip_=ip_, endpoint=endpoint,
+                et="chat_prompt_too_long", sev="warn",
+                detail=f"Prompt too long: {stripped_len} chars (excl whitespace)",
+                obs=float(stripped_len), th=7000.0, act="blocked")
+            self._check_flag_escalation(c, user, ip_, endpoint,
+                "chat_prompt_too_long", self.ai_offense_window, self.ai_block_hits, "ai")
+            raise HTTPException(400, msg)
+        if stripped_len > self.heavy_prompt_chars:
+            self.rate_add(c, user["id"], "chat_heavy_prompt", 0)
+            self.log_event(c, user=user, ip_=ip_, endpoint=endpoint,
+                et="chat_heavy_usage", sev="warn",
+                detail=f"Heavy prompt: {stripped_len} chars (excl whitespace)",
+                obs=float(stripped_len), th=float(self.heavy_prompt_chars), act="rate_logged")
+            heavy_count = float(self.rate_count(c, user["id"], "chat_heavy_prompt", self.ai_offense_window))
+            self.check_limit(c, user, ip_, endpoint, "chat_heavy_prompts_per_window",
+                heavy_count, float(self.heavy_prompt_hits), [], scope="ai")
+
 
 # -----------------------------
 # FastAPI route mounting
@@ -2335,8 +2665,14 @@ def mount_app_storage(app, llama_base_url: str):
     rt.ensure_dirs()
     rt.init_db()
     rt.seed_admin()
-    rt.validate_startup_rag()
-    rt.run_warmup_queries()
+    def _background_startup():
+        try:
+            rt.validate_startup_rag()
+            rt.run_warmup_queries()
+        except Exception:
+            pass  # errors are recorded inside those methods via _update_rag_status
+
+    threading.Thread(target=_background_startup, daemon=True, name="app-storage-init").start()
     threading.Thread(target=rt.cleanup_loop, daemon=True, name="app-storage-cleanup").start()
     threading.Thread(target=rt.keep_warm_loop, daemon=True, name="app-storage-keep-warm").start()
 
@@ -2359,6 +2695,8 @@ def mount_app_storage(app, llama_base_url: str):
                 (uid_, username, rt.nuser(username), rt._ph.hash(pw), role, rt.now_iso(), 0, preferred_language, preferred_theme),
             )
             rt.ensure_restrictions_row(c, uid_)
+            created_user = c.execute("SELECT * FROM users WHERE id=?", (uid_,)).fetchone()
+            rt.record_analytics_event(c, event_type="accounts_created", surface="auth", user=created_user)
         return {"ok": True, "user": {"id": uid_, "username": username, "role": role, "preferred_language": preferred_language, "preferred_theme": preferred_theme}}
 
     @app.post("/v1/app/auth/login")
@@ -2391,6 +2729,8 @@ def mount_app_storage(app, llama_base_url: str):
             raw = secrets.token_urlsafe(32)
             c.execute("INSERT INTO sessions(id,user_id,token_hash,created_at,expires_at,last_accessed_at,ip,user_agent,revoked_at) VALUES(?,?,?,?,?,?,?,?,NULL)", (rt.uid(), user["id"], rt.token_hash(raw), rt.now_iso(), (datetime.now(timezone.utc)+timedelta(days=rt.session_days)).isoformat(), rt.now_iso(), ip_, req.headers.get("user-agent", "")))
             c.execute("UPDATE users SET last_login_at=?, last_active_at=? WHERE id=?", (rt.now_iso(), rt.now_iso(), user["id"]))
+            refreshed_user = c.execute("SELECT * FROM users WHERE id=?", (user["id"],)).fetchone() or user
+            rt.record_analytics_event(c, event_type="logins_succeeded", surface="auth", user=refreshed_user)
             return rt.mk_resp({"ok": True, "user": {"id": user["id"], "username": user["username"], "role": user["role"]}}, token=raw)
 
     @app.post("/v1/app/auth/logout")
@@ -2441,18 +2781,23 @@ def mount_app_storage(app, llama_base_url: str):
     def app_admin_users(req: Request):
         with rt.tx() as c:
             rt.req_user(c, req, admin=True)
+            flag_cutoff = rt.now_ts() - 86400
             rows = c.execute(
                 """
 SELECT u.id,u.username,u.role,u.created_at,u.last_login_at,u.last_active_at,u.storage_bytes_used,
        CASE WHEN COALESCE(r.manual_lock_permanent,0)=1 THEN 'permanent' ELSE r.manual_locked_until END AS locked_until,
        r.manual_lock_reason AS lock_reason,
        r.docs_write_blocked_until,r.ai_prompt_cooldown_until,r.ai_send_blocked_until,
-       COALESCE(r.manual_lock_permanent,0) AS manual_lock_permanent
+       COALESCE(r.manual_lock_permanent,0) AS manual_lock_permanent,
+       COALESCE((SELECT COUNT(*) FROM security_events se
+                 WHERE se.user_id=u.id AND se.severity IN ('warn','block')
+                 AND se.created_ts >= ?), 0) AS recent_flag_count
 FROM users u
 LEFT JOIN user_restrictions r ON r.user_id=u.id
 WHERE u.is_deleted=0
 ORDER BY u.username COLLATE NOCASE
-                """
+                """,
+                (flag_cutoff,)
             ).fetchall()
             return {"ok": True, "users": [dict(r) for r in rows]}
 
@@ -2576,6 +2921,99 @@ LIMIT ?
             rt.req_user(c, req, admin=True)
             rows = c.execute("SELECT * FROM security_events ORDER BY created_ts DESC LIMIT ?", (limit,)).fetchall()
             return {"ok": True, "events": [dict(r) for r in rows]}
+
+    @app.get("/v1/app/admin/analytics/summary")
+    def app_admin_analytics_summary(req: Request, date_from: Optional[str] = None, date_to: Optional[str] = None):
+        with rt.tx() as c:
+            rt.req_user(c, req, admin=True)
+            start_day, end_day = rt.analytics_range(date_from, date_to)
+            payload = rt.analytics_payload(c, start_day, end_day)
+            return {
+                "ok": True,
+                "date_from": payload["date_from"],
+                "date_to": payload["date_to"],
+                "generated_at": payload["generated_at"],
+                "metrics_version": payload["metrics_version"],
+                "summary": payload["summary"],
+            }
+
+    @app.get("/v1/app/admin/analytics/timeseries")
+    def app_admin_analytics_timeseries(req: Request, date_from: Optional[str] = None, date_to: Optional[str] = None):
+        with rt.tx() as c:
+            rt.req_user(c, req, admin=True)
+            start_day, end_day = rt.analytics_range(date_from, date_to)
+            payload = rt.analytics_payload(c, start_day, end_day)
+            return {
+                "ok": True,
+                "date_from": payload["date_from"],
+                "date_to": payload["date_to"],
+                "generated_at": payload["generated_at"],
+                "metrics_version": payload["metrics_version"],
+                "timeseries": payload["timeseries"],
+            }
+
+    @app.get("/v1/app/admin/analytics/export")
+    def app_admin_analytics_export(
+        req: Request,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        export_format: str = "json",
+    ):
+        fmt = str(export_format or "json").strip().lower()
+        if fmt not in ("json", "csv"):
+            raise HTTPException(400, "Invalid export_format")
+        with rt.tx() as c:
+            admin = rt.req_user(c, req, admin=True, write=True)
+            start_day, end_day = rt.analytics_range(date_from, date_to)
+            payload = rt.analytics_payload(c, start_day, end_day)
+            c.execute(
+                """
+                INSERT INTO analytics_exports(
+                    id,format,date_from,date_to,created_at,created_by_user_id,status,file_path,metadata_json
+                ) VALUES(?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    rt.uid(),
+                    fmt,
+                    start_day,
+                    end_day,
+                    rt.now_iso(),
+                    admin["id"],
+                    "generated",
+                    None,
+                    rt._analytics_metadata_json({
+                        "metrics_version": payload.get("metrics_version"),
+                        "row_count": len(payload.get("timeseries") or []),
+                    }),
+                ),
+            )
+            filename = f"aibox-analytics-{start_day}-to-{end_day}.{fmt}"
+            headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+            if fmt == "csv":
+                return Response(rt.analytics_csv(payload), media_type="text/csv; charset=utf-8", headers=headers)
+            return JSONResponse(payload, headers=headers)
+
+    @app.post("/v1/app/analytics/events")
+    def app_analytics_event_ingest(p: AnalyticsEventPayload, req: Request):
+        event_name = str(p.event_name or "").strip().lower()
+        surface = str(p.surface or "").strip().lower()
+        allowed_surfaces = {"chat", "docs", "wiki", "learn", "portal", "auth", "admin"}
+        with rt.tx() as c:
+            u = rt.req_user(c, req)
+            if event_name not in rt.analytics_frontend_events:
+                rt.log_event(c, user=u, ip_=rt.ip(req), endpoint=req.url.path, et="analytics_event_rejected", sev="warn", detail=f"Invalid analytics event_name: {event_name}", act="analytics_rejected")
+                raise HTTPException(400, "Invalid event_name")
+            if surface not in allowed_surfaces:
+                rt.log_event(c, user=u, ip_=rt.ip(req), endpoint=req.url.path, et="analytics_event_rejected", sev="warn", detail=f"Invalid analytics surface: {surface}", act="analytics_rejected")
+                raise HTTPException(400, "Invalid surface")
+            rt.record_analytics_event(
+                c,
+                event_type=event_name,
+                surface=surface,
+                user=u,
+                metadata=rt._clone_data(p.metadata or {}),
+            )
+        return {"ok": True}
     def write_payload(c: sqlite3.Connection, user: sqlite3.Row, req: Request, path: Path, obj: Dict[str, Any], op: str) -> int:
         try:
             return rt.write_json_atomic(path, obj)
@@ -2952,6 +3390,7 @@ LIMIT ?
             fp = rt.doc_rel(u["id"], did); b = write_payload(c, u, req, rt.safe_path(fp, u["id"]), obj, "doc_create")
             c.execute("INSERT INTO documents(id,user_id,title,type,created_at,updated_at,last_accessed_at,size_bytes,file_path,is_starred,is_deleted,deleted_at,deleted_by_user,is_guest_owned) VALUES(?,?,?,?,?,?,?,?,?,0,0,NULL,0,?)", (did, u["id"], title, typ, rt.now_iso(), rt.now_iso(), rt.now_iso(), int(b), fp, 1 if u["role"] == "guest" else 0))
             rt.rate_add(c, u["id"], "doc_create", 0); rt.rate_add(c, u["id"], "doc_write", int(b)); rt.recalc_storage(c, u["id"])
+            rt.record_analytics_event(c, event_type="documents_created", surface="docs", user=u, metadata={"document_id": did, "type": typ, "size_bytes": int(b)})
             sw = rt.storage_warning()
             if sw: warns.append(sw)
             return {"ok": True, "document": {"id": did, "title": title, "type": typ, "updated_at": rt.now_iso(), "size_bytes": int(b), "is_starred": False}, "warnings": warns}
@@ -2964,6 +3403,8 @@ LIMIT ?
             pth = rt.safe_path(r["file_path"], r["user_id"])
             body = rt.read_json(pth) if pth.exists() else {}
             c.execute("UPDATE documents SET last_accessed_at=? WHERE id=?", (rt.now_iso(), did))
+            if int(r["is_deleted"] or 0) == 0:
+                rt.record_analytics_event(c, event_type="documents_opened", surface="docs", user=u, metadata={"document_id": did, "type": r["type"]})
             return {"ok": True, "document": {"id": r["id"], "title": r["title"], "type": r["type"], "content_markdown": body.get("content_markdown", ""), "created_at": r["created_at"], "updated_at": r["updated_at"], "is_starred": bool(r["is_starred"]), "is_deleted": bool(r["is_deleted"])}}
 
     @app.patch("/v1/app/docs/{did}")
@@ -2983,6 +3424,7 @@ LIMIT ?
             next_type = (p.type or r["type"] or "markdown").strip().lower(); next_type = next_type if next_type in ("markdown", "json") else "markdown"
             c.execute("UPDATE documents SET title=?, type=?, updated_at=?, last_accessed_at=?, size_bytes=? WHERE id=?", (cur["title"], next_type, rt.now_iso(), rt.now_iso(), int(b), did))
             rt.rate_add(c, u["id"], "doc_write", int(b)); rt.recalc_storage(c, r["user_id"])
+            rt.record_analytics_event(c, event_type="documents_updated", surface="docs", user=u, metadata={"document_id": did, "type": next_type, "size_bytes": int(b)})
             sw = rt.storage_warning()
             if sw: warns.append(sw)
             return {"ok": True, "document": {"id": did, "title": cur["title"], "updated_at": rt.now_iso(), "size_bytes": int(b)}, "warnings": warns}
@@ -2993,6 +3435,7 @@ LIMIT ?
             u = rt.req_user(c, req, write=True); rt.ensure_docs_write_access(c, u)
             r = get_doc(c, u, did)
             c.execute("UPDATE documents SET is_starred=?, updated_at=? WHERE id=?", (1 if p.starred else 0, rt.now_iso(), r["id"]))
+            rt.record_analytics_event(c, event_type="documents_starred" if p.starred else "documents_unstarred", surface="docs", user=u, metadata={"document_id": did})
         return {"ok": True, "starred": bool(p.starred)}
 
     @app.post("/v1/app/docs/trash/clear")
@@ -3007,6 +3450,8 @@ LIMIT ?
                 reclaimed += int(b)
                 deleted_count += int(n)
             rt.recalc_storage(c, u["id"])
+            if deleted_count:
+                rt.record_analytics_event(c, event_type="documents_trash_cleared", surface="docs", user=u, value=deleted_count, metadata={"deleted_count": deleted_count, "reclaimed_bytes": reclaimed})
         return {"ok": True, "deleted_count": deleted_count, "reclaimed_bytes": reclaimed}
 
     @app.delete("/v1/app/docs/{did}")
@@ -3019,6 +3464,7 @@ LIMIT ?
             src = rt.safe_path(r["file_path"], r["user_id"]); tr = rt.trash_rel(r["user_id"], "docs", r["id"]); dst = rt.safe_path(tr, r["user_id"])
             if src.exists(): dst.parent.mkdir(parents=True, exist_ok=True); os.replace(str(src), str(dst))
             c.execute("UPDATE documents SET file_path=?, is_deleted=1, deleted_at=?, deleted_by_user=1, updated_at=? WHERE id=?", (tr, rt.now_iso(), rt.now_iso(), did)); rt.recalc_storage(c, r["user_id"])
+            rt.record_analytics_event(c, event_type="documents_deleted", surface="docs", user=u, metadata={"document_id": did, "type": r["type"]})
         return {"ok": True}
 
     @app.post("/v1/app/docs/{did}/restore")
@@ -3030,6 +3476,28 @@ LIMIT ?
             src = rt.safe_path(r["file_path"], r["user_id"]); lv = rt.doc_rel(r["user_id"], r["id"]); dst = rt.safe_path(lv, r["user_id"])
             if src.exists(): dst.parent.mkdir(parents=True, exist_ok=True); os.replace(str(src), str(dst))
             c.execute("UPDATE documents SET file_path=?, is_deleted=0, deleted_at=NULL, deleted_by_user=0, updated_at=? WHERE id=?", (lv, rt.now_iso(), did)); rt.recalc_storage(c, r["user_id"])
+            rt.record_analytics_event(c, event_type="documents_restored", surface="docs", user=u, metadata={"document_id": did, "type": r["type"]})
+        return {"ok": True}
+
+    @app.post("/v1/app/docs/report-paste-abuse")
+    def docs_report_paste_abuse(p: PasteAbusePayload, req: Request):
+        valid_types = {"paste_cooldown", "paste_duplicate", "paste_too_long"}
+        if (p.abuse_type or "").strip() not in valid_types:
+            raise HTTPException(400, "Invalid abuse_type")
+        et_map = {
+            "paste_cooldown": "docs_paste_cooldown_blocked",
+            "paste_duplicate": "docs_paste_duplicate_blocked",
+            "paste_too_long": "docs_paste_too_long",
+        }
+        et = et_map[p.abuse_type.strip()]
+        with rt.tx() as c:
+            u = rt.req_user(c, req)
+            rt.log_event(c, user=u, ip_=rt.ip(req), endpoint=req.url.path,
+                et=et, sev="warn",
+                detail=p.detail or f"Paste abuse: {p.abuse_type}",
+                act="client_reported")
+            rt._check_flag_escalation(c, u, rt.ip(req), req.url.path, et,
+                rt.docs_offense_window, rt.docs_offense_hits, "docs")
         return {"ok": True}
 
     def serialize_chat_row(row: sqlite3.Row) -> Dict[str, Any]:
@@ -3082,6 +3550,7 @@ LIMIT ?
                 (fid, u["id"], name, name_norm, now, now),
             )
             row = c.execute("SELECT * FROM chat_folders WHERE id=?", (fid,)).fetchone()
+            rt.record_analytics_event(c, event_type="folders_created", surface="chat", user=u, metadata={"folder_id": fid})
             return {"ok": True, "folder": serialize_chat_folder_row(row)}
 
     @app.patch("/v1/app/chat-folders/{fid}")
@@ -3098,6 +3567,7 @@ LIMIT ?
                 raise HTTPException(409, "Folder name already exists")
             c.execute("UPDATE chat_folders SET name=?, name_norm=?, updated_at=? WHERE id=?", (name, name_norm, rt.now_iso(), folder["id"]))
             row = c.execute("SELECT * FROM chat_folders WHERE id=?", (fid,)).fetchone()
+            rt.record_analytics_event(c, event_type="folders_renamed", surface="chat", user=u, metadata={"folder_id": fid})
             return {"ok": True, "folder": serialize_chat_folder_row(row)}
 
     @app.delete("/v1/app/chat-folders/{fid}")
@@ -3108,6 +3578,7 @@ LIMIT ?
             now = rt.now_iso()
             c.execute("UPDATE chats SET folder_id=NULL, updated_at=? WHERE user_id=? AND folder_id=?", (now, u["id"], folder["id"]))
             c.execute("DELETE FROM chat_folders WHERE id=?", (folder["id"],))
+            rt.record_analytics_event(c, event_type="folders_deleted", surface="chat", user=u, metadata={"folder_id": fid})
         return {"ok": True}
 
     @app.get("/v1/app/chats")
@@ -3132,6 +3603,7 @@ LIMIT ?
             o = load_chat_json(r)
             if int(r["is_deleted"] or 0) == 0:
                 c.execute("UPDATE chats SET last_accessed_at=? WHERE id=?", (rt.now_iso(), cid))
+                rt.record_analytics_event(c, event_type="chat_opened", surface="chat", user=u, metadata={"chat_id": cid})
             return {
                 "ok": True,
                 "chat": {
@@ -3167,6 +3639,7 @@ LIMIT ?
             rt.rate_add(c, u["id"], "chat_create", 0)
             rt.rate_add(c, u["id"], "chat_write", int(b))
             rt.recalc_storage(c, u["id"])
+            rt.record_analytics_event(c, event_type="chat_sessions_created", surface="chat", user=u, metadata={"chat_id": cid})
             sw = rt.storage_warning()
             if sw:
                 warns.append(sw)
@@ -3214,6 +3687,7 @@ LIMIT ?
                 os.replace(str(src), str(dst))
             c.execute("UPDATE chats SET file_path=?, is_deleted=1, deleted_at=?, deleted_by_user=1, updated_at=? WHERE id=?", (tr, rt.now_iso(), rt.now_iso(), cid))
             rt.recalc_storage(c, r["user_id"])
+            rt.record_analytics_event(c, event_type="chat_deleted", surface="chat", user=u, metadata={"chat_id": cid})
         return {"ok": True}
 
     @app.post("/v1/app/chats/{cid}/restore")
@@ -3243,6 +3717,7 @@ LIMIT ?
             )
             rt.recalc_storage(c, r["user_id"])
             row = c.execute("SELECT * FROM chats WHERE id=?", (r["id"],)).fetchone()
+            rt.record_analytics_event(c, event_type="chat_restored", surface="chat", user=u, metadata={"chat_id": cid})
             return {"ok": True, "chat": serialize_chat_row(row)}
 
     @app.post("/v1/app/chat/completions")
@@ -3274,6 +3749,9 @@ LIMIT ?
         title = str(payload.get("title") or user_msg[:48] or "New Chat")[:120]
         warns: List[Dict[str, Any]] = []
         user_role = "user"
+        preferred_language = "en"
+        response_language = "en"
+        analytics_user: Optional[Dict[str, Any]] = None
         summary_base: Dict[str, Any] = {
             "request_id": request_id,
             "request_started_at": request_started_at,
@@ -3297,6 +3775,12 @@ LIMIT ?
         with rt.tx() as c:
             u = rt.req_user(c, req, write=True)
             user_role = str(u["role"] or "user")
+            analytics_user = {
+                "id": u["id"],
+                "username": u["username"],
+                "role": u["role"],
+                "preferred_language": u["preferred_language"],
+            }
             try:
                 preferred_language = str(u["preferred_language"] or "en").strip().lower()
             except (KeyError, IndexError):
@@ -3316,6 +3800,8 @@ LIMIT ?
             summary_base["user_id"] = str(u["id"])
             summary_base["response_language"] = response_language
             rt.ensure_ai_send_access(c, u)
+            rt.check_prompt_length(c, u, rt.ip(req), req.url.path, user_msg)
+            rt.check_concurrent_generations(c, u, rt.ip(req), req.url.path, request_id)
             rt.arm_ai_cooldown_if_needed(c, u)
             if chat_id:
                 ch = get_chat(c, u, str(chat_id))
@@ -3329,10 +3815,13 @@ LIMIT ?
                 c.execute("INSERT INTO chats(id,user_id,title,created_at,updated_at,last_accessed_at,token_count_estimate,file_path,size_bytes,is_deleted,deleted_at,deleted_by_user,is_guest_owned,is_saved,folder_id) VALUES(?,?,?,?,?,?,0,?,?,0,NULL,0,?,0,NULL)", (cid, u["id"], title, rt.now_iso(), rt.now_iso(), rt.now_iso(), fp, int(b), 1 if u["role"] == "guest" else 0))
                 rt.rate_add(c, u["id"], "chat_create", 0); rt.rate_add(c, u["id"], "chat_write", int(b)); chat_id = cid
                 ch = c.execute("SELECT * FROM chats WHERE id=?", (cid,)).fetchone()
+                rt.record_analytics_event(c, event_type="chat_sessions_created", surface="chat", user=u, metadata={"chat_id": cid, "source": "completion"})
             b1, tk1, ww = append_chat(c, ch, "user", user_msg, u, req, "chat_append_user", scope="ai")
             warns.extend(ww)
             c.execute("UPDATE chats SET updated_at=?, last_accessed_at=?, size_bytes=?, token_count_estimate=? WHERE id=?", (rt.now_iso(), rt.now_iso(), int(b1), int(tk1), ch["id"]))
             rt.rate_add(c, u["id"], "chat_write", int(b1)); rt.recalc_storage(c, ch["user_id"])
+            rt.record_analytics_event(c, event_type="chat_completion_requested", surface="chat", user=u, metadata={"chat_id": str(chat_id), "model": model, "retrieval_enabled": retrieval_enabled, "response_language": response_language})
+            rt.record_analytics_event(c, event_type="chat_messages_sent", surface="chat", user=u, metadata={"chat_id": str(chat_id), "message_chars": len(user_msg), "response_language": response_language})
         summary_base["chat_id"] = chat_id
         rt._trace_diagnostics(summary_base, request_start_perf, "conversation_history_loaded", chat_id=chat_id)
 
@@ -3357,6 +3846,38 @@ LIMIT ?
                 add_warnings.extend(ww2)
                 c.execute("UPDATE chats SET updated_at=?, last_accessed_at=?, size_bytes=?, token_count_estimate=? WHERE id=?", (rt.now_iso(), rt.now_iso(), int(b2), int(tk2), ch2["id"]))
                 rt.rate_add(c, u2["id"], "chat_write", int(b2)); rt.recalc_storage(c, ch2["user_id"])
+                citations = summary.get("citations") or []
+                rt.record_analytics_event(
+                    c,
+                    event_type="chat_completion_succeeded",
+                    surface="chat",
+                    user=u2,
+                    metadata={
+                        "chat_id": str(chat_id),
+                        "model": model,
+                        "response_language": response_language,
+                        "completion_tokens": int(summary.get("completion_tokens") or 0),
+                        "citation_count": len(citations),
+                    },
+                )
+                if int(summary.get("completion_tokens") or 0) > 0:
+                    rt.record_analytics_event(
+                        c,
+                        event_type="chat_completion_tokens_emitted",
+                        surface="chat",
+                        user=u2,
+                        value=int(summary.get("completion_tokens") or 0),
+                        metadata={"chat_id": str(chat_id), "model": model},
+                    )
+                if citations:
+                    rt.record_analytics_event(
+                        c,
+                        event_type="chat_citations_emitted",
+                        surface="chat",
+                        user=u2,
+                        value=len(citations),
+                        metadata={"chat_id": str(chat_id), "model": model},
+                    )
             rt._trace_diagnostics(summary, request_start_perf, "response_persisted_completed")
             return add_warnings
 
@@ -3375,11 +3896,33 @@ LIMIT ?
                         request_base_url=summary.get("request_base_url"),
                     ):
                         yield f"event: delta\ndata: {json.dumps({'delta': part}, ensure_ascii=False)}\n\n"
+                except asyncio.CancelledError:
+                    summary["request_finished_at"] = rt.now_iso()
+                    if analytics_user is not None:
+                        with rt.tx() as analytics_conn:
+                            rt.record_analytics_event(
+                                analytics_conn,
+                                event_type="chat_completion_stopped",
+                                surface="chat",
+                                user=analytics_user,
+                                metadata={"chat_id": str(chat_id), "model": model, "source": "disconnect"},
+                            )
+                    rt.remove_active_generation(request_id)
+                    return
                 except HTTPException as e:
                     summary["failed_stage"] = summary.get("current_stage") or "generation"
                     summary["request_error"] = str(e.detail)
                     summary["request_finished_at"] = rt.now_iso()
                     summary["warnings"] = list(warns)
+                    if analytics_user is not None:
+                        with rt.tx() as analytics_conn:
+                            rt.record_analytics_event(
+                                analytics_conn,
+                                event_type="chat_completion_failed",
+                                surface="chat",
+                                user=analytics_user,
+                                metadata={"chat_id": str(chat_id), "model": model, "detail": str(e.detail), "status_code": int(e.status_code)},
+                            )
                     if user_role == "admin":
                         metrics = rt.build_admin_metrics(summary)
                         diagnostics = rt.build_admin_diagnostics(summary)
@@ -3389,6 +3932,7 @@ LIMIT ?
                     else:
                         yield f"event: error\ndata: {json.dumps({'detail': e.detail}, ensure_ascii=False)}\n\n"
                         yield "event: done\ndata: {}\n\n"
+                    rt.remove_active_generation(request_id)
                     return
                 except Exception as e:
                     detail = f'llama proxy error: {type(e).__name__}: {e}'
@@ -3396,6 +3940,15 @@ LIMIT ?
                     summary["request_error"] = detail
                     summary["request_finished_at"] = rt.now_iso()
                     summary["warnings"] = list(warns)
+                    if analytics_user is not None:
+                        with rt.tx() as analytics_conn:
+                            rt.record_analytics_event(
+                                analytics_conn,
+                                event_type="chat_completion_failed",
+                                surface="chat",
+                                user=analytics_user,
+                                metadata={"chat_id": str(chat_id), "model": model, "detail": detail},
+                            )
                     if user_role == "admin":
                         metrics = rt.build_admin_metrics(summary)
                         diagnostics = rt.build_admin_diagnostics(summary)
@@ -3405,6 +3958,7 @@ LIMIT ?
                     else:
                         yield f"event: error\ndata: {json.dumps({'detail': detail}, ensure_ascii=False)}\n\n"
                         yield "event: done\ndata: {}\n\n"
+                    rt.remove_active_generation(request_id)
                     return
                 warns_local = list(warns)
                 warns_local.extend(await persist_ai(str(summary.get("text", "")), summary))
@@ -3432,84 +3986,94 @@ LIMIT ?
                 if diagnostics is not None:
                     done_payload["diagnostics"] = diagnostics
                 yield f"event: done\ndata: {json.dumps(done_payload, ensure_ascii=False)}\n\n"
+                rt.remove_active_generation(request_id)
             return StreamingResponse(sse(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
         summary: Dict[str, Any] = dict(summary_base)
         ai_parts: List[str] = []
         try:
-            async for p in stream_model_text(
-                model,
-                norm_messages,
-                summary,
-                retrieval_enabled,
-                response_language=response_language,
-                user_language=preferred_language,
-                request_base_url=summary.get("request_base_url"),
-            ):
-                ai_parts.append(p)
-        except HTTPException as e:
-            summary["failed_stage"] = summary.get("current_stage") or "generation"
-            summary["request_error"] = str(e.detail)
-            summary["request_finished_at"] = rt.now_iso()
-            summary["warnings"] = list(warns)
-            if user_role == "admin":
-                return JSONResponse({
-                    "detail": e.detail,
-                    "chat_id": chat_id,
-                    "admin_metrics": rt.build_admin_metrics(summary),
-                    "admin_diagnostics": rt.build_admin_diagnostics(summary),
-                }, status_code=e.status_code)
-            raise
-        except Exception as e:
-            detail = f"llama proxy error: {type(e).__name__}: {e}"
-            summary["failed_stage"] = summary.get("current_stage") or "generation"
-            summary["request_error"] = detail
-            summary["request_finished_at"] = rt.now_iso()
-            summary["warnings"] = list(warns)
-            if user_role == "admin":
-                return JSONResponse({
-                    "detail": detail,
-                    "chat_id": chat_id,
-                    "admin_metrics": rt.build_admin_metrics(summary),
-                    "admin_diagnostics": rt.build_admin_diagnostics(summary),
-                }, status_code=502)
-            raise HTTPException(502, detail)
-        ai_text = "".join(ai_parts)
+            try:
+                async for p in stream_model_text(
+                    model,
+                    norm_messages,
+                    summary,
+                    retrieval_enabled,
+                    response_language=response_language,
+                    user_language=preferred_language,
+                    request_base_url=summary.get("request_base_url"),
+                ):
+                    ai_parts.append(p)
+            except HTTPException as e:
+                summary["failed_stage"] = summary.get("current_stage") or "generation"
+                summary["request_error"] = str(e.detail)
+                summary["request_finished_at"] = rt.now_iso()
+                summary["warnings"] = list(warns)
+                if analytics_user is not None:
+                    with rt.tx() as analytics_conn:
+                        rt.record_analytics_event(
+                            analytics_conn,
+                            event_type="chat_completion_failed",
+                            surface="chat",
+                            user=analytics_user,
+                            metadata={"chat_id": str(chat_id), "model": model, "detail": str(e.detail), "status_code": int(e.status_code)},
+                        )
+                if user_role == "admin":
+                    return JSONResponse({
+                        "detail": e.detail,
+                        "chat_id": chat_id,
+                        "admin_metrics": rt.build_admin_metrics(summary),
+                        "admin_diagnostics": rt.build_admin_diagnostics(summary),
+                    }, status_code=e.status_code)
+                raise
+            except Exception as e:
+                detail = f"llama proxy error: {type(e).__name__}: {e}"
+                summary["failed_stage"] = summary.get("current_stage") or "generation"
+                summary["request_error"] = detail
+                summary["request_finished_at"] = rt.now_iso()
+                summary["warnings"] = list(warns)
+                if analytics_user is not None:
+                    with rt.tx() as analytics_conn:
+                        rt.record_analytics_event(
+                            analytics_conn,
+                            event_type="chat_completion_failed",
+                            surface="chat",
+                            user=analytics_user,
+                            metadata={"chat_id": str(chat_id), "model": model, "detail": detail},
+                        )
+                if user_role == "admin":
+                    return JSONResponse({
+                        "detail": detail,
+                        "chat_id": chat_id,
+                        "admin_metrics": rt.build_admin_metrics(summary),
+                        "admin_diagnostics": rt.build_admin_diagnostics(summary),
+                    }, status_code=502)
+                raise HTTPException(502, detail)
+            ai_text = "".join(ai_parts)
 
-        warns.extend(await persist_ai(ai_text, summary))
-        sw = rt.storage_warning()
-        if sw: warns.append(sw)
-        summary["warnings"] = warns
-        summary["request_finished_at"] = summary.get("request_finished_at") or rt.now_iso()
-        citations = summary.get("citations") or []
+            warns.extend(await persist_ai(ai_text, summary))
+            sw = rt.storage_warning()
+            if sw: warns.append(sw)
+            summary["warnings"] = warns
+            summary["request_finished_at"] = summary.get("request_finished_at") or rt.now_iso()
+            citations = summary.get("citations") or []
 
-        out: Dict[str, Any] = {
-            "id": rt.uid(),
-            "object": "chat.completion",
-            "chat_id": chat_id,
-            "request_id": request_id,
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": ai_text, "citations": citations}, "finish_reason": summary.get("finish_reason", "stop")}],
-            "citations": citations,
-            "warnings": warns,
-        }
-        if user_role == "admin":
-            out["admin_metrics"] = rt.build_admin_metrics(summary)
-            out["admin_diagnostics"] = rt.build_admin_diagnostics(summary)
-        return JSONResponse(out)
+            out: Dict[str, Any] = {
+                "id": rt.uid(),
+                "object": "chat.completion",
+                "chat_id": chat_id,
+                "request_id": request_id,
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": ai_text, "citations": citations}, "finish_reason": summary.get("finish_reason", "stop")}],
+                "citations": citations,
+                "warnings": warns,
+            }
+            if user_role == "admin":
+                out["admin_metrics"] = rt.build_admin_metrics(summary)
+                out["admin_diagnostics"] = rt.build_admin_diagnostics(summary)
+            return JSONResponse(out)
+        finally:
+            rt.remove_active_generation(request_id)
 
     return rt
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

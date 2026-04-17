@@ -88,7 +88,10 @@ const copy = {
     checklistItem: "List item",
     ready: "Ready.",
     failedLoadDocs: "Failed to load docs",
-    failedInitDocs: "Failed to initialize docs"
+    failedInitDocs: "Failed to initialize docs",
+    pasteCooldown: "Please wait 5 seconds between pastes.",
+    pasteDuplicate: "You've pasted this content too many times.",
+    pasteTooLong: "{count} / 7500 characters — paste is too long."
   },
   es: {
     appTitle: "Project Puente Docs",
@@ -172,7 +175,10 @@ const copy = {
     checklistItem: "Elemento de lista",
     ready: "Listo.",
     failedLoadDocs: "No se pudieron cargar los docs",
-    failedInitDocs: "No se pudo iniciar Docs"
+    failedInitDocs: "No se pudo iniciar Docs",
+    pasteCooldown: "Por favor espera 5 segundos entre pegadas.",
+    pasteDuplicate: "Has pegado este contenido demasiadas veces.",
+    pasteTooLong: "{count} / 7500 caracteres — el texto pegado es demasiado largo."
   },
 };
 
@@ -234,7 +240,9 @@ const state = {
   saveTimer: null,
   lastLoadedDocId: null,
   lastLoadedHtml: "",
-  loadingDoc: false
+  loadingDoc: false,
+  lastPasteTime: 0,
+  pasteContentCounts: {}
 };
 
 function getCopy() {
@@ -995,6 +1003,69 @@ function insertEditorIndentation() {
   return true;
 }
 
+async function handleEditorPaste(event) {
+  const doc = getCurrentDoc();
+  if (!doc || doc.is_deleted) return;
+  const t = getCopy();
+  const now = Date.now();
+
+  // 1. 5-second cooldown between pastes
+  if (now - state.lastPasteTime < 5000) {
+    event.preventDefault();
+    setStatus(t.pasteCooldown, "warn");
+    try {
+      await api("/docs/report-paste-abuse", "POST", {
+        doc_id: state.currentDocId,
+        abuse_type: "paste_cooldown",
+        detail: "Paste within 5s cooldown"
+      });
+    } catch {}
+    return;
+  }
+
+  const pastedText = event.clipboardData ? event.clipboardData.getData("text/plain") : "";
+
+  // 2. Character length check (7500 total chars)
+  if (pastedText.length > 7500) {
+    event.preventDefault();
+    setStatus(t.pasteTooLong.replace("{count}", pastedText.length), "warn");
+    try {
+      await api("/docs/report-paste-abuse", "POST", {
+        doc_id: state.currentDocId,
+        abuse_type: "paste_too_long",
+        detail: `Pasted ${pastedText.length} chars`
+      });
+    } catch {}
+    return;
+  }
+
+  // 3. Duplicate content check (block after 6 pastes of same content)
+  if (pastedText.trim().length > 0) {
+    const normalized = pastedText.trim().toLowerCase().replace(/\s+/g, " ");
+    if (Object.keys(state.pasteContentCounts).length > 100) {
+      state.pasteContentCounts = {};
+    }
+    const prev = state.pasteContentCounts[normalized] || 0;
+    const next = prev + 1;
+    state.pasteContentCounts[normalized] = next;
+    if (next >= 6) {
+      event.preventDefault();
+      setStatus(t.pasteDuplicate, "warn");
+      try {
+        await api("/docs/report-paste-abuse", "POST", {
+          doc_id: state.currentDocId,
+          abuse_type: "paste_duplicate",
+          detail: `Duplicate paste count: ${next}`
+        });
+      } catch {}
+      return;
+    }
+  }
+
+  // All checks passed — allow paste and update timestamp
+  state.lastPasteTime = now;
+}
+
 function handleEditorKeyDown(event) {
   const doc = getCurrentDoc();
   if (!doc || doc.is_deleted) {
@@ -1175,6 +1246,7 @@ function bindEvents() {
   });
   ui.editorSurface.addEventListener("keydown", handleEditorKeyDown);
   ui.editorSurface.addEventListener("click", handleEditorClick);
+  ui.editorSurface.addEventListener("paste", handleEditorPaste);
 
   document.addEventListener("selectionchange", () => {
     normalizeEditorLists();

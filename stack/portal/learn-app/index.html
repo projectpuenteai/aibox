@@ -136,7 +136,28 @@
       } catch {}
     }
 
+    function postAnalyticsEvent(eventName, metadata = {}) {
+      const payload = JSON.stringify({ event_name: eventName, surface: "learn", metadata });
+      try {
+        if (navigator.sendBeacon) {
+          const blob = new Blob([payload], { type: "application/json" });
+          if (navigator.sendBeacon("/ai/api/v1/app/analytics/events", blob)) return;
+        }
+      } catch {}
+      fetch("/ai/api/v1/app/analytics/events", {
+        method: "POST",
+        credentials: "same-origin",
+        keepalive: true,
+        headers: { "Content-Type": "application/json" },
+        body: payload
+      }).catch(() => {});
+    }
+
     applyLanguage();
+    postAnalyticsEvent("learn_shell_open", { href: "/learn-app/" });
+    document.getElementById("openLink").addEventListener("click", () => {
+      postAnalyticsEvent("learn_open_full_page", { href: "/kolibri/" });
+    });
     syncLanguageFromUser();
   </script>
 </body>
