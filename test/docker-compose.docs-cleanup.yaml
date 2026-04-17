@@ -1,8 +1,0 @@
-services:
-  ai-control:
-    environment:
-      - DOC_RETENTION_DAYS=0
-      - TRASH_RETENTION_DAYS=30
-      - DISK_CLEANUP_PERCENT=0
-      - DISK_EMERGENCY_PERCENT=101
-      - CLEANUP_LOOP_SECONDS=1
