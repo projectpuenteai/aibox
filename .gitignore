@@ -20,16 +20,11 @@ kolibri-data/**
 models/**
 !models/
 !models/.gitkeep
-export/backend-data/**
-!export/backend-data/
-!export/backend-data/.gitkeep
-export/models/**
-!export/models/
-!export/models/.gitkeep
 runtime/**
-aibox/**
 kiwix/**
-chroma_db.zip
+
+# Large artifacts
+*.zip
 
 # Caches
 **/.cache/

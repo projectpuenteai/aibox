@@ -1,0 +1,54 @@
+{
+  "timestamp": "2026-04-18T02:57:01.029990+00:00",
+  "lane": "retention-clone",
+  "cleanup": {
+    "running": false,
+    "reclaimed": 2392,
+    "deleted_items": 6,
+    "used_percent": 71.177,
+    "free_bytes": 287952424960,
+    "level": "normal"
+  },
+  "checks": [
+    {
+      "id": "clone-trash-doc-purge",
+      "name": "Old deleted docs are hard deleted",
+      "status": "PASS"
+    },
+    {
+      "id": "clone-trash-chat-purge",
+      "name": "Old deleted chats are hard deleted",
+      "status": "PASS"
+    },
+    {
+      "id": "clone-guest-expire",
+      "name": "Inactive guest accounts are deleted",
+      "status": "PASS"
+    },
+    {
+      "id": "clone-pressure-doc-purge",
+      "name": "Old unstarred docs are deleted under cleanup pressure",
+      "status": "PASS"
+    },
+    {
+      "id": "clone-pressure-doc-protect",
+      "name": "Starred docs survive cleanup pressure",
+      "status": "PASS"
+    },
+    {
+      "id": "clone-pressure-chat-purge",
+      "name": "Old unsaved chats are deleted under cleanup pressure",
+      "status": "PASS"
+    },
+    {
+      "id": "clone-pressure-chat-protect",
+      "name": "Saved chats survive cleanup pressure",
+      "status": "PASS"
+    },
+    {
+      "id": "clone-cleanup-event",
+      "name": "Cleanup run records an event",
+      "status": "PASS"
+    }
+  ]
+}

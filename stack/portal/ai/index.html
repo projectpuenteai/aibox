@@ -2059,8 +2059,6 @@
       ui.diagnosticsDock.classList.remove("hidden");
       ui.diagnosticsDock.classList.toggle("collapsed", !state.diagnosticsExpanded);
       ui.diagnosticsToggleBtn.setAttribute("aria-expanded", state.diagnosticsExpanded ? "true" : "false");
-      ui.diagnosticsMeta.textContent = `Request ${requestId} � ${statusLevel.toUpperCase()}`;
-
       ui.diagnosticsMeta.textContent = text("requestMeta", { id: requestId, level: statusLevel.toUpperCase() });
       ui.diagnostics.innerHTML = `
         <div class="diag-toolbar">

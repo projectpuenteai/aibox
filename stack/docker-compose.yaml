@@ -15,6 +15,11 @@ services:
     networks:
       - aibox_net
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   caddy:
     image: caddy:2
@@ -29,6 +34,11 @@ services:
     networks:
       - aibox_net
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   llama:
     image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:5c9266b4f92f1ab0d26dd0f2ede2e65d3853cad99ff86ba219db8fe6d464b995}
@@ -71,6 +81,11 @@ services:
     networks:
       - aibox_net
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     stop_grace_period: 20s
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:2020/health >/dev/null || exit 1"]
@@ -92,10 +107,13 @@ services:
       - STACK_DEFAULT_DESIRED=1
       - RESET_OVERRIDE_ON_START=1
       - APP_ENV=production
-      - APP_ENCRYPTION_MASTER_KEY=${APP_ENCRYPTION_MASTER_KEY:-MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=}
+      - APP_ENCRYPTION_MASTER_KEY=${APP_ENCRYPTION_MASTER_KEY:?Set APP_ENCRYPTION_MASTER_KEY in stack/.env}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:?Set ADMIN_USERNAME in stack/.env}
+      - ADMIN_DEFAULT_PASSWORD=${ADMIN_DEFAULT_PASSWORD:?Set ADMIN_DEFAULT_PASSWORD in stack/.env}
+      - SESSION_TOKEN_PEPPER=${SESSION_TOKEN_PEPPER:?Set SESSION_TOKEN_PEPPER in stack/.env}
       - CHROMA_PERSIST_DIR=/data/chroma_db
       - CHROMA_COLLECTION=simplewiki_chunks
-      - CHROMA_PERSIST_DIR_ES=/data/chroma_db_es/spanish-wiki-chroma_db/chroma_db
+      - CHROMA_PERSIST_DIR_ES=/data/chroma_db_es
       - CHROMA_COLLECTION_ES=simplewiki_chunks
       - EMBED_MODEL=/models/embed-m3
       - RETRIEVAL_DEVICE=cpu
@@ -119,6 +137,11 @@ services:
     networks:
       - aibox_net
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     depends_on:
       - llama
     healthcheck:
@@ -136,61 +159,11 @@ services:
     networks:
       - aibox_net
     restart: unless-stopped
-
-  ai:
-    profiles:
-      - legacy-ai
-    build:
-      context: ../backend
-    container_name: aibox-ai
-    gpus: all
-    environment:
-      - CHROMA_PERSIST_DIR=/data/chroma_db
-      - CHROMA_COLLECTION=simplewiki_chunks
-      - EMBED_MODEL=/models/embed
-      - EMBED_DEVICE=auto
-      - LLM_PATH=/models/llm
-      - LLM_FALLBACK_PATH=/models/llm-small
-      - LLM_MODEL_PROFILE=primary
-      - LLM_QUANTIZATION=4bit
-      - LLM_COMPUTE_DTYPE=float16
-      - LLM_DEVICE=cuda
-      - LLM_CPU_DTYPE=float16
-      - LLM_MAX_CPU_MEMORY=10GiB
-      - LLM_OFFLOAD_DIR=/tmp/llm_offload
-      - RETRIEVAL_DEVICE=cpu
-      - CPU_THREADS=16
-      - ADMIN_STATE_PATH=/data/admin_state.json
-      - AI_ENABLED_DEFAULT=1
-      - WARMUP_ON_STARTUP=1
-      - WARMUP_RETRIEVER_ON_STARTUP=0
-      - WARMUP_GENERATE_ON_STARTUP=1
-      - TOP_K=5
-      - RETRIEVAL_CANDIDATE_K=14
-      - RETRIEVAL_MIN_RELEVANCE_SCORE=0.12
-      - RERANK_MODEL=/models/rerank
-      - RERANK_DEVICE=cpu
-      - RETRIEVAL_MAX_RERANK_BODY_CHARS=1400
-      - MAX_NEW_TOKENS=256
-      - MAX_INPUT_TOKENS=1024
-      - MAX_CONTEXT_CHARS=2200
-      - RETRIEVAL_ENABLED_DEFAULT=0
-      - RETRIEVAL_TIMEOUT_SECONDS=10.0
-      - STREAM_TIMEOUT_SECONDS=150
-      - GENERATION_TIMEOUT_SECONDS=120
-      - TEMPERATURE=0.0
-      - TOP_P=0.95
-      - REPETITION_PENALTY=1.05
-      - HF_ENABLE_PARALLEL_LOADING=true
-      - HF_PARALLEL_LOADING_WORKERS=8
-      - CORS_ALLOW_ORIGINS=*
-      - STARTUP_VALIDATE=0
-    volumes:
-      - ../backend-data:/data
-      - ../models:/models:ro
-    networks:
-      - aibox_net
-    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   kiwix:
     image: ghcr.io/kiwix/kiwix-serve:latest
@@ -201,6 +174,11 @@ services:
     networks:
       - aibox_net
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   kolibri:
     image: treehouses/kolibri:latest
@@ -210,6 +188,11 @@ services:
     networks:
       - aibox_net
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 networks:
   aibox_net:
@@ -219,10 +202,6 @@ volumes:
   dns_data:
   caddy_data:
   caddy_config:
-
-
-
-
 
 
 

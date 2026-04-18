@@ -82,6 +82,21 @@ if (-not $SkipCpuSync) {
   }
 }
 
+# ── Docker storage cleanup (safe offline prune) ───────────────────────────────
+# Cleans stopped containers, dangling image layers, and build cache.
+# Only removes items that cannot be pulled back (never removes tagged images
+# or named volumes). Triggers when free disk space falls below 15 GB.
+$cleanupScript = Join-Path $scriptDir "cleanup_docker_storage.ps1"
+if (Test-Path $cleanupScript) {
+  Write-Host "[info] Checking Docker storage (threshold: 15 GB free)..."
+  & powershell -ExecutionPolicy Bypass -File $cleanupScript -ThresholdGB 15
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "[warn] Docker storage cleanup returned a non-zero exit code; continuing anyway." -ForegroundColor Yellow
+  }
+} else {
+  Write-Host "[warn] cleanup_docker_storage.ps1 not found; skipping storage check." -ForegroundColor Yellow
+}
+
 $preflight = Join-Path $scriptDir "preflight_llama_runtime.ps1"
 $preflightArgs = @("-ExecutionPolicy", "Bypass", "-File", $preflight, "-ComposeFile", $ComposeFile)
 if ($SkipGpuProbe) {

@@ -6,10 +6,14 @@ This repository intentionally does not store local model weights, Chroma databas
 
 ## What Is In This Repo
 
-- `stack/`: Docker Compose, Caddy config, and portal assets
-- `backend/`: legacy Python AI service used by the optional `legacy-ai` profile
-- `tools/`: runtime scripts, indexing tools, and support utilities
-- `test/`: compatibility compose shim and test docs
+- `stack/`: Docker Compose, Caddy config, `.env.example`, and portal assets
+- `tools/ai-control/`: FastAPI control-plane and RAG service (the core custom code)
+- `tools/data_prep/`: Wikipedia dump extraction and chunking scripts
+- `tools/index/`: ChromaDB index build, inspect, query, and rebuild scripts
+- `tools/config/`: shared constants used by all pipeline scripts
+- `tools/benchmarks/`: latency and chat runtime profiling
+- `tools/tests/`: comprehensive RAG test suite
+- `tools/llama-runtime/`: PowerShell preflight and startup scripts
 
 ## What Is Not In This Repo
 
@@ -31,7 +35,7 @@ These are expected to exist locally on each machine and are ignored by Git:
 - NVIDIA GPU + Docker GPU support for the default CUDA llama runtime
 - Python 3.12 if you want to run local Python tools outside Docker
 
-## Clone And Prepare
+## Quick Start
 
 ```powershell
 git clone https://github.com/projectpuenteai/aibox.git
@@ -39,7 +43,19 @@ cd aibox
 copy stack\.env.example stack\.env
 ```
 
-Edit `stack/.env` only if you need to override the default llama image or model file name.
+Edit `stack/.env` and fill in the **required** values (see below).
+
+## Required Secrets
+
+The stack requires these values in `stack/.env` before it will start:
+
+| Variable | Purpose | How to generate |
+|----------|---------|----------------|
+| `APP_ENCRYPTION_MASTER_KEY` | AES-GCM encryption for user data | `python -c "import secrets,base64; print(base64.b64encode(secrets.token_bytes(32)).decode())"` |
+| `ADMIN_DEFAULT_PASSWORD` | Initial admin account password | Choose a strong password |
+| `SESSION_TOKEN_PEPPER` | Session token hashing pepper | `python -c "import secrets; print(secrets.token_hex(16))"` |
+
+`ADMIN_USERNAME` defaults to `puenteAdmin` but can be changed.
 
 ## Required Local Folder Layout
 
@@ -51,7 +67,7 @@ aibox\
 |-- kiwix\
 |-- kolibri-data\
 `-- models\
-    |-- embed\
+    |-- embed-m3\
     |-- llm\
     |   `-- gguf\
     `-- rerank\
@@ -59,32 +75,17 @@ aibox\
 
 ## Required Local Models
 
-### Current default stack
-
 The active Docker stack uses these local model paths:
 
 - `models/llm/gguf/<your-gguf-file>`
-- `models/embed/`
-- `models/rerank/`
+- `models/embed-m3/` (BGE-M3 embedding model)
+- `models/rerank/` (cross-encoder reranker)
 
 By default, `stack/.env.example` expects:
 
 - `models/llm/gguf/qwen2.5-7b-instruct-q4_0-00001-of-00002.gguf`
 
-The `llama` service reads the GGUF model directly. The `ai-control` service expects local embedding and reranker model directories at `models/embed` and `models/rerank`.
-
-### Optional legacy profile
-
-If you run the optional legacy backend profile, it also expects Hugging Face-style model files under:
-
-- `models/llm/`
-- optional fallback path `models/llm-small/`
-
-Start the legacy profile only if you actually need the Python backend:
-
-```powershell
-docker compose -f stack/docker-compose.yaml --profile legacy-ai up -d ai
-```
+The `llama` service reads the GGUF model directly. The `ai-control` service expects local embedding and reranker model directories.
 
 ## Kiwix And Kolibri Local Data
 
@@ -189,6 +190,3 @@ It is not intended to version:
 - Portal: `stack/portal/`
 - AI control service: `tools/ai-control/`
 - Llama runtime docs/scripts: `tools/llama-runtime/`
-- Compatibility compose shim: `test/docker-compose.yaml`
-
-

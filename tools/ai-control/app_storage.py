@@ -232,11 +232,25 @@ class StorageRuntime:
         self.llama_yarn_scaling = (os.getenv("LLAMA_YARN_SCALING", "") or "").strip() or None
 
         self.cookie = os.getenv("SESSION_COOKIE_NAME", "aibox_session")
-        self.token_pepper = os.getenv("SESSION_TOKEN_PEPPER", "aibox-pepper")
+        self.token_pepper = os.getenv("SESSION_TOKEN_PEPPER", "")
+        if not self.token_pepper:
+            if self.app_env == "production":
+                raise RuntimeError("SESSION_TOKEN_PEPPER must be set for production. Add it to stack/.env")
+            self.token_pepper = "dev-only-pepper"
+            logger.warning("Using development-only session pepper. Set SESSION_TOKEN_PEPPER for production.")
         self.session_days = int(os.getenv("SESSION_DAYS", "7"))
 
-        self.admin_username = os.getenv("ADMIN_USERNAME", "puenteAdmin")
-        self.admin_password = os.getenv("ADMIN_DEFAULT_PASSWORD", "puente123rocks")
+        self.admin_username = os.getenv("ADMIN_USERNAME", "")
+        self.admin_password = os.getenv("ADMIN_DEFAULT_PASSWORD", "")
+        if not self.admin_username or not self.admin_password:
+            if self.app_env == "production":
+                raise RuntimeError(
+                    "ADMIN_USERNAME and ADMIN_DEFAULT_PASSWORD must be set. "
+                    "Add them to stack/.env or docker-compose environment."
+                )
+            self.admin_username = self.admin_username or "admin"
+            self.admin_password = self.admin_password or "changeme"
+            logger.warning("Using development-only admin credentials. Set ADMIN_USERNAME and ADMIN_DEFAULT_PASSWORD for production.")
 
         self.chat_retention_days = int(os.getenv("CHAT_RETENTION_DAYS", "90"))
         self.doc_retention_days = int(os.getenv("DOC_RETENTION_DAYS", "180"))
@@ -276,6 +290,15 @@ class StorageRuntime:
         self.login_window = int(os.getenv("LOGIN_WINDOW_SECONDS", "900"))
 
         self.cleanup_loop_seconds = int(os.getenv("CLEANUP_LOOP_SECONDS", "600"))
+
+        self.rate_events_retention_days = int(os.getenv("RATE_EVENTS_RETENTION_DAYS", "7"))
+        self.security_events_retention_days = int(os.getenv("SECURITY_EVENTS_RETENTION_DAYS", "90"))
+        self.usage_events_retention_days = int(os.getenv("USAGE_EVENTS_RETENTION_DAYS", "14"))
+        self.cleanup_events_retention_days = int(os.getenv("CLEANUP_EVENTS_RETENTION_DAYS", "30"))
+        self.login_attempts_retention_days = int(os.getenv("LOGIN_ATTEMPTS_RETENTION_DAYS", "7"))
+        self.session_retention_days = int(os.getenv("SESSION_RETENTION_DAYS", "30"))
+        self.vacuum_interval_hours = int(os.getenv("VACUUM_INTERVAL_HOURS", "24"))
+        self._last_vacuum_ts = 0
 
         key_b64 = (os.getenv("APP_ENCRYPTION_MASTER_KEY", "") or "").strip()
         if not key_b64:
@@ -361,6 +384,19 @@ class StorageRuntime:
         if req.client:
             return str(req.client.host)
         return "unknown"
+
+    def persist_and_raise(self, c: sqlite3.Connection, status_code: int, detail: str) -> None:
+        """Commit enforcement-side effects before raising an HTTP error.
+
+        Rate limits, lockouts, and security events are part of the intended state
+        transition, not incidental work. Commit them before raising so the outer
+        request transaction does not roll them back.
+        """
+        try:
+            c.commit()
+        except sqlite3.Error:
+            logger.exception("Failed to commit enforcement state before raising %s", status_code)
+        raise HTTPException(status_code, detail)
 
     def token_hash(self, token: str) -> str:
         return hashlib.sha256(f"{token}:{self.token_pepper}".encode("utf-8")).hexdigest()
@@ -1950,6 +1986,7 @@ class StorageRuntime:
         c.row_factory = sqlite3.Row
         c.execute("PRAGMA foreign_keys=ON")
         c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA synchronous=FULL")
         return c
 
     @contextmanager
@@ -1960,7 +1997,10 @@ class StorageRuntime:
             yield c
             c.commit()
         except Exception:
-            c.rollback()
+            try:
+                c.rollback()
+            except sqlite3.Error:
+                pass
             raise
         finally:
             c.close()
@@ -2018,6 +2058,18 @@ class StorageRuntime:
             return None
         return str(self.get_chat_folder_row(c, user_id, value)["id"])
     def init_db(self) -> None:
+        try:
+            check_conn = self.db()
+            try:
+                result = check_conn.execute("PRAGMA integrity_check(1)").fetchone()
+                if result and str(result[0]).lower() != "ok":
+                    logger.critical("SQLite integrity check FAILED: %s", result[0])
+                    raise RuntimeError(f"Database integrity check failed: {result[0]}")
+            finally:
+                check_conn.close()
+        except sqlite3.DatabaseError as exc:
+            logger.critical("SQLite integrity check error: %s", exc)
+            raise RuntimeError(f"Database corrupted or unreadable: {exc}") from exc
         with self.tx() as c:
             c.executescript(
                 """
@@ -2384,7 +2436,7 @@ CREATE TABLE IF NOT EXISTS analytics_exports(id TEXT PRIMARY KEY,format TEXT NOT
                 self.apply_docs_penalty(c, user, ip_, endpoint)
             elif scope == "ai":
                 self.apply_ai_penalty(c, user, ip_, endpoint)
-            raise HTTPException(429, f"Rate/storage limit exceeded: {metric}")
+            self.persist_and_raise(c, 429, f"Rate/storage limit exceeded: {metric}")
 
     def recalc_storage(self, c: sqlite3.Connection, uid_: str) -> None:
         d = c.execute("SELECT COALESCE(SUM(size_bytes),0) s FROM documents WHERE user_id=?", (uid_,)).fetchone()["s"]
@@ -2486,6 +2538,35 @@ CREATE TABLE IF NOT EXISTS analytics_exports(id TEXT PRIMARY KEY,format TEXT NOT
                 for r in conn.execute("SELECT * FROM documents WHERE is_deleted=0 AND is_starred=0 AND COALESCE(last_accessed_at,updated_at,created_at)<=? ORDER BY COALESCE(last_accessed_at,updated_at,created_at) ASC", (dcut,)).fetchall():
                     if not still(): break
                     b, n = self.hard_del_doc(conn, r); reclaimed += b; deleted += n
+            # --- TTL cleanup for unbounded tables ---
+            rate_cut_ts = int((now - timedelta(days=self.rate_events_retention_days)).timestamp())
+            conn.execute("DELETE FROM rate_events WHERE created_ts < ?", (rate_cut_ts,))
+            sec_cut = (now - timedelta(days=self.security_events_retention_days)).isoformat()
+            conn.execute("DELETE FROM security_events WHERE created_at < ?", (sec_cut,))
+            usage_cut_ts = int((now - timedelta(days=self.usage_events_retention_days)).timestamp())
+            conn.execute("DELETE FROM usage_events WHERE created_ts < ?", (usage_cut_ts,))
+            cleanup_cut = (now - timedelta(days=self.cleanup_events_retention_days)).isoformat()
+            conn.execute("DELETE FROM cleanup_events WHERE created_at < ?", (cleanup_cut,))
+            login_cut_ts = int((now - timedelta(days=self.login_attempts_retention_days)).timestamp())
+            conn.execute("DELETE FROM login_attempts WHERE last_attempt_ts < ?", (login_cut_ts,))
+            session_cut = (now - timedelta(days=self.session_retention_days)).isoformat()
+            conn.execute("DELETE FROM sessions WHERE expires_at < ? AND (revoked_at IS NOT NULL OR expires_at < ?)", (session_cut, session_cut))
+
+            # --- Orphan user directory cleanup ---
+            try:
+                known_uids = {str(r["id"]) for r in conn.execute("SELECT id FROM users").fetchall()}
+                if self.users_root.exists():
+                    for entry in self.users_root.iterdir():
+                        if entry.is_dir() and entry.name not in known_uids:
+                            try:
+                                size = sum(f.stat().st_size for f in entry.rglob("*") if f.is_file())
+                                shutil.rmtree(entry)
+                                reclaimed += size; deleted += 1
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
             for u in conn.execute("SELECT id FROM users").fetchall(): self.recalc_storage(conn, u["id"])
             snap_inner = self.disk()
             conn.execute("INSERT INTO cleanup_events(reason,level,bytes_reclaimed,items_deleted,used_percent,free_bytes,details,created_at) VALUES(?,?,?,?,?,?,?,?)", (reason, self.pressure(snap_inner), int(reclaimed), int(deleted), float(snap_inner["used_percent"]), int(snap_inner["free_bytes"]), "", self.now_iso()))
@@ -2500,6 +2581,17 @@ CREATE TABLE IF NOT EXISTS analytics_exports(id TEXT PRIMARY KEY,format TEXT NOT
             else:
                 with self.tx() as conn:
                     cleanup_pass(conn)
+            # Periodic VACUUM to reclaim disk space from deleted rows
+            if self.now_ts() - self._last_vacuum_ts >= self.vacuum_interval_hours * 3600:
+                try:
+                    vc = self.db()
+                    try:
+                        vc.execute("VACUUM")
+                    finally:
+                        vc.close()
+                    self._last_vacuum_ts = self.now_ts()
+                except Exception:
+                    logger.warning("VACUUM failed", exc_info=True)
             snap = self.disk()
             return {"running": False, "reclaimed": int(reclaimed), "deleted_items": int(deleted), "used_percent": snap["used_percent"], "free_bytes": snap["free_bytes"], "level": self.pressure(snap)}
         finally:
@@ -2533,7 +2625,7 @@ CREATE TABLE IF NOT EXISTS analytics_exports(id TEXT PRIMARY KEY,format TEXT NOT
         if bytes_write > self.doc_max:
             self.log_event(c, user=user, ip_=ip_, endpoint=ep, et="docs_limit_block", sev="error", detail="Doc exceeds max size", obs=float(bytes_write), th=float(self.doc_max), act="blocked")
             self.apply_docs_penalty(c, user, ip_, ep)
-            raise HTTPException(429, "Document size exceeds limit")
+            self.persist_and_raise(c, 429, "Document size exceeds limit")
         if create:
             doc_count = int(c.execute(
                 "SELECT COUNT(*) c FROM documents WHERE user_id=? AND is_deleted=0", (user["id"],)
@@ -2547,7 +2639,7 @@ CREATE TABLE IF NOT EXISTS analytics_exports(id TEXT PRIMARY KEY,format TEXT NOT
                     detail=f"Max docs limit reached: {doc_count}/{self.max_docs}",
                     obs=float(doc_count), th=float(self.max_docs), act="blocked")
                 self.apply_docs_penalty(c, user, ip_, ep)
-                raise HTTPException(429, msg)
+                self.persist_and_raise(c, 429, msg)
             self.check_limit(c, user, ip_, ep, "docs_per_minute", float(self.rate_count(c, user["id"], "doc_create") + 1), float(self.doc_create_per_min), warnings, scope="docs")
         self.check_limit(c, user, ip_, ep, "doc_write_bytes_per_minute", float(self.rate_bytes(c, user["id"], "doc_write") + bytes_write), float(self.doc_write_bpm), warnings, scope="docs")
         return warnings
@@ -2560,7 +2652,7 @@ CREATE TABLE IF NOT EXISTS analytics_exports(id TEXT PRIMARY KEY,format TEXT NOT
             self.log_event(c, user=user, ip_=ip_, endpoint=ep, et=et, sev="error", detail="Chat exceeds max size", obs=float(bytes_write), th=float(self.chat_max), act="blocked")
             if scope == "ai":
                 self.apply_ai_penalty(c, user, ip_, ep)
-            raise HTTPException(429, "Chat size exceeds limit")
+            self.persist_and_raise(c, 429, "Chat size exceeds limit")
         if create:
             ac = int(c.execute("SELECT COUNT(*) c FROM chats WHERE user_id=? AND is_deleted=0", (user["id"],)).fetchone()["c"])
             if ac >= self.max_chats:
@@ -2615,7 +2707,7 @@ CREATE TABLE IF NOT EXISTS analytics_exports(id TEXT PRIMARY KEY,format TEXT NOT
                 obs=float(count), th=float(self.max_concurrent_generations), act="blocked")
             self._check_flag_escalation(c, user, ip_, endpoint,
                 "chat_concurrent_blocked", self.ai_offense_window, self.ai_block_hits, "ai")
-            raise HTTPException(429, msg)
+            self.persist_and_raise(c, 429, msg)
         c.execute(
             "INSERT OR IGNORE INTO active_generations(request_id, user_id, started_at) VALUES(?,?,?)",
             (request_id, user["id"], self.now_iso())
@@ -2644,7 +2736,7 @@ CREATE TABLE IF NOT EXISTS analytics_exports(id TEXT PRIMARY KEY,format TEXT NOT
                 obs=float(stripped_len), th=7000.0, act="blocked")
             self._check_flag_escalation(c, user, ip_, endpoint,
                 "chat_prompt_too_long", self.ai_offense_window, self.ai_block_hits, "ai")
-            raise HTTPException(400, msg)
+            self.persist_and_raise(c, 400, msg)
         if stripped_len > self.heavy_prompt_chars:
             self.rate_add(c, user["id"], "chat_heavy_prompt", 0)
             self.log_event(c, user=user, ip_=ip_, endpoint=endpoint,
@@ -2663,6 +2755,13 @@ def mount_app_storage(app, llama_base_url: str):
     """Create the runtime, initialize storage, and mount all /v1/app/* routes."""
     rt = StorageRuntime(llama_base_url)
     rt.ensure_dirs()
+    model_path = Path(rt.llama_model_path)
+    if not model_path.exists():
+        logger.warning(
+            "Model file not found at %s. The llama container will fail to start. "
+            "Check LLAMA_MODEL_FILE env var and /models volume mount.",
+            model_path,
+        )
     rt.init_db()
     rt.seed_admin()
     def _background_startup():
@@ -2683,7 +2782,9 @@ def mount_app_storage(app, llama_base_url: str):
         preferred_language = normalize_language_preference(p.preferred_language, default="en")
         preferred_theme = normalize_theme_preference(p.preferred_theme, default="light")
         if len(username) < 3: raise HTTPException(400, "Username must be at least 3 characters")
+        if len(username) > 50: raise HTTPException(400, "Username must be at most 50 characters")
         if len(pw) < 4: raise HTTPException(400, "Password must be at least 4 characters")
+        if len(pw) > 128: raise HTTPException(400, "Password must be at most 128 characters")
         if role not in ("user", "guest"): role = "user"
         if role == "guest": preferred_theme = "light"
         with rt.tx() as c:
@@ -2704,6 +2805,7 @@ def mount_app_storage(app, llama_base_url: str):
         """Validate credentials, enforce lockouts, and issue a session cookie."""
         username = (p.username or "").strip(); pw = p.password or ""
         if not username or not pw: raise HTTPException(400, "Missing username or password")
+        if len(pw) > 128: raise HTTPException(400, "Password must be at most 128 characters")
         nn, ip_ = rt.nuser(username), rt.ip(req)
         with rt.tx() as c:
             a = c.execute("SELECT * FROM login_attempts WHERE username_norm=? AND ip=?", (nn, ip_)).fetchone()
@@ -2721,7 +2823,9 @@ def mount_app_storage(app, llama_base_url: str):
                     fc = int(a["fail_count"]) + 1
                     lock = rt.now_ts() + rt.login_window if fc >= rt.login_fail_limit else None
                     c.execute("UPDATE login_attempts SET fail_count=?, last_attempt_ts=?, lockout_until_ts=? WHERE username_norm=? AND ip=?", (fc, rt.now_ts(), lock, nn, ip_))
-                raise HTTPException(401, "Invalid username or password")
+                detail = "Too many login attempts; try later" if a is not None and int(a["fail_count"]) + 1 >= rt.login_fail_limit else "Invalid username or password"
+                status_code = 429 if detail.startswith("Too many login attempts") else 401
+                rt.persist_and_raise(c, status_code, detail)
             c.execute("DELETE FROM login_attempts WHERE username_norm=? AND ip=?", (nn, ip_))
             rt.ensure_restrictions_row(c, user["id"])
             if rt.is_manual_locked(c, user) and user["role"] != "admin":
@@ -2804,6 +2908,7 @@ ORDER BY u.username COLLATE NOCASE
     @app.post("/v1/app/admin/users/{uid_}/reset-password")
     def app_admin_reset(uid_: str, p: ResetPasswordPayload, req: Request):
         if len(p.password or "") < 4: raise HTTPException(400, "Password must be at least 4 characters")
+        if len(p.password or "") > 128: raise HTTPException(400, "Password must be at most 128 characters")
         with rt.tx() as c:
             admin = rt.req_user(c, req, admin=True, write=True)
             u = c.execute("SELECT * FROM users WHERE id=? AND is_deleted=0", (uid_,)).fetchone()
@@ -4074,8 +4179,6 @@ LIMIT ?
             rt.remove_active_generation(request_id)
 
     return rt
-
-
 
 
 

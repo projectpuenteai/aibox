@@ -1,0 +1,179 @@
+{
+  "timestamp": "20260418T023505Z",
+  "lane": "live",
+  "baseUrl": "http://localhost",
+  "checks": [
+    {
+      "id": "runtime-health",
+      "name": "Public runtime health/status endpoints respond",
+      "lane": "live",
+      "status": "FAIL",
+      "timestamp": "2026-04-18T02:35:05.383Z",
+      "error": "Error: Expected 200 or 503, got 401"
+    },
+    {
+      "id": "admin-login",
+      "name": "Admin login works",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T02:35:05.553Z",
+      "admin_user": "puenteAdmin"
+    },
+    {
+      "id": "runtime-anon-mutate",
+      "name": "Anonymous runtime mutation is rejected",
+      "lane": "live",
+      "status": 401,
+      "timestamp": "2026-04-18T02:35:05.576Z"
+    },
+    {
+      "id": "create-test-accounts",
+      "name": "Primary test accounts can be created",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T02:35:06.582Z",
+      "created": 7
+    },
+    {
+      "id": "login-me-logout",
+      "name": "Normal login, auth/me, and logout work",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T02:35:06.784Z",
+      "username": "puente_user_23505z",
+      "role": "user"
+    },
+    {
+      "id": "guest-preferences",
+      "name": "Guest accounts remain guest and force light theme",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T02:35:06.968Z",
+      "language": "es",
+      "theme": "light"
+    },
+    {
+      "id": "login-lockout",
+      "name": "Repeated invalid logins trigger lockout",
+      "lane": "live",
+      "status": "FAIL",
+      "timestamp": "2026-04-18T02:35:07.583Z",
+      "error": "Error: Expected 401, got 429"
+    },
+    {
+      "id": "admin-users",
+      "name": "Admin users endpoint lists created test accounts",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T02:35:07.622Z",
+      "listed_users": 38
+    },
+    {
+      "id": "admin-reset-lock-unlock-delete",
+      "name": "Admin reset, lock, unlock, self-delete protection, and user deletion work",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T02:35:08.172Z",
+      "deleted_user": "puente_delete_23505z"
+    },
+    {
+      "id": "docs-crud-and-trash",
+      "name": "Docs create/update/star/delete/restore/trash-clear work",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T02:35:08.857Z",
+      "restored_doc_id": "c0e4c0f4-bfe3-46be-9239-c81c0a545ce1",
+      "cleared_count": 1
+    },
+    {
+      "id": "docs-limits",
+      "name": "Max docs and repeated docs offenses trigger blocking",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T02:35:09.660Z",
+      "docs_limit_blocked": true,
+      "docs_write_blocked": true
+    },
+    {
+      "id": "chat-saved-capacity",
+      "name": "Saved chat capacity and folder actions work",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T02:35:11.157Z",
+      "folder_deleted": true
+    },
+    {
+      "id": "chat-completion",
+      "name": "Chat completions persist messages and allow delete/restore",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T02:35:32.416Z",
+      "chat_id": "efe51dcf-1681-49e9-815d-aa9e30267d2d",
+      "has_citations": true
+    },
+    {
+      "id": "chat-abuse-controls",
+      "name": "Prompt guard and repeated heavy prompts escalate to AI block",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T02:36:36.121Z",
+      "blocked_count": 3,
+      "ai_send_blocked_until": "2026-04-18T02:41:36.068668+00:00"
+    },
+    {
+      "id": "admin-events-storage-analytics",
+      "name": "Admin security, storage, and analytics endpoints reflect activity",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T02:36:36.318Z",
+      "security_events": 109,
+      "spam_flags": 7
+    },
+    {
+      "id": "runtime-admin-actions",
+      "name": "Admin runtime stop/start/restart/clear-override work",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T02:37:34.816Z",
+      "override_mode": "auto",
+      "llama_state": "running"
+    },
+    {
+      "id": "adjacent-smoke",
+      "name": "Wiki and learn shells are reachable",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T02:37:34.856Z",
+      "wiki_status": 200,
+      "learn_status": 302
+    }
+  ],
+  "bugs": [],
+  "summary": {
+    "401": 1,
+    "PASS": 14,
+    "FAIL": 2,
+    "WARN": 0,
+    "SKIP": 0,
+    "NA": 0
+  },
+  "test_accounts": {
+    "admin_username": "puenteAdmin",
+    "admin_password": "puente123rocks",
+    "normal": {
+      "username": "puente_user_23505z",
+      "password": "Puente!23505Z_2"
+    },
+    "guest": {
+      "username": "puente_guest_23505z",
+      "password": "Guest!23505Z"
+    }
+  },
+  "notable_ids": {
+    "adminId": "911c8a43-970e-453b-92e3-3beef8544235",
+    "docId": "c0e4c0f4-bfe3-46be-9239-c81c0a545ce1",
+    "trashDocId": "c057c11c-f211-493e-83d9-9c80f2b9b737",
+    "savedOverflowChatId": "a0046827-d0f4-44f3-a36f-d5317a2d1e83",
+    "chatId": "efe51dcf-1681-49e9-815d-aa9e30267d2d"
+  }
+}

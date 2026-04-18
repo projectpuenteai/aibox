@@ -14,7 +14,7 @@ COPY requirements.txt /app/requirements.txt
 RUN python -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.5.1+cpu \
     && python -m pip install --no-cache-dir -r /app/requirements.txt
 
-COPY app.py app_storage.py cleanup_non_admin_accounts.py test_rag_pipeline.py /app/
+COPY app.py app_storage.py /app/
 
 EXPOSE 8081
 

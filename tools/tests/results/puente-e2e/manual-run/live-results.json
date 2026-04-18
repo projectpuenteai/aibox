@@ -1,0 +1,194 @@
+{
+  "timestamp": "20260418T003620Z",
+  "lane": "live",
+  "baseUrl": "http://localhost",
+  "checks": [
+    {
+      "id": "runtime-health",
+      "name": "Public runtime health/status endpoints respond",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T00:36:20.282Z",
+      "runtime_state": "running",
+      "status_reason": "ok"
+    },
+    {
+      "id": "admin-login",
+      "name": "Admin login works",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T00:36:20.475Z",
+      "admin_user": "puenteAdmin"
+    },
+    {
+      "id": "runtime-anon-mutate",
+      "name": "Anonymous runtime mutation is rejected",
+      "lane": "live",
+      "status": "FAIL",
+      "timestamp": "2026-04-18T00:36:20.620Z",
+      "error": "Error: Anonymous runtime mutation unexpectedly succeeded"
+    },
+    {
+      "id": "create-test-accounts",
+      "name": "Primary test accounts can be created",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T00:36:21.546Z",
+      "created": 7
+    },
+    {
+      "id": "login-me-logout",
+      "name": "Normal login, auth/me, and logout work",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T00:36:21.742Z",
+      "username": "puente_user_03620z",
+      "role": "user"
+    },
+    {
+      "id": "guest-preferences",
+      "name": "Guest accounts remain guest and force light theme",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T00:36:21.915Z",
+      "language": "es",
+      "theme": "light"
+    },
+    {
+      "id": "login-lockout",
+      "name": "Repeated invalid logins trigger lockout",
+      "lane": "live",
+      "status": "FAIL",
+      "timestamp": "2026-04-18T00:36:22.629Z",
+      "error": "Error: Expected 429, got 401"
+    },
+    {
+      "id": "admin-users",
+      "name": "Admin users endpoint lists created test accounts",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T00:36:22.666Z",
+      "listed_users": 20
+    },
+    {
+      "id": "admin-reset-lock-unlock-delete",
+      "name": "Admin reset, lock, unlock, self-delete protection, and user deletion work",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T00:36:23.218Z",
+      "deleted_user": "puente_delete_03620z"
+    },
+    {
+      "id": "docs-crud-and-trash",
+      "name": "Docs create/update/star/delete/restore/trash-clear work",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T00:36:24.015Z",
+      "restored_doc_id": "d016c92e-655a-4dcf-bb43-bf599fd20a0f",
+      "cleared_count": 1
+    },
+    {
+      "id": "docs-limits",
+      "name": "Max docs and repeated docs offenses trigger blocking",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T00:36:24.754Z",
+      "docs_limit_blocked": true,
+      "docs_write_blocked": true
+    },
+    {
+      "id": "chat-saved-capacity",
+      "name": "Saved chat capacity and folder actions work",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T00:36:26.299Z",
+      "folder_deleted": true
+    },
+    {
+      "id": "chat-completion",
+      "name": "Chat completions persist messages and allow delete/restore",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T00:36:40.067Z",
+      "chat_id": "885ef4ff-1f89-47ec-a7c9-f364539e5b6c",
+      "has_citations": true
+    },
+    {
+      "id": "chat-abuse-controls",
+      "name": "Prompt guard and repeated heavy prompts escalate to AI block",
+      "lane": "live",
+      "status": "FAIL",
+      "timestamp": "2026-04-18T00:37:48.633Z",
+      "error": "Error: AI send block was not escalated"
+    },
+    {
+      "id": "admin-events-storage-analytics",
+      "name": "Admin security, storage, and analytics endpoints reflect activity",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T00:37:48.822Z",
+      "security_events": 39,
+      "spam_flags": 3
+    },
+    {
+      "id": "runtime-admin-actions",
+      "name": "Admin runtime stop/start/restart/clear-override work",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T00:38:53.209Z",
+      "override_mode": "auto",
+      "llama_state": "running"
+    },
+    {
+      "id": "adjacent-smoke",
+      "name": "Wiki and learn shells are reachable",
+      "lane": "live",
+      "status": "PASS",
+      "timestamp": "2026-04-18T00:38:53.262Z",
+      "wiki_status": 200,
+      "learn_status": 302
+    }
+  ],
+  "bugs": [
+    {
+      "id": "BUG-runtime-admin-auth",
+      "title": "Runtime control POST routes are unauthenticated",
+      "severity": "high",
+      "timestamp": "2026-04-18T00:36:20.556Z",
+      "area": "tools/ai-control/app.py",
+      "repro": "POST /ai/api/v1/admin/runtime/start without an admin session cookie",
+      "expected": "401 or 403",
+      "actual": "200 OK and runtime state changed",
+      "evidence": {
+        "override_mode": "forced_on",
+        "last_action": "runtime_start"
+      }
+    }
+  ],
+  "summary": {
+    "PASS": 14,
+    "FAIL": 3,
+    "WARN": 0,
+    "SKIP": 0,
+    "NA": 0
+  },
+  "test_accounts": {
+    "admin_username": "puenteAdmin",
+    "admin_password": "puente123rocks",
+    "normal": {
+      "username": "puente_user_03620z",
+      "password": "Puente!03620Z_2"
+    },
+    "guest": {
+      "username": "puente_guest_03620z",
+      "password": "Guest!03620Z"
+    }
+  },
+  "notable_ids": {
+    "adminId": "911c8a43-970e-453b-92e3-3beef8544235",
+    "docId": "d016c92e-655a-4dcf-bb43-bf599fd20a0f",
+    "trashDocId": "8f426cbe-0329-47fb-8251-61704314c8fa",
+    "savedOverflowChatId": "d6f505aa-6197-44fa-b39a-d09f84a35641",
+    "chatId": "885ef4ff-1f89-47ec-a7c9-f364539e5b6c"
+  }
+}

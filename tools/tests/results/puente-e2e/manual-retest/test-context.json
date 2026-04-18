@@ -1,0 +1,12 @@
+{
+  "admin_username": "puenteAdmin",
+  "admin_password": "puente123rocks",
+  "normal": {
+    "username": "puente_user_11214z",
+    "password": "Puente!11214Z_2"
+  },
+  "guest": {
+    "username": "puente_guest_11214z",
+    "password": "Guest!11214Z"
+  }
+}

@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional
 import docker
 import httpx
 from docker.errors import DockerException, NotFound
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -53,6 +53,9 @@ _service_ready = threading.Event()
 
 _docker_client = None
 _storage_runtime = None
+
+_last_docker_action_ts = 0.0
+_docker_debounce_seconds = 5.0
 
 
 class TogglePayload(BaseModel):
@@ -231,26 +234,41 @@ def _normalize_override_on_start() -> None:
 
 def _start_llama() -> None:
     """Start the llama container through the Docker API."""
+    global _last_docker_action_ts
+    now = time.time()
+    if now - _last_docker_action_ts < _docker_debounce_seconds:
+        return
     container = _get_llama_container()
     if container is None:
         raise RuntimeError(f"Llama container '{LLAMA_CONTAINER_NAME}' not found")
     container.start()
+    _last_docker_action_ts = time.time()
 
 
 def _stop_llama() -> None:
     """Stop the llama container if it currently exists."""
+    global _last_docker_action_ts
+    now = time.time()
+    if now - _last_docker_action_ts < _docker_debounce_seconds:
+        return
     container = _get_llama_container()
     if container is None:
         return
     container.stop(timeout=20)
+    _last_docker_action_ts = time.time()
 
 
 def _restart_llama() -> None:
     """Restart the llama container through the Docker API."""
+    global _last_docker_action_ts
+    now = time.time()
+    if now - _last_docker_action_ts < _docker_debounce_seconds:
+        return
     container = _get_llama_container()
     if container is None:
         raise RuntimeError(f"Llama container '{LLAMA_CONTAINER_NAME}' not found")
     container.restart(timeout=20)
+    _last_docker_action_ts = time.time()
 
 
 def _reconcile_once() -> None:
@@ -383,6 +401,15 @@ def _status_payload() -> Dict[str, Any]:
         "liveness_ok": True,
     }
 
+
+def _require_runtime_admin(req: Request, write: bool = False) -> None:
+    """Require an authenticated admin session for runtime-control routes."""
+    runtime = globals().get("_storage_runtime")
+    if runtime is None or not hasattr(runtime, "tx") or not hasattr(runtime, "req_user"):
+        raise HTTPException(status_code=503, detail="Storage runtime unavailable")
+    with runtime.tx() as c:
+        runtime.req_user(c, req, admin=True, write=write)
+
 @app.on_event("startup")
 def startup() -> None:
     """Load persisted state, reconcile once, and start the background monitor loop."""
@@ -422,8 +449,10 @@ def shutdown() -> None:
 
 @app.get("/v1/admin/health")
 @app.get("/health")
-def health() -> Dict[str, Any]:
+def health(req: Request) -> Dict[str, Any]:
     """Return a readiness-style payload for load balancers and container healthchecks."""
+    if req.url.path.startswith("/v1/admin/"):
+        _require_runtime_admin(req)
     payload = _status_payload()
     ok = bool(payload.get("readiness_ok"))
     payload["ok"] = ok
@@ -434,15 +463,17 @@ def health() -> Dict[str, Any]:
 
 @app.get("/v1/admin/ready")
 @app.get("/ready")
-def ready() -> Dict[str, Any]:
+def ready(req: Request) -> Dict[str, Any]:
     """Alias `/ready` to the main readiness payload for compatibility."""
-    return health()
+    return health(req)
 
 
 @app.get("/v1/admin/live")
 @app.get("/live")
-def live() -> Dict[str, Any]:
+def live(req: Request) -> Dict[str, Any]:
     """Return a liveness payload that stays true while the process itself is alive."""
+    if req.url.path.startswith("/v1/admin/"):
+        _require_runtime_admin(req)
     payload = _status_payload()
     payload["ok"] = True
     return payload
@@ -450,15 +481,18 @@ def live() -> Dict[str, Any]:
 
 @app.get("/v1/admin/status")
 @app.get("/status")
-def status() -> Dict[str, Any]:
+def status(req: Request) -> Dict[str, Any]:
     """Expose the full combined control-plane status snapshot."""
+    if req.url.path.startswith("/v1/admin/"):
+        _require_runtime_admin(req)
     return _status_payload()
 
 
 @app.get("/v1/admin/ai-enabled")
 @app.get("/ai-enabled")
-def get_ai_enabled() -> Dict[str, Any]:
+def get_ai_enabled(req: Request) -> Dict[str, Any]:
     """Return the simplified enabled-state view used by older admin clients."""
+    _require_runtime_admin(req)
     payload = _status_payload()
     enabled = payload["override_mode"] != "forced_off" and bool(payload.get("health", False))
     return {
@@ -471,8 +505,9 @@ def get_ai_enabled() -> Dict[str, Any]:
 
 @app.post("/v1/admin/ai-enabled")
 @app.post("/ai-enabled")
-def post_ai_enabled(body: TogglePayload) -> Dict[str, Any]:
+def post_ai_enabled(body: TogglePayload, req: Request) -> Dict[str, Any]:
     """Support compatibility clients that flip AI on and off with one boolean."""
+    _require_runtime_admin(req, write=True)
     try:
         if body.enabled:
             _set_state(override_mode="forced_on", action="compat_enable", error=None)
@@ -484,13 +519,14 @@ def post_ai_enabled(body: TogglePayload) -> Dict[str, Any]:
         _set_state(action="compat_error", error=f"{type(exc).__name__}: {exc}")
         raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
 
-    return get_ai_enabled()
+    return get_ai_enabled(req)
 
 
 @app.post("/v1/admin/runtime/start")
 @app.post("/runtime/start")
-def runtime_start() -> Dict[str, Any]:
+def runtime_start(req: Request) -> Dict[str, Any]:
     """Force the llama runtime on and return the updated status payload."""
+    _require_runtime_admin(req, write=True)
     try:
         _set_state(override_mode="forced_on", action="runtime_start", error=None)
         _start_llama()
@@ -502,8 +538,9 @@ def runtime_start() -> Dict[str, Any]:
 
 @app.post("/v1/admin/runtime/stop")
 @app.post("/runtime/stop")
-def runtime_stop() -> Dict[str, Any]:
+def runtime_stop(req: Request) -> Dict[str, Any]:
     """Force the llama runtime off and return the updated status payload."""
+    _require_runtime_admin(req, write=True)
     try:
         _set_state(override_mode="forced_off", action="runtime_stop", error=None)
         _stop_llama()
@@ -515,8 +552,9 @@ def runtime_stop() -> Dict[str, Any]:
 
 @app.post("/v1/admin/runtime/restart")
 @app.post("/runtime/restart")
-def runtime_restart() -> Dict[str, Any]:
+def runtime_restart(req: Request) -> Dict[str, Any]:
     """Restart the llama container and return the updated combined status view."""
+    _require_runtime_admin(req, write=True)
     try:
         _set_state(override_mode="forced_on", action="runtime_restart", error=None)
         _restart_llama()
@@ -528,8 +566,9 @@ def runtime_restart() -> Dict[str, Any]:
 
 @app.post("/v1/admin/runtime/clear-override")
 @app.post("/runtime/clear-override")
-def runtime_clear_override() -> Dict[str, Any]:
+def runtime_clear_override(req: Request) -> Dict[str, Any]:
     """Return runtime control to automatic mode and reconcile immediately."""
+    _require_runtime_admin(req, write=True)
     _set_state(override_mode="auto", action="runtime_clear_override", error=None)
     # Reconcile immediately for responsive UX.
     try:

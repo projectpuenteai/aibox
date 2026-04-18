@@ -1,0 +1,58 @@
+{
+  "timestamp": "2026-04-18T02:56:37.021Z",
+  "lane": "browser",
+  "summary": {
+    "PASS": 8,
+    "FAIL": 0
+  },
+  "screenshots": [
+    {
+      "id": "welcome-screen",
+      "status": "PASS",
+      "note": "Welcome screen rendered the auth options and branding.",
+      "screenshot": "screenshots/welcome-screen.png"
+    },
+    {
+      "id": "login-screen",
+      "status": "PASS",
+      "note": "Login form rendered with username and password controls.",
+      "screenshot": "screenshots/login-screen.png"
+    },
+    {
+      "id": "signup-screen",
+      "status": "PASS",
+      "note": "Account creation form rendered with username and password inputs.",
+      "screenshot": "screenshots/signup-screen.png"
+    },
+    {
+      "id": "portal-dashboard",
+      "status": "PASS",
+      "note": "Portal dashboard rendered after user login.",
+      "screenshot": "screenshots/portal-dashboard.png"
+    },
+    {
+      "id": "docs-editor",
+      "status": "PASS",
+      "note": "Docs workspace rendered and editor opened from the dashboard.",
+      "screenshot": "screenshots/docs-editor.png"
+    },
+    {
+      "id": "docs-trash-state",
+      "status": "PASS",
+      "note": "Docs trash state rendered with restore controls after deletion.",
+      "screenshot": "screenshots/docs-trash-state.png"
+    },
+    {
+      "id": "ai-chat",
+      "status": "PASS",
+      "note": "AI chat rendered with sidebar, composer, and a short response.",
+      "screenshot": "screenshots/ai-chat.png"
+    },
+    {
+      "id": "admin-console",
+      "status": "PASS",
+      "note": "Admin console rendered runtime, accounts, storage, and analytics panels.",
+      "screenshot": "screenshots/admin-console.png"
+    }
+  ]
+}
