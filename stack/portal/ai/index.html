@@ -187,6 +187,7 @@
       <div class="sidebar-section" style="padding-top:0;border-bottom:none;margin-bottom:0;">
         <div class="section-head">
           <h3 id="chatHeading">Chats</h3>
+          <button id="clearChatTrashBtn" class="btn danger" type="button" style="display:none;font-size:11px;padding:4px 10px;min-height:0;line-height:1.4;border-radius:8px;"></button>
         </div>
       </div>
       <div id="chatList" class="chats"></div>
@@ -450,6 +451,10 @@
         failedToDeleteChat: "Failed to delete chat",
         chatRestored: "Chat restored.",
         failedToRestoreChat: "Failed to restore chat",
+        clearChatTrash: "Clear trash",
+        clearChatTrashConfirm: "Permanently delete all chats in trash?",
+        chatTrashCleared: "Trash cleared.",
+        failedToClearChatTrash: "Failed to clear trash",
         delete: "Delete",
         createOrOpenChatFirst: "Create or open a chat first.",
         restore: "Restore",
@@ -660,6 +665,10 @@
         failedToDeleteChat: "No se pudo eliminar el chat",
         chatRestored: "Chat restaurado.",
         failedToRestoreChat: "No se pudo restaurar el chat",
+        clearChatTrash: "Vaciar papelera",
+        clearChatTrashConfirm: "¿Eliminar permanentemente todos los chats de la papelera?",
+        chatTrashCleared: "Papelera vaciada.",
+        failedToClearChatTrash: "No se pudo vaciar la papelera",
         delete: "Eliminar",
         createOrOpenChatFirst: "Primero crea o abre un chat.",
         restore: "Restaurar",
@@ -721,7 +730,8 @@
       sidebarToggleBtn: document.getElementById("sidebarToggleBtn"),
       sidebarOverlay: document.getElementById("sidebarOverlay"),
       themeToggle: document.getElementById("themeToggle"),
-      themeIcon: document.getElementById("themeIcon")
+      themeIcon: document.getElementById("themeIcon"),
+      clearChatTrashBtn: document.getElementById("clearChatTrashBtn")
     };
 
     const state = {
@@ -961,6 +971,7 @@
       const diagnosticsTitle = document.getElementById("diagnosticsTitle");
       if (folderHeading) folderHeading.textContent = text("folders");
       if (chatHeading) chatHeading.textContent = text("chats");
+      if (ui.clearChatTrashBtn) ui.clearChatTrashBtn.textContent = text("clearChatTrash");
       if (diagnosticsTitle) diagnosticsTitle.textContent = text("adminDiagnostics");
       ui.sidebarToggleBtn.setAttribute("aria-label", text("toggleSidebar"));
       ui.chatTitle.textContent = state.activeChatTitle || text("chatTitle");
@@ -1303,6 +1314,9 @@
         const active = state.activeScope === tab.key ? " active" : "";
         return `<button type="button" class="scope-btn${active}" data-scope="${escapeHtml(tab.key)}">${escapeHtml(tab.label)}</button>`;
       }).join("");
+      if (ui.clearChatTrashBtn) {
+        ui.clearChatTrashBtn.style.display = state.activeScope === "trash" ? "" : "none";
+      }
     }
     function renderFolderList() {
       const createRow = `
@@ -1354,7 +1368,7 @@
         const updated = chat.updated_at ? formatDate(chat.updated_at) : text("unknown");
         const activeClass = id && id === String(state.activeChatId || "") ? " active" : "";
         const pills = [
-          chat.is_saved ? `<span class="chat-pill">${escapeHtml(text("saved"))}</span>` : '',
+          chat.is_saved ? `<span class="chat-pill saved-pill" title="${escapeAttr(text("saved"))}">★</span>` : '',
           chat.is_deleted ? `<span class="chat-pill trash">${escapeHtml(text("trash"))}</span>` : '',
           chat.folder_id ? `<span class="chat-pill">${escapeHtml(getFolderName(chat.folder_id))}</span>` : ''
         ].filter(Boolean).join('');
@@ -2878,6 +2892,20 @@
       }
     }
 
+    async function clearChatTrash() {
+      if (!window.confirm(text("clearChatTrashConfirm"))) return;
+      try {
+        if (ui.clearChatTrashBtn) ui.clearChatTrashBtn.disabled = true;
+        await api("/chats/trash/clear", "POST");
+        await reloadSidebarAndActiveChat(null, "trash", null);
+        setStatus(text("chatTrashCleared"));
+      } catch (error) {
+        setStatus(error.message || text("failedToClearChatTrash"), "err");
+      } finally {
+        if (ui.clearChatTrashBtn) ui.clearChatTrashBtn.disabled = false;
+      }
+    }
+
     function openFolderMenu(trigger, folderId) {
       const folder = state.folders.find(item => String(item.id) === String(folderId));
       if (!folder) return;
@@ -3199,6 +3227,12 @@
     }
 
     function bindEvents() {
+      if (ui.clearChatTrashBtn) {
+        ui.clearChatTrashBtn.addEventListener("click", () => {
+          clearChatTrash().catch(() => {});
+        });
+      }
+
       ui.ragToggleBtn.addEventListener("click", () => {
         setRagEnabled(!state.ragEnabled);
       });

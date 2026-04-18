@@ -162,7 +162,7 @@ body {
   gap: 10px;
   border: 1px solid var(--line);
   border-radius: 18px;
-  background: rgba(248, 250, 252, 0.9);
+  background: var(--panel-soft);
   padding: 0 14px;
   min-height: 52px;
 }
@@ -229,6 +229,12 @@ body {
   background: #fff7f7;
 }
 
+html[data-theme="dark"] .danger-btn,
+html[data-theme="dark"] .card-action.danger {
+  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+  background: var(--danger-soft);
+}
+
 .scope-row {
   margin-top: 24px;
   display: flex;
@@ -245,7 +251,7 @@ body {
   padding: 6px;
   border-radius: 999px;
   border: 1px solid var(--line);
-  background: rgba(255,255,255,0.72);
+  background: var(--panel-soft);
 }
 
 .scope-btn {
@@ -770,7 +776,7 @@ select[disabled] {
   justify-content: space-between;
   gap: 10px;
   border-top: 1px solid var(--line);
-  background: rgba(255,255,255,0.92);
+  background: var(--panel-elevated);
   backdrop-filter: blur(12px);
   padding: 12px 20px;
 }

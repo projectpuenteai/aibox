@@ -3825,6 +3825,22 @@ LIMIT ?
             rt.record_analytics_event(c, event_type="chat_restored", surface="chat", user=u, metadata={"chat_id": cid})
             return {"ok": True, "chat": serialize_chat_row(row)}
 
+    @app.post("/v1/app/chats/trash/clear")
+    def chats_trash_clear(req: Request):
+        with rt.tx() as c:
+            u = rt.req_user(c, req, write=True)
+            rows = c.execute("SELECT * FROM chats WHERE user_id=? AND is_deleted=1 ORDER BY deleted_at ASC, updated_at ASC", (u["id"],)).fetchall()
+            reclaimed = 0
+            deleted_count = 0
+            for row in rows:
+                b, n = rt.hard_del_chat(c, row)
+                reclaimed += int(b)
+                deleted_count += int(n)
+            rt.recalc_storage(c, u["id"])
+            if deleted_count:
+                rt.record_analytics_event(c, event_type="chat_deleted", surface="chat", user=u, value=deleted_count, metadata={"deleted_count": deleted_count, "reclaimed_bytes": reclaimed})
+        return {"ok": True, "deleted_count": deleted_count, "reclaimed_bytes": reclaimed}
+
     @app.post("/v1/app/chat/completions")
     async def app_chat_completions(req: Request):
         """Handle the main signed-in chat route backed by llama.cpp and optional wiki RAG."""
