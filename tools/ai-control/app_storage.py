@@ -232,13 +232,61 @@ class StorageRuntime:
         self.llama_yarn_scaling = (os.getenv("LLAMA_YARN_SCALING", "") or "").strip() or None
 
         self.cookie = os.getenv("SESSION_COOKIE_NAME", "aibox_session")
+
+        # Cookie flag policy. Default: secure=True iff APP_ENV=production; samesite=lax.
+        # Operators serving over plain HTTP on a LAN must set SESSION_COOKIE_SECURE=false,
+        # otherwise browsers will silently drop the cookie.
+        cookie_secure_raw = (os.getenv("SESSION_COOKIE_SECURE", "auto") or "auto").strip().lower()
+        if cookie_secure_raw in ("1", "true", "yes", "on"):
+            self.cookie_secure = True
+        elif cookie_secure_raw in ("0", "false", "no", "off"):
+            self.cookie_secure = False
+        else:  # "auto" / unrecognized
+            self.cookie_secure = (self.app_env == "production")
+        samesite_raw = (os.getenv("SESSION_COOKIE_SAMESITE", "lax") or "lax").strip().lower()
+        self.cookie_samesite = samesite_raw if samesite_raw in ("lax", "strict", "none") else "lax"
+
+        # Trust X-Forwarded-For only when explicitly enabled (e.g. behind Caddy+TLS).
+        self.trust_proxy_headers = (os.getenv("TRUST_PROXY_HEADERS", "false") or "false").strip().lower() in ("1", "true", "yes", "on")
+
         self.token_pepper = os.getenv("SESSION_TOKEN_PEPPER", "")
         if not self.token_pepper:
             if self.app_env == "production":
                 raise RuntimeError("SESSION_TOKEN_PEPPER must be set for production. Add it to stack/.env")
-            self.token_pepper = "dev-only-pepper"
-            logger.warning("Using development-only session pepper. Set SESSION_TOKEN_PEPPER for production.")
+            # Dev fallback: generate and persist a per-install random pepper so
+            # restarts keep existing sessions valid but no two installs share a pepper.
+            pepper_dir = self.data_root / "security"
+            try:
+                pepper_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pepper_dir = self.data_root
+            pepper_file = pepper_dir / "session_pepper.dev"
+            try:
+                if pepper_file.exists():
+                    self.token_pepper = pepper_file.read_text(encoding="utf-8").strip()
+                if not self.token_pepper:
+                    self.token_pepper = secrets.token_hex(32)
+                    pepper_file.write_text(self.token_pepper, encoding="utf-8")
+                    try:
+                        os.chmod(pepper_file, 0o600)
+                    except Exception:
+                        pass
+            except Exception:
+                # If the filesystem is read-only for any reason, fall back to an
+                # in-memory random pepper. Sessions will invalidate on restart, which
+                # is acceptable in dev.
+                self.token_pepper = secrets.token_hex(32)
+                logger.warning("Could not persist dev session pepper; sessions will not survive restarts.")
+            logger.warning(
+                "SESSION_TOKEN_PEPPER not set. Using generated dev pepper at %s. "
+                "Set SESSION_TOKEN_PEPPER explicitly for production.",
+                pepper_file,
+            )
         self.session_days = int(os.getenv("SESSION_DAYS", "7"))
+
+        # Signup controls
+        self.allow_public_signup = (os.getenv("ALLOW_PUBLIC_SIGNUP", "true") or "true").strip().lower() in ("1", "true", "yes", "on")
+        self.signup_max_per_hour_per_ip = max(1, int(os.getenv("SIGNUP_MAX_PER_HOUR_PER_IP", "5")))
 
         self.admin_username = os.getenv("ADMIN_USERNAME", "")
         self.admin_password = os.getenv("ADMIN_DEFAULT_PASSWORD", "")
@@ -378,9 +426,13 @@ class StorageRuntime:
         return (value or "").strip().lower()
 
     def ip(self, req: Request) -> str:
-        xff = req.headers.get("x-forwarded-for", "").strip()
-        if xff:
-            return xff.split(",")[0].strip()
+        # Only honor X-Forwarded-For when TRUST_PROXY_HEADERS is explicitly enabled.
+        # Otherwise an untrusted client could spoof their source IP and defeat
+        # per-IP lockouts / signup rate limits.
+        if self.trust_proxy_headers:
+            xff = req.headers.get("x-forwarded-for", "").strip()
+            if xff:
+                return xff.split(",")[0].strip()
         if req.client:
             return str(req.client.host)
         return "unknown"
@@ -2468,7 +2520,15 @@ CREATE TABLE IF NOT EXISTS analytics_exports(id TEXT PRIMARY KEY,format TEXT NOT
         if clear:
             r.delete_cookie(self.cookie, path="/")
         elif token is not None:
-            r.set_cookie(self.cookie, token, httponly=True, samesite="lax", secure=False, max_age=self.session_days * 86400, path="/")
+            r.set_cookie(
+                self.cookie,
+                token,
+                httponly=True,
+                samesite=self.cookie_samesite,
+                secure=self.cookie_secure,
+                max_age=self.session_days * 86400,
+                path="/",
+            )
         return r
 
     def doc_rel(self, uid_: str, did: str) -> str:
@@ -2776,20 +2836,40 @@ def mount_app_storage(app, llama_base_url: str):
     threading.Thread(target=rt.keep_warm_loop, daemon=True, name="app-storage-keep-warm").start()
 
     @app.post("/v1/app/auth/signup")
-    def app_signup(p: SignupPayload):
-        """Create a new account, user directories, and an initial restrictions row."""
+    def app_signup(p: SignupPayload, req: Request):
+        """Create a new account, user directories, and an initial restrictions row.
+
+        Enforces a per-IP hourly signup cap and an admin-controlled kill switch so a
+        single abusive client cannot flood the user table. All outcomes are logged to
+        security_events for audit visibility.
+        """
         username = (p.username or "").strip(); pw = p.password or ""; role = (p.role or "user").strip().lower()
         preferred_language = normalize_language_preference(p.preferred_language, default="en")
         preferred_theme = normalize_theme_preference(p.preferred_theme, default="light")
+        ip_ = rt.ip(req)
+        endpoint = req.url.path
+        if not rt.allow_public_signup:
+            with rt.tx() as c:
+                rt.log_event(c, user=None, ip_=ip_, endpoint=endpoint, et="signup_disabled", sev="warning", detail=f"Signup blocked (public signup disabled) for username={username[:50]!r}", act="blocked")
+            raise HTTPException(403, "Public signup is disabled")
         if len(username) < 3: raise HTTPException(400, "Username must be at least 3 characters")
         if len(username) > 50: raise HTTPException(400, "Username must be at most 50 characters")
         if len(pw) < 4: raise HTTPException(400, "Password must be at least 4 characters")
         if len(pw) > 128: raise HTTPException(400, "Password must be at most 128 characters")
         if role not in ("user", "guest"): role = "user"
         if role == "guest": preferred_theme = "light"
+        # Per-IP signup rate limit. Key on a synthetic user_id ("ip:<addr>") so the
+        # existing rate_events table and TTL cleanup cover this for free.
+        rate_key = f"ip:{ip_}" if ip_ else "ip:unknown"
         with rt.tx() as c:
+            recent = rt.rate_count(c, rate_key, "signup", sec=3600)
+            if recent >= rt.signup_max_per_hour_per_ip:
+                rt.log_event(c, user=None, ip_=ip_, endpoint=endpoint, et="signup_rate_block", sev="warning", detail=f"Signup blocked: {recent} attempts in last hour from ip={ip_}", obs=float(recent), th=float(rt.signup_max_per_hour_per_ip), act="rate_block")
+                rt.persist_and_raise(c, 429, "Too many signups from this network; try later")
             if c.execute("SELECT 1 FROM users WHERE username_norm=?", (rt.nuser(username),)).fetchone() is not None:
-                raise HTTPException(409, "Username already exists")
+                rt.log_event(c, user=None, ip_=ip_, endpoint=endpoint, et="signup_conflict", sev="info", detail=f"Signup rejected: username {username!r} already exists", act="blocked")
+                rt.rate_add(c, rate_key, "signup", b=0)
+                rt.persist_and_raise(c, 409, "Username already exists")
             uid_ = rt.uid(); rt.ensure_user_dirs(uid_)
             c.execute(
                 "INSERT INTO users(id,username,username_norm,password_hash,role,created_at,storage_bytes_used,preferred_language,preferred_theme) VALUES(?,?,?,?,?,?,?,?,?)",
@@ -2798,6 +2878,8 @@ def mount_app_storage(app, llama_base_url: str):
             rt.ensure_restrictions_row(c, uid_)
             created_user = c.execute("SELECT * FROM users WHERE id=?", (uid_,)).fetchone()
             rt.record_analytics_event(c, event_type="accounts_created", surface="auth", user=created_user)
+            rt.rate_add(c, rate_key, "signup", b=0)
+            rt.log_event(c, user=created_user, ip_=ip_, endpoint=endpoint, et="account_created", sev="info", detail=f"Account created: {username} role={role}", act="signup")
         return {"ok": True, "user": {"id": uid_, "username": username, "role": role, "preferred_language": preferred_language, "preferred_theme": preferred_theme}}
 
     @app.post("/v1/app/auth/login")
@@ -2805,12 +2887,15 @@ def mount_app_storage(app, llama_base_url: str):
         """Validate credentials, enforce lockouts, and issue a session cookie."""
         username = (p.username or "").strip(); pw = p.password or ""
         if not username or not pw: raise HTTPException(400, "Missing username or password")
+        if len(username) > 50: raise HTTPException(400, "Username must be at most 50 characters")
         if len(pw) > 128: raise HTTPException(400, "Password must be at most 128 characters")
         nn, ip_ = rt.nuser(username), rt.ip(req)
+        endpoint = req.url.path
         with rt.tx() as c:
             a = c.execute("SELECT * FROM login_attempts WHERE username_norm=? AND ip=?", (nn, ip_)).fetchone()
             if a is not None and a["lockout_until_ts"] and int(a["lockout_until_ts"]) > rt.now_ts():
-                raise HTTPException(429, "Too many login attempts; try later")
+                rt.log_event(c, user=None, ip_=ip_, endpoint=endpoint, et="auth_login_blocked", sev="warning", detail=f"Login blocked while locked out: username={username!r}", obs=float(a["fail_count"] or 0), th=float(rt.login_fail_limit), act="locked_out")
+                rt.persist_and_raise(c, 429, "Too many login attempts; try later")
             user = c.execute("SELECT * FROM users WHERE username_norm=? AND is_deleted=0", (nn,)).fetchone()
             valid = False
             if user is not None:
@@ -2818,23 +2903,31 @@ def mount_app_storage(app, llama_base_url: str):
                 except VerifyMismatchError: valid = False
             if not valid:
                 if a is None or rt.now_ts() - int(a["first_attempt_ts"]) > rt.login_window:
+                    fc = 1
                     c.execute("INSERT OR REPLACE INTO login_attempts(username_norm,ip,fail_count,first_attempt_ts,last_attempt_ts,lockout_until_ts) VALUES(?,?,1,?,?,NULL)", (nn, ip_, rt.now_ts(), rt.now_ts()))
+                    lock = None
                 else:
                     fc = int(a["fail_count"]) + 1
                     lock = rt.now_ts() + rt.login_window if fc >= rt.login_fail_limit else None
                     c.execute("UPDATE login_attempts SET fail_count=?, last_attempt_ts=?, lockout_until_ts=? WHERE username_norm=? AND ip=?", (fc, rt.now_ts(), lock, nn, ip_))
+                # Log the failure with attempt count but never the submitted password.
+                rt.log_event(c, user=user, ip_=ip_, endpoint=endpoint, et="auth_login_failure", sev="warning", detail=f"Failed login for username={username!r}", obs=float(fc), th=float(rt.login_fail_limit), act="auth_fail")
+                if lock is not None:
+                    rt.log_event(c, user=user, ip_=ip_, endpoint=endpoint, et="auth_login_lockout", sev="error", detail=f"Lockout engaged for username={username!r} ip={ip_}", obs=float(fc), th=float(rt.login_fail_limit), act="lockout")
                 detail = "Too many login attempts; try later" if a is not None and int(a["fail_count"]) + 1 >= rt.login_fail_limit else "Invalid username or password"
                 status_code = 429 if detail.startswith("Too many login attempts") else 401
                 rt.persist_and_raise(c, status_code, detail)
             c.execute("DELETE FROM login_attempts WHERE username_norm=? AND ip=?", (nn, ip_))
             rt.ensure_restrictions_row(c, user["id"])
             if rt.is_manual_locked(c, user) and user["role"] != "admin":
-                raise HTTPException(423, "Account is locked by administrator")
+                rt.log_event(c, user=user, ip_=ip_, endpoint=endpoint, et="auth_login_blocked", sev="warning", detail=f"Login blocked: account manually locked ({user['username']})", act="manual_locked")
+                rt.persist_and_raise(c, 423, "Account is locked by administrator")
             raw = secrets.token_urlsafe(32)
             c.execute("INSERT INTO sessions(id,user_id,token_hash,created_at,expires_at,last_accessed_at,ip,user_agent,revoked_at) VALUES(?,?,?,?,?,?,?,?,NULL)", (rt.uid(), user["id"], rt.token_hash(raw), rt.now_iso(), (datetime.now(timezone.utc)+timedelta(days=rt.session_days)).isoformat(), rt.now_iso(), ip_, req.headers.get("user-agent", "")))
             c.execute("UPDATE users SET last_login_at=?, last_active_at=? WHERE id=?", (rt.now_iso(), rt.now_iso(), user["id"]))
             refreshed_user = c.execute("SELECT * FROM users WHERE id=?", (user["id"],)).fetchone() or user
             rt.record_analytics_event(c, event_type="logins_succeeded", surface="auth", user=refreshed_user)
+            rt.log_event(c, user=refreshed_user, ip_=ip_, endpoint=endpoint, et="auth_login_success", sev="info", detail=f"Login success: {user['username']} role={user['role']}", act="auth_success")
             return rt.mk_resp({"ok": True, "user": {"id": user["id"], "username": user["username"], "role": user["role"]}}, token=raw)
 
     @app.post("/v1/app/auth/logout")
@@ -2842,7 +2935,13 @@ def mount_app_storage(app, llama_base_url: str):
         tok = req.cookies.get(rt.cookie)
         if tok:
             with rt.tx() as c:
+                row = c.execute(
+                    "SELECT u.id AS id, u.username AS username, u.role AS role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? LIMIT 1",
+                    (rt.token_hash(tok),),
+                ).fetchone()
                 c.execute("UPDATE sessions SET revoked_at=? WHERE token_hash=?", (rt.now_iso(), rt.token_hash(tok)))
+                if row is not None:
+                    rt.log_event(c, user=row, ip_=rt.ip(req), endpoint=req.url.path, et="auth_logout", sev="info", detail=f"Logout: {row['username']}", act="auth_logout")
         return rt.mk_resp({"ok": True}, clear=True)
 
     @app.get("/v1/app/auth/me")
@@ -2922,10 +3021,16 @@ ORDER BY u.username COLLATE NOCASE
         role = (p.role or "").strip().lower()
         if role not in ("admin", "user", "guest"): raise HTTPException(400, "Invalid role")
         with rt.tx() as c:
-            rt.req_user(c, req, admin=True, write=True)
-            if c.execute("SELECT 1 FROM users WHERE id=? AND is_deleted=0", (uid_,)).fetchone() is None: raise HTTPException(404, "User not found")
+            admin = rt.req_user(c, req, admin=True, write=True)
+            target = c.execute("SELECT * FROM users WHERE id=? AND is_deleted=0", (uid_,)).fetchone()
+            if target is None: raise HTTPException(404, "User not found")
+            old_role = target["role"]
+            if old_role == role:
+                return {"ok": True, "role": role, "unchanged": True}
             c.execute("UPDATE users SET role=? WHERE id=?", (role, uid_))
             rt.ensure_restrictions_row(c, uid_)
+            sev = "warning" if role == "admin" or old_role == "admin" else "info"
+            rt.log_event(c, user=admin, ip_=rt.ip(req), endpoint=req.url.path, et="admin_role_change", sev=sev, detail=f"{admin['username']} changed role of {target['username']}: {old_role} -> {role}", act="role_change")
         return {"ok": True, "role": role}
 
     @app.post("/v1/app/admin/users/{uid_}/lock")
