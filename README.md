@@ -89,7 +89,8 @@ The `llama` service reads the GGUF model directly. The `ai-control` service expe
 
 ## Kiwix And Kolibri Local Data
 
-- Place your Kiwix ZIM file at `kiwix/Wiki.zim`
+- Place the English Kiwix ZIM at `kiwix/wikipedia_en_all_mini_2026-03.zim`
+- Place the Spanish Kiwix ZIM at `kiwix/wikipedia_es_all_maxi_2026-02.zim`
 - `kolibri-data/` is created and populated locally by the Kolibri container
 - `backend-data/` is created and populated locally by the stack, including Chroma and control-plane state
 
@@ -124,13 +125,107 @@ docker compose -f stack/docker-compose.yaml up -d llama caddy
 
 ## URLs
 
-- Portal home: `http://localhost/`
-- AI chat: `http://localhost/ai/`
-- Kiwix: `http://localhost/wiki/`
-- Kolibri: `http://localhost/kolibri/`
-- Learn alias: `http://localhost/learn/`
-- Open WebUI: `http://localhost/chat/`
-- DNS Admin: `http://localhost:5380/`
+On the host machine you can use `http://localhost/`. Nearby devices must use the
+host's LAN or hotspot address instead, for example `http://192.168.1.50/` or
+`http://192.168.137.1/`.
+
+- Portal home: `http://<host-ip>/`
+- AI chat: `http://<host-ip>/ai/`
+- Kiwix: `http://<host-ip>/wiki/`
+- Kolibri: `http://<host-ip>/kolibri/`
+- Learn alias: `http://<host-ip>/learn/`
+- Open WebUI: `http://<host-ip>/chat/`
+- DNS Admin: `http://<host-ip>:5380/`
+
+## Offline Local Access
+
+The stack already binds on the host network edge for client traffic:
+
+- Caddy publishes `80:80` and listens on all host interfaces
+- `ai-control` listens on `0.0.0.0:8081` inside the container
+- `llama` listens on `0.0.0.0:2020` inside the container
+
+That means nearby devices should connect to the Windows host's private IPv4
+address, not `localhost`.
+
+### Recommended field modes
+
+1. Hotspot mode for fully offline use.
+   Start `tools\llama-runtime\scripts\setup_hotspot.ps1` as Administrator.
+   Clients join the hotspot SSID and browse to `http://192.168.137.1/`.
+   This is the most stable no-router option on Windows.
+2. Fixed LAN IP mode when a router or switch exists.
+   Reserve the Windows host IP in the router DHCP server or assign a static IPv4
+   address on the active NIC.
+   Set `OFFLINE_ACCESS_IP` in `stack/.env` to that same address so the operator
+   diagnostics and portal show the intended stable URL.
+
+### Operator diagnostics
+
+Use these scripts from the repo root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\llama-runtime\scripts\diagnose_local_access.ps1
+powershell -ExecutionPolicy Bypass -File .\tools\llama-runtime\scripts\get_network_info.ps1
+```
+
+They report:
+
+- current LAN and hotspot addresses
+- the recommended client URL
+- whether Windows is listening on port 80
+- whether a Windows Firewall allow rule for port 80 was detected
+- warnings when `OFFLINE_ACCESS_IP` does not match the active NIC
+
+The portal also exposes a field-facing guide at `/connect.html`.
+
+### Simple hostname
+
+You can set `OFFLINE_HOSTNAME` in `stack/.env` so the diagnostics and connection
+page show a friendly name such as `puente.link`.
+
+This does not create DNS by itself. A hostname works only when client devices
+can resolve it through one of these:
+
+- LAN DNS
+- mDNS / `.local`
+- client hosts file entries
+
+### Local DNS Name Like `puente.link`
+
+For nearby clients to open `http://puente.link/` on the local network, you need:
+
+- a stable host IP
+- clients using the AIBox DNS server
+- a local DNS record that maps `puente.link` to that host IP
+
+The repo includes a helper script for Technitium DNS:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\llama-runtime\scripts\configure_local_dns_name.ps1 -Domain puente.link
+```
+
+By default it uses:
+
+- `OFFLINE_HOSTNAME` for the DNS name
+- `OFFLINE_ACCESS_IP` for the target IP when set
+- otherwise the current primary LAN IP from `get_network_info.ps1`
+
+Important:
+
+- this creates a local DNS answer only; it does not change public internet DNS
+- clients must use the AIBox DNS server on port 53 for `puente.link` to resolve locally
+- `DNS_SERVER_DOMAIN` and `DNS_ADMIN_PASSWORD` only initialize Technitium on first start when its config volume is still empty
+
+### Important LAN note
+
+For HTTP-only local deployments, set:
+
+```text
+SESSION_COOKIE_SECURE=false
+```
+
+Otherwise modern browsers will silently drop the session cookie over plain HTTP.
 
 ## Troubleshooting
 

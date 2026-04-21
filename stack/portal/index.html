@@ -1028,19 +1028,7 @@
       .mini-input.small {
         width: 150px;
       }
-      .delete-confirm {
-        margin-top: 16px;
-        padding: 16px;
-        border-radius: 20px;
-        border: 1px solid rgba(180, 35, 24, 0.18);
-        background: var(--danger-soft);
-        color: var(--text);
-      }
-      .delete-confirm-text {
-        font-size: 0.98rem;
-        line-height: 1.6;
-      }
-      .panel-grid {
+.panel-grid {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 24px;
@@ -1257,6 +1245,16 @@
                 </div>
               </div>
               <div class="header-actions">
+                <a href="/connect.html" id="networkInfoBtn" class="header-btn icon-btn" title="Connection info — local IP &amp; hotspot" style="display:inline-flex;align-items:center;justify-content:center;text-decoration:none;" aria-label="Connection info">
+                  <span class="icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M5 12.55a11 11 0 0 1 14.08 0"/>
+                      <path d="M1.42 9a16 16 0 0 1 21.16 0"/>
+                      <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
+                      <circle cx="12" cy="20" r="1" fill="currentColor"/>
+                    </svg>
+                  </span>
+                </a>
                 <button id="langToggleBtn" class="lang-btn" type="button">
                   <span class="icon" aria-hidden="true">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -2019,6 +2017,8 @@
         guestError: document.getElementById("guestError")
       };
 
+      const deleteTimers = {};
+
       const state = {
         screen: "welcome",
         language: "es",
@@ -2601,7 +2601,7 @@
                     <button class="action-btn" type="button" data-user-id="${escapeHtml(user.id)}" data-account-panel="reset" data-active="${view.panel === "reset" ? "true" : "false"}">${buttonLabel("key", t.resetButton)}</button>
                     <button class="action-btn" type="button" data-user-id="${escapeHtml(user.id)}" data-account-panel="lock" data-active="${view.panel === "lock" ? "true" : "false"}">${buttonLabel("lock", t.lockButton)}</button>
                     <button class="action-btn" type="button" data-user-id="${escapeHtml(user.id)}" data-account-panel="unlock" data-active="${view.panel === "unlock" ? "true" : "false"}">${buttonLabel("unlock", t.unlockButton)}</button>
-                    ${!isAdmin ? `<button class="action-btn danger" type="button" data-user-id="${escapeHtml(user.id)}" data-account-delete-toggle="true" data-active="${view.pendingDelete ? "true" : "false"}">${buttonLabel("trash", deleteLabel)}</button>` : ""}
+                    ${!isAdmin ? `<button class="action-btn danger" type="button" data-user-id="${escapeHtml(user.id)}" ${view.pendingDelete ? 'data-account-delete-confirm="true"' : 'data-account-delete-toggle="true"'} data-active="${view.pendingDelete ? "true" : "false"}">${buttonLabel("trash", deleteLabel)}</button>` : ""}
                   </div>
                   ${view.panel === "reset" ? `
                     <div class="account-form-row">
@@ -2620,15 +2620,6 @@
                     <div class="account-form-row">
                       <input class="mini-input flex" value="${escapeHtml(view.unlockReason)}" placeholder="${escapeHtml(t.unlockReasonPlaceholder)}" data-user-id="${escapeHtml(user.id)}" data-account-field="unlockReason" />
                       <button class="action-btn" type="button" data-user-id="${escapeHtml(user.id)}" data-account-submit="unlock">${buttonLabel("unlock", t.unlockAccount)}</button>
-                    </div>
-                  ` : ""}
-                  ${!isAdmin && view.pendingDelete ? `
-                    <div class="delete-confirm">
-                      <div class="delete-confirm-text">${escapeHtml(format(t.deleteWarning, { username: user.username }))}</div>
-                      <div class="account-form-row">
-                        <button class="action-btn" type="button" data-user-id="${escapeHtml(user.id)}" data-account-delete-cancel="true">${buttonLabel("shield", t.cancel)}</button>
-                        <button class="action-btn danger" type="button" data-user-id="${escapeHtml(user.id)}" data-account-delete-confirm="true">${buttonLabel("trash", t.permanentlyDelete)}</button>
-                      </div>
                     </div>
                   ` : ""}
                 </div>
@@ -3250,6 +3241,8 @@
         if (panel) {
           const view = getAccountUi(uid);
           view.pendingDelete = false;
+          clearTimeout(deleteTimers[uid]);
+          delete deleteTimers[uid];
           view.panel = view.panel === panel ? null : panel;
           renderAdminSection();
           return;
@@ -3257,17 +3250,21 @@
         if (button.hasAttribute("data-account-delete-toggle")) {
           const view = getAccountUi(uid);
           view.panel = null;
-          view.pendingDelete = !view.pendingDelete;
+          view.pendingDelete = true;
           renderAdminSection();
-          return;
-        }
-        if (button.hasAttribute("data-account-delete-cancel")) {
-          const view = getAccountUi(uid);
-          view.pendingDelete = false;
-          renderAdminSection();
+          clearTimeout(deleteTimers[uid]);
+          deleteTimers[uid] = setTimeout(() => {
+            const v = getAccountUi(uid);
+            if (v.pendingDelete) {
+              v.pendingDelete = false;
+              renderAdminSection();
+            }
+          }, 5000);
           return;
         }
         if (button.hasAttribute("data-account-delete-confirm")) {
+          clearTimeout(deleteTimers[uid]);
+          delete deleteTimers[uid];
           await handleDelete(uid);
           return;
         }

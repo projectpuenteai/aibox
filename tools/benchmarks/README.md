@@ -7,7 +7,7 @@ This folder contains reproducible scripts to profile chat latency, throughput, a
 1. Start required Docker services:
 
 ```powershell
-docker compose -f stack/docker-compose.yaml up -d llama ai-control caddy dns chat kiwix kolibri
+docker compose -f stack/docker-compose.yaml up -d llama ai-control caddy dns chat kiwix-en kiwix-es kolibri
 ```
 
 2. Run profile:

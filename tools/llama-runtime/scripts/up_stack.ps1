@@ -97,6 +97,48 @@ if (Test-Path $cleanupScript) {
   Write-Host "[warn] cleanup_docker_storage.ps1 not found; skipping storage check." -ForegroundColor Yellow
 }
 
+# ── One-time backend-data layout migration ────────────────────────────────────
+# docker-compose now mounts backend-data/appdata → /data (instead of the old
+# backend-data → /data).  This block migrates existing deployments by moving
+# user-data subdirectories into the new appdata/ subdirectory.  It is
+# idempotent: if appdata/ already contains a given directory it is skipped.
+#
+# Directories that stay at backend-data/ root (NOT moved):
+#   ai-control/   → /state
+#   chroma_db/    → /chroma_db
+#   chroma_db_es/ → /chroma_db_es
+#   llama/        → /tmp/llama
+$backendDataDir = Join-Path $aiboxDir "backend-data"
+$appdataDir     = Join-Path $backendDataDir "appdata"
+
+# Subdirectories that belong under appdata/
+$migrateNames = @("db", "users", "tmp", "security")
+
+foreach ($name in $migrateNames) {
+  $oldPath = Join-Path $backendDataDir $name
+  $newPath = Join-Path $appdataDir     $name
+
+  if ((Test-Path $oldPath) -and -not (Test-Path $newPath)) {
+    Write-Host "[migrate] backend-data/$name → backend-data/appdata/$name"
+    # Ensure parent exists before moving
+    if (-not (Test-Path $appdataDir)) {
+      New-Item -ItemType Directory -Path $appdataDir -Force | Out-Null
+    }
+    Move-Item -Path $oldPath -Destination $newPath -ErrorAction Stop
+    Write-Host "[migrate] Done: $name"
+  } elseif ((Test-Path $oldPath) -and (Test-Path $newPath)) {
+    Write-Host "[migrate] Skipping $name — already at appdata/$name"
+  }
+}
+
+# Ensure appdata/ directory exists for a fresh install (app creates its own
+# subdirs on first startup, but Docker needs the mountpoint to exist).
+if (-not (Test-Path $appdataDir)) {
+  New-Item -ItemType Directory -Path $appdataDir -Force | Out-Null
+  Write-Host "[info] Created backend-data/appdata/ for fresh install."
+}
+# ─────────────────────────────────────────────────────────────────────────────
+
 $preflight = Join-Path $scriptDir "preflight_llama_runtime.ps1"
 $preflightArgs = @("-ExecutionPolicy", "Bypass", "-File", $preflight, "-ComposeFile", $ComposeFile)
 if ($SkipGpuProbe) {
@@ -121,4 +163,17 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host "[ok] stack started" -ForegroundColor Green
 
+# ── Update portal connection info (best-effort, non-fatal) ────────────────────
+# Writes portal/network-info.json so connect.html shows current IPs / hotspot
+# status without needing a live API call.  Does not require elevation.
+$netInfoScript = Join-Path $scriptDir "get_network_info.ps1"
+if (Test-Path $netInfoScript) {
+  Write-Host "[info] Refreshing network info for portal..."
+  & powershell -ExecutionPolicy Bypass -File $netInfoScript -Quiet
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "[warn] get_network_info.ps1 returned non-zero; portal connection info may be stale." -ForegroundColor Yellow
+  }
+} else {
+  Write-Host "[warn] get_network_info.ps1 not found; portal connection info not updated." -ForegroundColor Yellow
+}
 

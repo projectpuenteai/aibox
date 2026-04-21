@@ -8,10 +8,23 @@
     reverse_proxy chat:3000
   }
 
-  redir /wiki /wiki/
+  redir /wiki/en /wiki/en/
+  redir /wiki/es /wiki/es/
+
+  handle /wiki/en/* {
+    reverse_proxy kiwix-en:8080
+  }
+
+  handle /wiki/es/* {
+    reverse_proxy kiwix-es:8080
+  }
+
+  handle /wiki {
+    reverse_proxy ai-control:8081
+  }
 
   handle /wiki/* {
-    reverse_proxy kiwix:8080
+    reverse_proxy ai-control:8081
   }
 
   @learn_root path /learn /learn/

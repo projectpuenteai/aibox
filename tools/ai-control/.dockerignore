@@ -1,0 +1,27 @@
+# Excluded from Docker build context.
+# Only app.py, app_storage.py, and requirements.txt are needed in the image.
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Test suite
+tests/
+test_*.py
+*_test.py
+
+# Dev / documentation
+*.md
+.env
+.env.*
+*.log
+*.tmp
+
+# Local tooling
+.venv/
+.venv-rag/
+*.sh

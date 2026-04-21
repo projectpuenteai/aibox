@@ -34,7 +34,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import HTTPException, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 logger = logging.getLogger("aibox.ai_control.storage")
@@ -303,6 +303,7 @@ class StorageRuntime:
         self.chat_retention_days = int(os.getenv("CHAT_RETENTION_DAYS", "90"))
         self.doc_retention_days = int(os.getenv("DOC_RETENTION_DAYS", "180"))
         self.guest_retention_days = int(os.getenv("GUEST_RETENTION_DAYS", "30"))
+        self.guest_logout_delete_minutes = int(os.getenv("GUEST_LOGOUT_DELETE_MINUTES", "5"))
         self.trash_retention_days = int(os.getenv("TRASH_RETENTION_DAYS", "3"))
 
         self.warn_pct = float(os.getenv("DISK_WARN_PERCENT", "75"))
@@ -1326,21 +1327,26 @@ class StorageRuntime:
             return f"{forwarded_proto}://{forwarded_host}".rstrip("/")
         return str(req.base_url).rstrip("/")
 
-    def _build_wiki_citation(self, title: Any, base_url: Optional[str]) -> Optional[Dict[str, str]]:
+    def _build_wiki_citation(self, title: Any, base_url: Optional[str], wiki_language: Optional[str] = None) -> Optional[Dict[str, str]]:
         page_title = self._compact_text(title, 240)
         if not page_title:
             return None
         root = str(base_url or "").rstrip("/")
+        language = normalize_language_preference(wiki_language, default="en")
         encoded_title = quote(page_title, safe="")
         return {
             "page_title": page_title,
-            "wiki_url": f"{root}/wiki/viewer#wiki/{encoded_title}" if root else f"/wiki/viewer#wiki/{encoded_title}",
+            "wiki_url": f"{root}/wiki/{language}/viewer#wiki/{encoded_title}" if root else f"/wiki/{language}/viewer#wiki/{encoded_title}",
             "label": f"Wikipedia: {page_title}",
         }
 
     def _attach_chunk_citation(self, chunk: Dict[str, Any], base_url: Optional[str]) -> Dict[str, Any]:
         entry = dict(chunk or {})
-        citation = self._build_wiki_citation(entry.get("title") or entry.get("source_document"), base_url)
+        citation = self._build_wiki_citation(
+            entry.get("title") or entry.get("source_document"),
+            base_url,
+            wiki_language=entry.get("rag_index_language"),
+        )
         if citation is None:
             return entry
         entry["page_title"] = citation["page_title"]
@@ -1362,7 +1368,11 @@ class StorageRuntime:
         for chunk in chunks:
             if not isinstance(chunk, dict):
                 continue
-            citation = self._build_wiki_citation(chunk.get("title") or chunk.get("source_document"), base_url)
+            citation = self._build_wiki_citation(
+                chunk.get("title") or chunk.get("source_document"),
+                base_url,
+                wiki_language=chunk.get("rag_index_language"),
+            )
             if citation is None:
                 continue
             title_key = citation["page_title"].strip().lower()
@@ -2150,6 +2160,7 @@ CREATE TABLE IF NOT EXISTS analytics_exports(id TEXT PRIMARY KEY,format TEXT NOT
             )
             self.ensure_column(c, "users", "preferred_language", "preferred_language TEXT NOT NULL DEFAULT 'en'")
             self.ensure_column(c, "users", "preferred_theme", "preferred_theme TEXT NOT NULL DEFAULT 'light'")
+            self.ensure_column(c, "users", "guest_logout_at", "guest_logout_at TEXT")
             c.execute("UPDATE users SET preferred_language='en' WHERE preferred_language IS NULL OR TRIM(preferred_language)='' OR LOWER(TRIM(preferred_language)) NOT IN ('en','es')")
             c.execute("UPDATE users SET preferred_theme='light' WHERE preferred_theme IS NULL OR TRIM(preferred_theme)='' OR LOWER(TRIM(preferred_theme)) NOT IN ('light','dark')")
             self.migrate_chat_schema(c)
@@ -2515,6 +2526,30 @@ CREATE TABLE IF NOT EXISTS analytics_exports(id TEXT PRIMARY KEY,format TEXT NOT
         c.execute("UPDATE sessions SET last_accessed_at=? WHERE token_hash=?", (self.now_iso(), self.token_hash(tok)))
         return c.execute("SELECT * FROM users WHERE id=?", (r["id"],)).fetchone() or r
 
+    def preferred_wiki_language_for_request(self, req: Request) -> str:
+        """Resolve the user's preferred wiki language, defaulting to English."""
+        try:
+            with self.tx() as c:
+                user = self.req_user(c, req)
+                return normalize_language_preference(user["preferred_language"], default="en")
+        except HTTPException as exc:
+            if int(exc.status_code) == 401:
+                return "en"
+            raise
+
+    def build_wiki_redirect_target(self, req: Request, wiki_path: str = "") -> str:
+        """Translate legacy /wiki routes into concrete language-prefixed Kiwix routes."""
+        language = self.preferred_wiki_language_for_request(req)
+        normalized_path = str(wiki_path or "").lstrip("/")
+        target = f"/wiki/{language}/"
+        if normalized_path:
+            first_segment = normalized_path.split("/", 1)[0].strip().lower()
+            if first_segment in ("en", "es"):
+                raise HTTPException(404, "Not found")
+            target = f"/wiki/{language}/{normalized_path}"
+        query = str(req.url.query or "").strip()
+        return f"{target}?{query}" if query else target
+
     def mk_resp(self, data: Dict[str, Any], token: Optional[str] = None, clear: bool = False) -> JSONResponse:
         r = JSONResponse(data)
         if clear:
@@ -2579,7 +2614,11 @@ CREATE TABLE IF NOT EXISTS analytics_exports(id TEXT PRIMARY KEY,format TEXT NOT
             for r in conn.execute("SELECT * FROM chats WHERE is_deleted=1 AND deleted_at IS NOT NULL AND deleted_at<=? ORDER BY deleted_at ASC", (tcut,)).fetchall():
                 b, n = self.hard_del_chat(conn, r); reclaimed += b; deleted += n
             gcut = (now - timedelta(days=self.guest_retention_days)).isoformat()
-            guests = conn.execute("SELECT * FROM users WHERE role='guest' AND is_deleted=0 AND COALESCE(last_active_at,created_at)<=?", (gcut,)).fetchall()
+            logout_cut = (now - timedelta(minutes=self.guest_logout_delete_minutes)).isoformat()
+            guests = conn.execute(
+                "SELECT * FROM users WHERE role='guest' AND is_deleted=0 AND (COALESCE(last_active_at,created_at)<=? OR (guest_logout_at IS NOT NULL AND guest_logout_at<=?))",
+                (gcut, logout_cut),
+            ).fetchall()
             for g in guests:
                 for r in conn.execute("SELECT * FROM documents WHERE user_id=?", (g["id"],)).fetchall(): b, n = self.hard_del_doc(conn, r); reclaimed += b; deleted += n
                 for r in conn.execute("SELECT * FROM chats WHERE user_id=?", (g["id"],)).fetchall(): b, n = self.hard_del_chat(conn, r); reclaimed += b; deleted += n
@@ -2835,6 +2874,15 @@ def mount_app_storage(app, llama_base_url: str):
     threading.Thread(target=rt.cleanup_loop, daemon=True, name="app-storage-cleanup").start()
     threading.Thread(target=rt.keep_warm_loop, daemon=True, name="app-storage-keep-warm").start()
 
+    @app.get("/wiki")
+    @app.get("/wiki/")
+    def wiki_root_redirect(req: Request):
+        return RedirectResponse(url=rt.build_wiki_redirect_target(req), status_code=307)
+
+    @app.get("/wiki/{wiki_path:path}")
+    def wiki_language_redirect(wiki_path: str, req: Request):
+        return RedirectResponse(url=rt.build_wiki_redirect_target(req, wiki_path), status_code=307)
+
     @app.post("/v1/app/auth/signup")
     def app_signup(p: SignupPayload, req: Request):
         """Create a new account, user directories, and an initial restrictions row.
@@ -2942,6 +2990,8 @@ def mount_app_storage(app, llama_base_url: str):
                 c.execute("UPDATE sessions SET revoked_at=? WHERE token_hash=?", (rt.now_iso(), rt.token_hash(tok)))
                 if row is not None:
                     rt.log_event(c, user=row, ip_=rt.ip(req), endpoint=req.url.path, et="auth_logout", sev="info", detail=f"Logout: {row['username']}", act="auth_logout")
+                    if row["role"] == "guest":
+                        c.execute("UPDATE users SET guest_logout_at=? WHERE id=?", (rt.now_iso(), row["id"]))
         return rt.mk_resp({"ok": True}, clear=True)
 
     @app.get("/v1/app/auth/me")
@@ -4300,9 +4350,6 @@ LIMIT ?
             rt.remove_active_generation(request_id)
 
     return rt
-
-
-
 
 
 

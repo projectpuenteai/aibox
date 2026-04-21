@@ -80,11 +80,11 @@
         <span id="pageSub" class="sub">Kiwix</span>
       </div>
       <div class="actions">
-        <a id="openLink" class="btn" href="/wiki/" target="_blank" rel="noopener">Open Full Page</a>
+        <a id="openLink" class="btn" href="/wiki/en/" target="_blank" rel="noopener">Open Full Page</a>
         <a id="homeLink" class="btn primary" href="/">Back to Home</a>
       </div>
     </header>
-    <iframe id="wikiFrame" src="/wiki/" title="Kiwix Wiki"></iframe>
+    <iframe id="wikiFrame" src="/wiki/en/" title="Kiwix Wiki"></iframe>
   </main>
   <script>
     const STORAGE_KEYS = { language: "puente-language" };
@@ -114,6 +114,20 @@
       }
     }
 
+    function wikiRootForLanguage(language) {
+      return language === "es" ? "/wiki/es/" : "/wiki/en/";
+    }
+
+    function setWikiTargets(language = getLanguage()) {
+      const wikiRoot = wikiRootForLanguage(language);
+      const openLink = document.getElementById("openLink");
+      const wikiFrame = document.getElementById("wikiFrame");
+      openLink.href = wikiRoot;
+      if (wikiFrame.getAttribute("src") !== wikiRoot) {
+        wikiFrame.setAttribute("src", wikiRoot);
+      }
+    }
+
     function applyLanguage(language = getLanguage()) {
       const t = copy[language] || copy.en;
       document.documentElement.lang = language;
@@ -123,6 +137,7 @@
       document.getElementById("openLink").textContent = t.openFullPage;
       document.getElementById("homeLink").textContent = t.backToHome;
       document.getElementById("wikiFrame").setAttribute("title", t.iframeTitle);
+      setWikiTargets(language);
     }
 
     async function syncLanguageFromUser() {
@@ -156,7 +171,7 @@
     applyLanguage();
     postAnalyticsEvent("wiki_shell_open", { href: "/wiki-app/" });
     document.getElementById("openLink").addEventListener("click", () => {
-      postAnalyticsEvent("wiki_open_full_page", { href: "/wiki/" });
+      postAnalyticsEvent("wiki_open_full_page", { href: document.getElementById("openLink").href });
     });
     syncLanguageFromUser();
   </script>

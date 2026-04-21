@@ -71,7 +71,7 @@ def assert_retrieval_works(payload: dict, query: str):
     for citation in citations:
         assert citation.get("page_title"), f"FAIL [{query}]: citation missing page_title"
         assert citation.get("wiki_url"), f"FAIL [{query}]: citation missing wiki_url"
-        assert "/wiki/viewer#wiki/" in str(citation.get("wiki_url")), f"FAIL [{query}]: citation url has wrong format"
+        assert "/wiki/en/viewer#wiki/" in str(citation.get("wiki_url")), f"FAIL [{query}]: citation url has wrong format"
     for chunk in selected:
         assert not chunk.get("duplicate_removed"), (
             f"FAIL [{query}]: selected chunk incorrectly marked duplicate_removed: {chunk.get('title')}"
@@ -95,7 +95,7 @@ def assert_citation_encoding(rt: StorageRuntime):
     citation = rt._build_wiki_citation(sample_title, "http://localhost")
     assert citation is not None, "FAIL [citation]: helper returned None"
     assert citation["page_title"] == sample_title, "FAIL [citation]: page_title mismatch"
-    assert citation["wiki_url"] == "http://localhost/wiki/viewer#wiki/Caf%C3%A9%20con%20leche%20%2F%20a%C3%B1o", (
+    assert citation["wiki_url"] == "http://localhost/wiki/en/viewer#wiki/Caf%C3%A9%20con%20leche%20%2F%20a%C3%B1o", (
         f"FAIL [citation]: unexpected url {citation['wiki_url']!r}"
     )
     print("  PASS: citation helper encodes spaces, slash, and accents")

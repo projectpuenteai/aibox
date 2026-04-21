@@ -1,0 +1,587 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Connect to AIBox - Project Puente AI</title>
+    <style>
+      :root {
+        --bg:         #eaf2fb;
+        --bg-end:     #d6e4f6;
+        --panel:      #ffffff;
+        --border:     #d9e5f3;
+        --accent:     #2f74db;
+        --accent-s:   #1b4f9c;
+        --accent-bg:  #eef4fb;
+        --text:       #0f172a;
+        --text-soft:  #475569;
+        --text-muted: #64748b;
+        --success-bg: #ecfdf5;
+        --success:    #059669;
+        --warn-bg:    #fffbeb;
+        --warn:       #d97706;
+        --code-bg:    #f1f5fb;
+        --shadow:     0 8px 32px rgba(27,76,138,.1);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg:         #0c1730;
+          --bg-end:     #0f1f36;
+          --panel:      #162844;
+          --border:     #294669;
+          --accent:     #5b8ff5;
+          --accent-s:   #7aa6ff;
+          --accent-bg:  #162844;
+          --text:       #f8fafc;
+          --text-soft:  #cbd5e1;
+          --text-muted: #94a3b8;
+          --success-bg: #052e16;
+          --success:    #34d399;
+          --warn-bg:    #1c1200;
+          --warn:       #fbbf24;
+          --code-bg:    #0f1f36;
+          --shadow:     0 8px 32px rgba(0,0,0,.3);
+        }
+      }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      html, body { min-height: 100%; }
+      body {
+        font-family: Aptos, "Segoe UI", Tahoma, sans-serif;
+        background: linear-gradient(135deg, var(--bg) 0%, var(--bg-end) 100%);
+        color: var(--text);
+        padding: 24px 16px 48px;
+      }
+      .wrap {
+        max-width: 680px;
+        margin: 0 auto;
+        display: grid;
+        gap: 20px;
+      }
+      .page-header {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 20px 0 4px;
+      }
+      .page-header .logo {
+        width: 48px;
+        height: 48px;
+        border-radius: 14px;
+        background: var(--accent);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+      }
+      .page-header .logo svg { width: 26px; height: 26px; stroke: #fff; fill: none; }
+      .page-header h1 {
+        font-size: 1.45rem;
+        font-weight: 700;
+        letter-spacing: -.03em;
+        line-height: 1.15;
+      }
+      .page-header p {
+        font-size: .85rem;
+        color: var(--text-muted);
+        margin-top: 3px;
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        padding: 22px 24px;
+        box-shadow: var(--shadow);
+      }
+      .card-title {
+        font-size: .7rem;
+        font-weight: 700;
+        letter-spacing: .16em;
+        text-transform: uppercase;
+        color: var(--text-muted);
+        margin-bottom: 14px;
+      }
+      .status-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 18px;
+      }
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+      .dot.active { background: var(--success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 22%, transparent); }
+      .dot.inactive { background: var(--warn); }
+      .status-label { font-size: .9rem; font-weight: 600; }
+      .cred-grid {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        gap: 10px 12px;
+        align-items: center;
+      }
+      .cred-label {
+        font-size: .78rem;
+        font-weight: 600;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: .1em;
+        white-space: nowrap;
+      }
+      .cred-value {
+        font-family: "Cascadia Code", "Fira Mono", "Consolas", monospace;
+        font-size: .95rem;
+        font-weight: 600;
+        background: var(--code-bg);
+        border-radius: 8px;
+        padding: 7px 12px;
+        border: 1px solid var(--border);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+      }
+      .copy-btn {
+        background: var(--accent-bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 7px 11px;
+        cursor: pointer;
+        color: var(--accent);
+        font-size: .78rem;
+        font-weight: 700;
+        transition: background .15s;
+        white-space: nowrap;
+      }
+      .copy-btn:hover { background: color-mix(in srgb, var(--accent) 12%, var(--panel)); }
+      .copy-btn.copied { color: var(--success); background: var(--success-bg); }
+      .url-block {
+        background: var(--accent-bg);
+        border: 2px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+        border-radius: 14px;
+        padding: 16px 18px;
+      }
+      .url-label {
+        font-size: .72rem;
+        font-weight: 700;
+        color: var(--accent);
+        letter-spacing: .12em;
+        text-transform: uppercase;
+        margin-bottom: 8px;
+      }
+      .url-value {
+        font-family: "Cascadia Code", "Fira Mono", "Consolas", monospace;
+        font-size: 1.15rem;
+        font-weight: 700;
+        color: var(--accent);
+        word-break: break-all;
+      }
+      .url-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 12px;
+        justify-content: space-between;
+      }
+      .ip-list, .pill-list { display: flex; flex-wrap: wrap; gap: 8px; }
+      .ip-chip, .host-chip {
+        font-family: "Cascadia Code", "Fira Mono", "Consolas", monospace;
+        font-size: .88rem;
+        background: var(--code-bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 6px 12px;
+        cursor: pointer;
+        transition: border-color .15s;
+      }
+      .host-chip { border-radius: 999px; font-size: .84rem; }
+      .ip-chip:hover, .host-chip:hover { border-color: var(--accent); }
+      .steps { display: grid; gap: 12px; }
+      .step { display: flex; gap: 14px; align-items: flex-start; }
+      .step-num {
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        flex-shrink: 0;
+        background: var(--accent);
+        color: #fff;
+        font-size: .8rem;
+        font-weight: 700;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .step-text { font-size: .9rem; color: var(--text-soft); line-height: 1.55; padding-top: 2px; }
+      .step-text strong { color: var(--text); }
+      .warn-banner {
+        background: var(--warn-bg);
+        border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+        border-radius: 12px;
+        padding: 14px 16px;
+        font-size: .84rem;
+        color: var(--warn);
+        line-height: 1.6;
+      }
+      .warn-banner strong { display: block; margin-bottom: 4px; }
+      .guide-card {
+        background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, var(--panel)) 0%, var(--panel) 100%);
+        border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+      }
+      .guide-grid {
+        display: grid;
+        gap: 12px;
+      }
+      .guide-row {
+        display: grid;
+        grid-template-columns: 34px 1fr;
+        gap: 12px;
+        align-items: start;
+      }
+      .guide-badge {
+        width: 34px;
+        height: 34px;
+        border-radius: 10px;
+        background: var(--accent);
+        color: #fff;
+        font-weight: 700;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .guide-main { font-size: .96rem; color: var(--text); line-height: 1.45; }
+      .guide-sub { font-size: .82rem; color: var(--text-muted); margin-top: 2px; line-height: 1.45; }
+      .notes-banner {
+        color: var(--text-soft);
+        background: var(--code-bg);
+        border-color: var(--border);
+      }
+      .hostname { font-size: .85rem; color: var(--text-muted); }
+      .hostname span { font-family: "Cascadia Code", "Fira Mono", monospace; color: var(--text-soft); }
+      .mini-list { display: grid; gap: 8px; }
+      .mini-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 14px;
+        align-items: flex-start;
+        padding: 8px 0;
+        border-top: 1px solid var(--border);
+      }
+      .mini-row:first-child { border-top: 0; padding-top: 0; }
+      .mini-k { font-size: .8rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .08em; }
+      .mini-v { font-size: .88rem; color: var(--text-soft); text-align: right; }
+      .refreshed { font-size: .72rem; color: var(--text-muted); margin-top: 6px; }
+      .back-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: .82rem;
+        font-weight: 600;
+        color: var(--accent);
+        text-decoration: none;
+        padding: 4px 0;
+      }
+      .back-link:hover { opacity: .75; }
+      #errorCard { display: none; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="page-header">
+        <div class="logo">
+          <svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 12.55a11 11 0 0 1 14.08 0"/>
+            <path d="M1.42 9a16 16 0 0 1 21.16 0"/>
+            <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
+            <circle cx="12" cy="20" r="1" fill="white" stroke="white"/>
+          </svg>
+        </div>
+        <div>
+          <h1>Connect to AIBox</h1>
+          <p>Project Puente AI - local network connection guide</p>
+        </div>
+      </div>
+
+      <div class="card" id="errorCard">
+        <div class="card-title">Status</div>
+        <div class="warn-banner">
+          <strong>Connection info not available</strong>
+          Run <code>diagnose_local_access.ps1</code> or <code>get_network_info.ps1</code> on the host machine to generate this page's data, then refresh.
+        </div>
+      </div>
+
+      <div class="card" id="hotspotCard" style="display:none">
+        <div class="card-title">Wi-Fi Hotspot</div>
+        <div class="status-row">
+          <span class="dot" id="hotspotDot"></span>
+          <span class="status-label" id="hotspotStatus">-</span>
+        </div>
+        <div class="cred-grid" id="hotspotCreds" style="display:none">
+          <span class="cred-label">Network</span>
+          <span class="cred-value" id="hotspotSsid">-</span>
+          <button class="copy-btn" onclick="copyField('hotspotSsid', this)">Copy</button>
+          <span class="cred-label">Password</span>
+          <span class="cred-value" id="hotspotPass">-</span>
+          <button class="copy-btn" onclick="copyField('hotspotPass', this)">Copy</button>
+        </div>
+        <div class="warn-banner" id="hotspotInactiveNote" style="display:none; margin-top:12px">
+          <strong>Hotspot is not running.</strong>
+          On the host machine, run as Administrator:<br>
+          <code>powershell -ExecutionPolicy Bypass -File aibox\tools\llama-runtime\scripts\setup_hotspot.ps1</code>
+        </div>
+      </div>
+
+      <div class="card" id="urlCard" style="display:none">
+        <div class="card-title">Open in Browser</div>
+        <div class="url-block">
+          <div class="url-label">Portal address</div>
+          <div class="url-row">
+            <a class="url-value" id="primaryUrl" href="#" target="_blank">-</a>
+            <button class="copy-btn" onclick="copyText(document.getElementById('primaryUrl').textContent, this)">Copy</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card guide-card" id="quickGuideCard" style="display:none">
+        <div class="card-title">Quick Guide</div>
+        <div class="guide-grid" id="quickGuideRows"></div>
+      </div>
+
+      <div class="card" id="stepsCard" style="display:none">
+        <div class="card-title">How to Connect</div>
+        <div class="steps" id="stepsList"></div>
+      </div>
+
+      <div class="card" id="lanCard" style="display:none">
+        <div class="card-title">LAN Addresses (existing network)</div>
+        <div class="ip-list" id="lanIPs"></div>
+        <p class="hostname" id="hostnameRow" style="margin-top:12px; display:none">
+          Hostname: <span id="hostname">-</span>
+          &nbsp;&mdash;&nbsp;try <span id="mdnsAddr">-</span> if mDNS works on the network.
+        </p>
+      </div>
+
+      <div class="card" id="hostnamesCard" style="display:none">
+        <div class="card-title">Simple Hostnames</div>
+        <div class="pill-list" id="hostnameCandidates"></div>
+        <div class="warn-banner" style="margin-top:12px">
+          <strong>Hostname use is optional.</strong>
+          A hostname only works if nearby devices can resolve it to this machine through DNS, mDNS, or a hosts entry.
+        </div>
+      </div>
+
+      <div class="card" id="diagnosticsCard" style="display:none">
+        <div class="card-title">Diagnostics</div>
+        <div class="mini-list" id="diagnosticFacts"></div>
+        <div class="warn-banner" id="warningsBox" style="display:none; margin-top:12px"></div>
+        <div class="warn-banner notes-banner" id="notesBox" style="display:none; margin-top:12px"></div>
+      </div>
+
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px">
+        <a class="back-link" href="/">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+          Back to portal
+        </a>
+        <span class="refreshed" id="generatedAt"></span>
+      </div>
+    </div>
+
+    <script>
+      (function () {
+        function copyText(text, btn) {
+          navigator.clipboard.writeText(text).then(function () {
+            var orig = btn.textContent;
+            btn.textContent = "Copied!";
+            btn.classList.add("copied");
+            setTimeout(function () { btn.textContent = orig; btn.classList.remove("copied"); }, 1800);
+          }).catch(function () {
+            var ta = document.createElement("textarea");
+            ta.value = text;
+            ta.style.cssText = "position:fixed;opacity:0";
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand("copy");
+            document.body.removeChild(ta);
+            btn.textContent = "Copied!";
+            btn.classList.add("copied");
+            setTimeout(function () { btn.textContent = "Copy"; btn.classList.remove("copied"); }, 1800);
+          });
+        }
+        window.copyText = copyText;
+
+        function copyField(id, btn) {
+          copyText(document.getElementById(id).textContent.trim(), btn);
+        }
+        window.copyField = copyField;
+
+        function show(id) { var el = document.getElementById(id); if (el) el.style.display = ""; }
+        function hide(id) { var el = document.getElementById(id); if (el) el.style.display = "none"; }
+        function text(id, val) { var el = document.getElementById(id); if (el) el.textContent = val; }
+        function href(id, url) { var el = document.getElementById(id); if (el) { el.textContent = url; el.href = url; } }
+        function boolText(v) {
+          if (v === null || typeof v === "undefined" || v === "") return "unknown";
+          return v ? "yes" : "no";
+        }
+        function buildQuickGuide(d) {
+          var rows = [];
+          var preferredHost = d.preferred && d.preferred.hostname ? "http://" + d.preferred.hostname + "/" : null;
+          var primaryUrl = d.primary_url || null;
+          if (d.recommended_method === "hotspot" && d.hotspot) {
+            rows.push({
+              main: "Join the Wi-Fi network " + (d.hotspot.ssid || "shown above") + ".",
+              sub: "Use the hotspot password shown on this page."
+            });
+            rows.push({
+              main: preferredHost ? "Open " + preferredHost : "Open " + primaryUrl,
+              sub: preferredHost ? "Hotspot clients should receive the host as DNS automatically." : "Use the hotspot host address directly."
+            });
+            rows.push({
+              main: primaryUrl ? "If the name does not open, use " + primaryUrl : "If the first address does not work, refresh this page on the host.",
+              sub: "The IP address is the fallback if local DNS is not being used yet."
+            });
+            return rows;
+          }
+
+          rows.push({
+            main: "Connect the client device to the same local network as the AIBox host.",
+            sub: "Nearby clients must be on the same LAN or hotspot."
+          });
+          if (preferredHost) {
+            rows.push({
+              main: "Open " + preferredHost,
+              sub: "This works when the client is using the AIBox DNS server."
+            });
+          }
+          if (primaryUrl) {
+            rows.push({
+              main: "If the hostname does not resolve, use " + primaryUrl,
+              sub: "The IP address always remains the fallback."
+            });
+          }
+          return rows;
+        }
+
+        fetch("/network-info.json?_=" + Date.now(), { cache: "no-store" })
+          .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+          .then(function (d) {
+            show("hotspotCard");
+            var active = d.hotspot && d.hotspot.status === "active";
+            var dot = document.getElementById("hotspotDot");
+            if (dot) { dot.className = "dot " + (active ? "active" : "inactive"); }
+            text("hotspotStatus", active ? "Active - broadcasting" : "Inactive");
+
+            if (d.hotspot) {
+              if (active && d.hotspot.ssid) {
+                show("hotspotCreds");
+                hide("hotspotInactiveNote");
+                text("hotspotSsid", d.hotspot.ssid);
+                text("hotspotPass", d.hotspot.password || "-");
+              } else {
+                hide("hotspotCreds");
+                show("hotspotInactiveNote");
+              }
+            }
+
+            if (d.primary_url) {
+              show("urlCard");
+              href("primaryUrl", d.primary_url);
+            }
+
+            var quickGuide = buildQuickGuide(d);
+            if (quickGuide.length > 0) {
+              show("quickGuideCard");
+              document.getElementById("quickGuideRows").innerHTML = quickGuide.map(function (row, idx) {
+                return '<div class="guide-row"><div class="guide-badge">' + (idx + 1) + '</div><div><div class="guide-main">' + escHtml(row.main) + '</div><div class="guide-sub">' + escHtml(row.sub) + '</div></div></div>';
+              }).join("");
+            }
+
+            var steps = (d.diagnostics && Array.isArray(d.diagnostics.steps)) ? d.diagnostics.steps.slice() : [];
+            if (steps.length > 0) {
+              show("stepsCard");
+              var list = document.getElementById("stepsList");
+              list.innerHTML = steps.map(function (s, i) {
+                return '<div class="step"><span class="step-num">' + (i + 1) + '</span><span class="step-text">' + escHtml(s) + '</span></div>';
+              }).join("");
+            }
+
+            if (d.lan) {
+              var ips = d.lan.ips || [];
+              if (ips.length > 0) {
+                show("lanCard");
+                var container = document.getElementById("lanIPs");
+                container.innerHTML = ips.map(function (ip) {
+                  return '<span class="ip-chip" title="Click to copy" onclick="copyText(\'http://' + escJs(ip) + '\', this)">' + escHtml(ip) + '</span>';
+                }).join("");
+              }
+              if (d.lan.hostname) {
+                var hn = document.getElementById("hostname");
+                var mdns = document.getElementById("mdnsAddr");
+                var row = document.getElementById("hostnameRow");
+                if (hn) hn.textContent = d.lan.hostname;
+                if (mdns) mdns.textContent = d.lan.hostname.toLowerCase() + ".local";
+                if (row) row.style.display = "";
+              }
+            }
+
+            if (d.hostnames && Array.isArray(d.hostnames.candidates) && d.hostnames.candidates.length > 0) {
+              show("hostnamesCard");
+              var hostContainer = document.getElementById("hostnameCandidates");
+              hostContainer.innerHTML = d.hostnames.candidates.map(function (name) {
+                return '<span class="host-chip" title="Click to copy" onclick="copyText(\'' + escJs(name) + '\', this)">' + escHtml(name) + '</span>';
+              }).join("");
+            }
+
+            show("diagnosticsCard");
+            var facts = [];
+            if (d.recommended_method) facts.push(["Recommended mode", d.recommended_method]);
+            if (d.http) {
+              facts.push(["HTTP listener", boolText(d.http.listening)]);
+              if (Array.isArray(d.http.listen_addresses) && d.http.listen_addresses.length) {
+                facts.push(["Listen addresses", d.http.listen_addresses.join(", ")]);
+              }
+              facts.push(["Firewall port 80", boolText(d.http.firewall_allowed)]);
+              facts.push(["Primary reachable", boolText(d.http.primary_reachable)]);
+            }
+            if (d.preferred && d.preferred.stable_ip) facts.push(["Preferred stable IP", d.preferred.stable_ip]);
+            if (d.preferred && d.preferred.hostname) facts.push(["Preferred hostname", d.preferred.hostname]);
+            document.getElementById("diagnosticFacts").innerHTML = facts.map(function (pair) {
+              return '<div class="mini-row"><div class="mini-k">' + escHtml(pair[0]) + '</div><div class="mini-v">' + escHtml(String(pair[1])) + '</div></div>';
+            }).join("");
+
+            if (d.diagnostics && Array.isArray(d.diagnostics.warnings) && d.diagnostics.warnings.length > 0) {
+              show("warningsBox");
+              document.getElementById("warningsBox").innerHTML =
+                "<strong>Warnings</strong>" + d.diagnostics.warnings.map(function (w) {
+                  return "<div>" + escHtml(w) + "</div>";
+                }).join("");
+            }
+            if (d.diagnostics && Array.isArray(d.diagnostics.notes) && d.diagnostics.notes.length > 0) {
+              show("notesBox");
+              document.getElementById("notesBox").innerHTML =
+                "<strong>Operator notes</strong>" + d.diagnostics.notes.map(function (n) {
+                  return "<div>" + escHtml(n) + "</div>";
+                }).join("");
+            }
+
+            if (d.generated_at) {
+              text("generatedAt", "Updated: " + d.generated_at);
+            }
+          })
+          .catch(function () {
+            show("errorCard");
+          });
+
+        function escHtml(s) {
+          return String(s)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;");
+        }
+
+        function escJs(s) {
+          return String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+        }
+      })();
+    </script>
+  </body>
+</html>

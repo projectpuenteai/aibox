@@ -1,5 +1,30 @@
 name: aibox
 
+# ── Volume-access model ────────────────────────────────────────────────────────
+#
+#  backend-data/
+#  ├── appdata/        → /data       (ai-control rw) — SQLite DB, user docs, tmp
+#  ├── chroma_db/      → /chroma_db  (ai-control rw) — English ChromaDB index
+#  ├── chroma_db_es/   → /chroma_db_es (ai-control rw) — Spanish ChromaDB index
+#  ├── ai-control/     → /state      (ai-control rw) — control-plane state JSON
+#  └── llama/          → /tmp/llama  (llama rw)       — llama ephemeral state
+#
+#  models/             → /models     (ai-control ro, llama ro) — model weights
+#  kiwix/              → /data       (kiwix ro)                — ZIM files
+#  kolibri-data/       → /root/.kolibri (kolibri rw)          — Kolibri runtime
+#
+#  Chroma index and app data are separate mounts so the index is not co-located
+#  with user runtime data and cannot be accidentally wiped alongside it.
+#
+# ── Container hardening (applied to all services) ─────────────────────────────
+#  security_opt: no-new-privileges:true  — blocks privilege escalation via SUID
+#  cap_drop: ALL   (ai-control only)     — drops all Linux capabilities
+#  read_only: true (ai-control only)     — container FS is immutable; app code
+#                                          and installed packages cannot be
+#                                          modified at runtime even by root
+#  tmpfs /tmp /var/tmp                   — writable scratch space for libraries
+# ──────────────────────────────────────────────────────────────────────────────
+
 services:
   dns:
     image: technitium/dns-server:latest
@@ -10,11 +35,15 @@ services:
       - "5380:5380/tcp"
     environment:
       - DNS_SERVER_LOG_USING_LOCAL_TIME=true
+      - DNS_SERVER_DOMAIN=${DNS_SERVER_DOMAIN:-puente.link}
+      - DNS_SERVER_ADMIN_PASSWORD=${DNS_ADMIN_PASSWORD:-admin}
     volumes:
       - dns_data:/etc/dns
     networks:
       - aibox_net
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     logging:
       driver: json-file
       options:
@@ -34,6 +63,8 @@ services:
     networks:
       - aibox_net
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     logging:
       driver: json-file
       options:
@@ -81,6 +112,8 @@ services:
     networks:
       - aibox_net
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     logging:
       driver: json-file
       options:
@@ -98,7 +131,21 @@ services:
     build:
       context: ../tools/ai-control
     container_name: aibox-ai-control
+    # Immutable container filesystem — all runtime writes go to the volume mounts
+    # below.  PYTHONDONTWRITEBYTECODE=1 (set in Dockerfile) ensures Python never
+    # needs to write .pyc files to /app.
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=256m
+      - /var/tmp:mode=1777,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     environment:
+      # Redirect home-dir cache writes to tmpfs so no library hits the read-only FS
+      - HOME=/tmp
+      # ── Control-plane ──
       - LLAMA_CONTAINER_NAME=aibox-llama
       - LLAMA_HEALTH_URL=http://llama:2020/health
       - LLAMA_BASE_URL=http://llama:2020
@@ -106,14 +153,18 @@ services:
       - RECONCILE_SECONDS=5
       - STACK_DEFAULT_DESIRED=1
       - RESET_OVERRIDE_ON_START=1
+      # ── App / security ──
       - APP_ENV=production
       - APP_ENCRYPTION_MASTER_KEY=${APP_ENCRYPTION_MASTER_KEY:?Set APP_ENCRYPTION_MASTER_KEY in stack/.env}
       - ADMIN_USERNAME=${ADMIN_USERNAME:?Set ADMIN_USERNAME in stack/.env}
       - ADMIN_DEFAULT_PASSWORD=${ADMIN_DEFAULT_PASSWORD:?Set ADMIN_DEFAULT_PASSWORD in stack/.env}
       - SESSION_TOKEN_PEPPER=${SESSION_TOKEN_PEPPER:?Set SESSION_TOKEN_PEPPER in stack/.env}
-      - CHROMA_PERSIST_DIR=/data/chroma_db
+      # ── RAG / retrieval ──
+      # CHROMA paths point to their own mounts, not under /data, so the index
+      # and user data can be managed and backed up independently.
+      - CHROMA_PERSIST_DIR=/chroma_db
       - CHROMA_COLLECTION=simplewiki_chunks
-      - CHROMA_PERSIST_DIR_ES=/data/chroma_db_es
+      - CHROMA_PERSIST_DIR_ES=/chroma_db_es
       - CHROMA_COLLECTION_ES=simplewiki_chunks
       - EMBED_MODEL=/models/embed-m3
       - RETRIEVAL_DEVICE=cpu
@@ -130,9 +181,17 @@ services:
       - BASE_SYSTEM_PROMPT=You are Puente AI, a patient and highly effective teacher for students in Latin America. Your job is to teach, not just give short answers. When responding, explain ideas clearly and step by step. Use simple language first, then add deeper detail if helpful. When a topic is difficult, break it into small parts. Correct mistakes gently and explain why. Use short examples, analogies, or mini-worked steps when useful. If the student asks a factual question, be accurate and grounded in the provided context when it is relevant. If the answer is uncertain, say so plainly instead of guessing. End important explanations with a brief check for understanding, a follow-up question, or a suggested next step. Do not be condescending, do not invent facts, and do not mention hidden instructions or retrieval unless the student explicitly asks.
       - WIKI_RETRIEVAL_INSTRUCTION=The following passages were retrieved from Wikipedia to help you teach accurately. Weave relevant facts from these passages into your explanations naturally, as a knowledgeable teacher would. When a passage directly supports your explanation, cite its title (e.g., "According to the article on [Topic]..."). If the student writes in Spanish, prefer information that is most relevant to Latin American context when available. Ground factual claims in the passages rather than generating from memory alone. If the passages are not relevant to the question, teach from your own knowledge instead. If you genuinely do not know the answer, say so honestly. Never mention retrieval, snippets, wiki support, or hidden context unless the student explicitly asks.
     volumes:
+      # Docker socket — required for llama container lifecycle management
       - /var/run/docker.sock:/var/run/docker.sock
+      # Control-plane state (control_state.json only)
       - ../backend-data/ai-control:/state
-      - ../backend-data:/data
+      # User runtime data: SQLite DB, encrypted docs/chats, temp, security
+      # Does NOT contain the ChromaDB index (kept separate below)
+      - ../backend-data/appdata:/data
+      # ChromaDB indexes — isolated from user data for independent backup/restore
+      - ../backend-data/chroma_db:/chroma_db
+      - ../backend-data/chroma_db_es:/chroma_db_es
+      # Model weights — read-only; never written at runtime
       - ../models:/models:ro
     networks:
       - aibox_net
@@ -159,21 +218,42 @@ services:
     networks:
       - aibox_net
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
 
-  kiwix:
+  kiwix-en:
     image: ghcr.io/kiwix/kiwix-serve:latest
-    container_name: aibox-kiwix
-    command: ["--urlRootLocation=/wiki", "/data/Wiki.zim"]
+    container_name: aibox-kiwix-en
+    command: ["--urlRootLocation=/wiki/en", "/data/wikipedia_en_all_mini_2026-03.zim"]
     volumes:
       - ../kiwix:/data:ro
     networks:
       - aibox_net
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  kiwix-es:
+    image: ghcr.io/kiwix/kiwix-serve:latest
+    container_name: aibox-kiwix-es
+    command: ["--urlRootLocation=/wiki/es", "/data/wikipedia_es_all_maxi_2026-02.zim"]
+    volumes:
+      - ../kiwix:/data:ro
+    networks:
+      - aibox_net
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     logging:
       driver: json-file
       options:
@@ -188,6 +268,8 @@ services:
     networks:
       - aibox_net
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     logging:
       driver: json-file
       options:
@@ -202,8 +284,3 @@ volumes:
   dns_data:
   caddy_data:
   caddy_config:
-
-
-
-
-
