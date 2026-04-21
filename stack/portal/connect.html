@@ -325,8 +325,8 @@
         </div>
         <div class="warn-banner" id="hotspotInactiveNote" style="display:none; margin-top:12px">
           <strong>Hotspot is not running.</strong>
-          On the host machine, run as Administrator:<br>
-          <code>powershell -ExecutionPolicy Bypass -File aibox\tools\llama-runtime\scripts\setup_hotspot.ps1</code>
+          Start the stack from the host machine with:<br>
+          <code>powershell -ExecutionPolicy Bypass -File C:\AIBox\aibox\tools\llama-runtime\scripts\up_stack.ps1</code>
         </div>
       </div>
 
@@ -364,8 +364,8 @@
         <div class="card-title">Simple Hostnames</div>
         <div class="pill-list" id="hostnameCandidates"></div>
         <div class="warn-banner" style="margin-top:12px">
-          <strong>Hostname use is optional.</strong>
-          A hostname only works if nearby devices can resolve it to this machine through DNS, mDNS, or a hosts entry.
+          <strong>Hostname readiness is checked live.</strong>
+          This page only promotes <code>puente.link</code> when the laptop DNS service is actually answering it for hotspot clients.
         </div>
       </div>
 
@@ -425,19 +425,27 @@
           var rows = [];
           var preferredHost = d.preferred && d.preferred.hostname ? "http://" + d.preferred.hostname + "/" : null;
           var primaryUrl = d.primary_url || null;
+          var hotspotReady = d.hotspot && d.hotspot.readiness === "ready";
           if (d.recommended_method === "hotspot" && d.hotspot) {
             rows.push({
               main: "Join the Wi-Fi network " + (d.hotspot.ssid || "shown above") + ".",
               sub: "Use the hotspot password shown on this page."
             });
             rows.push({
-              main: preferredHost ? "Open " + preferredHost : "Open " + primaryUrl,
-              sub: preferredHost ? "Hotspot clients should receive the host as DNS automatically." : "Use the hotspot host address directly."
+              main: hotspotReady && preferredHost ? "Open " + preferredHost : "Open " + primaryUrl,
+              sub: hotspotReady && preferredHost ? "The hotspot DNS check passed, so puente.link should work directly." : "Use the hotspot host address directly."
             });
-            rows.push({
-              main: primaryUrl ? "If the name does not open, use " + primaryUrl : "If the first address does not work, refresh this page on the host.",
-              sub: "The IP address is the fallback if local DNS is not being used yet."
-            });
+            if (hotspotReady) {
+              rows.push({
+                main: primaryUrl ? "If the name does not open, use http://" + (d.hotspot.host_ip || "") + "/" : "If the first address does not work, refresh this page on the host.",
+                sub: "The hotspot IP remains the fallback if DNS has not refreshed on the client yet."
+              });
+            } else {
+              rows.push({
+                main: "Run diagnostics on the host if you need puente.link to work.",
+                sub: "The hotspot is active, but the laptop DNS check has not passed yet."
+              });
+            }
             return rows;
           }
 
@@ -467,7 +475,13 @@
             var active = d.hotspot && d.hotspot.status === "active";
             var dot = document.getElementById("hotspotDot");
             if (dot) { dot.className = "dot " + (active ? "active" : "inactive"); }
-            text("hotspotStatus", active ? "Active - broadcasting" : "Inactive");
+            if (active && d.hotspot && d.hotspot.readiness === "ready") {
+              text("hotspotStatus", "Active - puente.link ready");
+            } else if (active && d.hotspot && d.hotspot.readiness === "ip_only") {
+              text("hotspotStatus", "Active - IP fallback only");
+            } else {
+              text("hotspotStatus", active ? "Active - broadcasting" : "Inactive");
+            }
 
             if (d.hotspot) {
               if (active && d.hotspot.ssid) {
@@ -533,6 +547,12 @@
             show("diagnosticsCard");
             var facts = [];
             if (d.recommended_method) facts.push(["Recommended mode", d.recommended_method]);
+            if (d.hotspot && d.hotspot.backend) facts.push(["Hotspot backend", d.hotspot.backend]);
+            if (d.hotspot && d.hotspot.readiness) facts.push(["Hotspot readiness", d.hotspot.readiness]);
+            if (d.hotspot && d.hotspot.validation) {
+              facts.push(["Hotspot DNS", boolText(d.hotspot.validation.dns_ready)]);
+              facts.push(["Hostname ready", boolText(d.hotspot.validation.hostname_ready)]);
+            }
             if (d.http) {
               facts.push(["HTTP listener", boolText(d.http.listening)]);
               if (Array.isArray(d.http.listen_addresses) && d.http.listen_addresses.length) {

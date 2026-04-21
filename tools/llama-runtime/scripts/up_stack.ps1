@@ -9,6 +9,72 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Test-IsAdministrator {
+  $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+  return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Invoke-HotspotStartup {
+  param([string]$ScriptPath)
+
+  if (-not (Test-Path $ScriptPath)) {
+    return [pscustomobject]@{
+      ok = $false
+      status = "unavailable"
+      warnings = @("setup_hotspot.ps1 not found; skipping hotspot startup.")
+      errors = @()
+    }
+  }
+
+  $jsonFile = Join-Path ([System.IO.Path]::GetTempPath()) ("aibox-hotspot-" + [guid]::NewGuid().ToString() + ".json")
+  try {
+    if (Test-IsAdministrator) {
+      & powershell -ExecutionPolicy Bypass -File $ScriptPath -EmitJson -JsonOutFile $jsonFile | Out-Null
+    } else {
+      try {
+        $proc = Start-Process `
+          -FilePath "powershell.exe" `
+          -ArgumentList @("-ExecutionPolicy", "Bypass", "-File", $ScriptPath, "-EmitJson", "-JsonOutFile", $jsonFile) `
+          -Verb RunAs `
+          -Wait `
+          -PassThru
+        $null = $proc
+      } catch {
+        return [pscustomobject]@{
+          ok = $false
+          status = "unavailable"
+          warnings = @("Hotspot startup requires Administrator approval. Startup continued without offline Wi-Fi access.")
+          errors = @("Elevation was cancelled or blocked before hotspot setup could run.")
+        }
+      }
+    }
+
+    if (Test-Path $jsonFile) {
+      try {
+        return (Get-Content $jsonFile -Raw | ConvertFrom-Json)
+      } catch {
+        return [pscustomobject]@{
+          ok = $false
+          status = "unavailable"
+          warnings = @("Hotspot setup ran, but its status output could not be parsed.")
+          errors = @($_.Exception.Message)
+        }
+      }
+    }
+
+    return [pscustomobject]@{
+      ok = $false
+      status = "unavailable"
+      warnings = @("Hotspot setup did not produce status output. Startup continued without confirmed offline Wi-Fi access.")
+      errors = @()
+    }
+  } finally {
+    if (Test-Path $jsonFile) {
+      Remove-Item -LiteralPath $jsonFile -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
 function Wait-DockerDaemon {
   param(
     [int]$TimeoutSeconds = 240,
@@ -34,6 +100,28 @@ function Wait-DockerDaemon {
   }
 
   return $false
+}
+
+function Get-ComposeExistingServices {
+  param([string]$ComposeFilePath)
+
+  $existing = @()
+  $saved = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $output = & docker compose -f $ComposeFilePath ps --services --all 2>&1
+    if ($LASTEXITCODE -eq 0) {
+      $existing = @(
+        $output |
+          Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+          ForEach-Object { ([string]$_).Trim() }
+      )
+    }
+  } finally {
+    $ErrorActionPreference = $saved
+  }
+
+  return @($existing | Select-Object -Unique)
 }
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -150,18 +238,67 @@ if ($LASTEXITCODE -ne 0) {
   throw "Preflight failed. Aborting docker compose up."
 }
 
-$cmd = @("compose", "-f", $ComposeFile, "up", "-d")
-if ($Services.Count -gt 0) {
-  $cmd += $Services
+$desiredServices = @($Services)
+$existingServices = @(Get-ComposeExistingServices -ComposeFilePath $ComposeFile)
+$canUseStart = ($desiredServices.Count -eq 0 -and $existingServices.Count -gt 0)
+if ($desiredServices.Count -gt 0) {
+  $missingServices = @($desiredServices | Where-Object { $_ -notin $existingServices })
+  $canUseStart = ($missingServices.Count -eq 0)
 }
 
-Write-Host "[run] docker $($cmd -join ' ')"
-& docker @cmd
-if ($LASTEXITCODE -ne 0) {
-  throw "docker compose up failed (exit code $LASTEXITCODE)"
+if ($canUseStart) {
+  $cmd = @("compose", "-f", $ComposeFile, "start")
+  if ($desiredServices.Count -gt 0) {
+    $cmd += $desiredServices
+  }
+  Write-Host "[run] docker $($cmd -join ' ')"
+  & docker @cmd
+  if ($LASTEXITCODE -ne 0) {
+    throw "docker compose start failed (exit code $LASTEXITCODE)"
+  }
+} else {
+  $cmd = @("compose", "-f", $ComposeFile, "up", "-d", "--no-recreate")
+  if ($desiredServices.Count -gt 0) {
+    $cmd += $desiredServices
+  }
+  Write-Host "[run] docker $($cmd -join ' ')"
+  & docker @cmd
+  if ($LASTEXITCODE -ne 0) {
+    throw "docker compose up --no-recreate failed (exit code $LASTEXITCODE)"
+  }
 }
 
 Write-Host "[ok] stack started" -ForegroundColor Green
+
+# Try to bring up the offline hotspot after the stack is live so the local DNS
+# service is already available when the hotspot validation runs.
+$hotspotScript = Join-Path $scriptDir "setup_hotspot.ps1"
+Write-Host "[info] Starting offline hotspot..."
+$hotspotResult = Invoke-HotspotStartup -ScriptPath $hotspotScript
+if ($hotspotResult) {
+  foreach ($hotspotWarning in @($hotspotResult.warnings)) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$hotspotWarning)) {
+      Write-Host "[warn] $hotspotWarning" -ForegroundColor Yellow
+    }
+  }
+  foreach ($hotspotError in @($hotspotResult.errors)) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$hotspotError)) {
+      Write-Host "[warn] $hotspotError" -ForegroundColor Yellow
+    }
+  }
+
+  switch ([string]$hotspotResult.status) {
+    "ready" {
+      Write-Host "[ok] Hotspot ready for offline clients at http://$($hotspotResult.domain)/" -ForegroundColor Green
+    }
+    "ip_only" {
+      Write-Host "[warn] Hotspot is active, but offline DNS is not ready. Clients should use http://$($hotspotResult.host_ip)/ until puente.link validates." -ForegroundColor Yellow
+    }
+    default {
+      Write-Host "[warn] Hotspot is not ready. Stack startup completed, but offline student access is unavailable." -ForegroundColor Yellow
+    }
+  }
+}
 
 # ── Update portal connection info (best-effort, non-fatal) ────────────────────
 # Writes portal/network-info.json so connect.html shows current IPs / hotspot
@@ -176,4 +313,3 @@ if (Test-Path $netInfoScript) {
 } else {
   Write-Host "[warn] get_network_info.ps1 not found; portal connection info not updated." -ForegroundColor Yellow
 }
-

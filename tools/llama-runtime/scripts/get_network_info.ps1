@@ -134,6 +134,82 @@ function Normalize-PreferredHostname {
   return $text
 }
 
+function Add-WinRtHelpers {
+  if ("AIBox.WinRtAwait" -as [type]) { return }
+  $code = @'
+using System;
+using System.Threading.Tasks;
+using Windows.Foundation;
+using System.Runtime.InteropServices.WindowsRuntime;
+
+namespace AIBox {
+  public static class WinRtAwait {
+    public static T WaitFor<T>(IAsyncOperation<T> op) {
+      return op.AsTask().GetAwaiter().GetResult();
+    }
+  }
+}
+'@
+  Add-Type -TypeDefinition $code -ReferencedAssemblies System.Runtime.WindowsRuntime | Out-Null
+}
+
+function Get-MobileHotspotContext {
+  Add-WinRtHelpers
+  [void][Windows.Networking.Connectivity.NetworkInformation,Windows,ContentType=WindowsRuntime]
+  [void][Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager,Windows,ContentType=WindowsRuntime]
+
+  $profiles = New-Object System.Collections.Generic.List[object]
+  $internet = [Windows.Networking.Connectivity.NetworkInformation]::GetInternetConnectionProfile()
+  if ($internet) { [void]$profiles.Add($internet) }
+  foreach ($profile in [Windows.Networking.Connectivity.NetworkInformation]::GetConnectionProfiles()) {
+    if (-not $profile) { continue }
+    $seen = $false
+    foreach ($existing in $profiles) {
+      if ($existing.ProfileName -eq $profile.ProfileName) {
+        $seen = $true
+        break
+      }
+    }
+    if (-not $seen) { [void]$profiles.Add($profile) }
+  }
+
+  foreach ($profile in $profiles) {
+    try {
+      $capability = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::GetTetheringCapabilityFromConnectionProfile($profile)
+      if ($capability -eq [Windows.Networking.NetworkOperators.TetheringCapability]::Enabled) {
+        return [pscustomobject]@{
+          profile_name = $profile.ProfileName
+          capability   = [string]$capability
+          manager      = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::CreateFromConnectionProfile($profile)
+        }
+      }
+    } catch {}
+  }
+  return $null
+}
+
+function Resolve-HostnameUsingServer {
+  param(
+    [string]$Domain,
+    [string]$Server
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Domain) -or [string]::IsNullOrWhiteSpace($Server)) {
+    return @()
+  }
+
+  try {
+    $records = Resolve-DnsName -Name $Domain -Server $Server -Type A -DnsOnly -NoHostsFile -ErrorAction Stop
+    return @(
+      $records |
+        Where-Object { $_.Type -eq "A" -and -not [string]::IsNullOrWhiteSpace($_.IPAddress) } |
+        Select-Object -ExpandProperty IPAddress -Unique
+    )
+  } catch {
+    return @()
+  }
+}
+
 # Resolve paths
 $scriptDir    = Split-Path -Parent $MyInvocation.MyCommand.Path
 $runtimeDir   = Split-Path -Parent $scriptDir
@@ -153,23 +229,42 @@ $hostName             = $env:COMPUTERNAME
 $httpPort             = 80
 
 # Probe hotspot status
-$hostedNetOutput = & netsh wlan show hostednetwork 2>&1
 $hotspotActive   = $false
 $hotspotSsid     = $configuredSsid
 $hotspotSupport  = "unknown"
+$hotspotBackend  = "unknown"
+$hotspotProfile  = $null
+$hotspotContext  = Get-MobileHotspotContext
 
-if ($hostedNetOutput -match "(?i)Status\s*:\s*Started") {
-  $hotspotActive = $true
-}
-if ($hostedNetOutput -match '(?i)The hosted network couldn''t be started|not supported') {
-  $hotspotSupport = "unsupported_or_disabled"
-} elseif ($hostedNetOutput) {
-  $hotspotSupport = "available_or_unknown"
-}
-if ($hostedNetOutput -match '(?i)SSID name\s*:\s*"([^"]+)"') {
-  $hotspotSsid = $Matches[1].Trim()
-} elseif ($hostedNetOutput -match '(?i)SSID name\s*:\s*(\S+)') {
-  $hotspotSsid = $Matches[1].Trim()
+if ($hotspotContext) {
+  $hotspotBackend = "mobile_hotspot"
+  $hotspotSupport = "available"
+  $hotspotProfile = $hotspotContext.profile_name
+  try {
+    $hotspotActive = ($hotspotContext.manager.TetheringOperationalState -eq [Windows.Networking.NetworkOperators.TetheringOperationalState]::On)
+    $currentConfig = $hotspotContext.manager.GetCurrentAccessPointConfiguration()
+    if ($hotspotActive -and $currentConfig -and -not [string]::IsNullOrWhiteSpace($currentConfig.Ssid)) {
+      $hotspotSsid = $currentConfig.Ssid
+    }
+  } catch {
+    $hotspotSupport = "available_or_unknown"
+  }
+} else {
+  $hostedNetOutput = & netsh wlan show hostednetwork 2>&1
+  $hotspotBackend = "hostednetwork_legacy"
+  if ($hostedNetOutput -match "(?i)Status\s*:\s*Started") {
+    $hotspotActive = $true
+  }
+  if ($hostedNetOutput -match '(?i)The hosted network couldn''t be started|not supported') {
+    $hotspotSupport = "unsupported_or_disabled"
+  } elseif ($hostedNetOutput) {
+    $hotspotSupport = "available_or_unknown"
+  }
+  if ($hostedNetOutput -match '(?i)SSID name\s*:\s*"([^"]+)"') {
+    $hotspotSsid = $Matches[1].Trim()
+  } elseif ($hostedNetOutput -match '(?i)SSID name\s*:\s*(\S+)') {
+    $hotspotSsid = $Matches[1].Trim()
+  }
 }
 
 $lanCandidates = @()
@@ -264,13 +359,42 @@ if ($null -eq $firewallHttpAllowed) {
   $warnings.Add("No enabled inbound Windows Firewall allow rule for TCP port 80 was detected. Windows may block nearby clients.")
 }
 
+$hotspotHttpReachable = $false
+$hotspotDnsReady = $false
+$hotspotHostnameReady = $false
+$hotspotHostnameTargetIp = $null
+$hotspotReadiness = if ($hotspotActive -and $hotspotIp) { "ip_only" } else { "unavailable" }
+
+if ($hotspotIp) {
+  $hotspotHttpReachable = Test-TcpReachable -HostName $hotspotIp -Port $httpPort
+  $hotspotDnsReady = Test-TcpReachable -HostName $hotspotIp -Port 53
+  if ($preferredHostname) {
+    $resolvedIps = @(Resolve-HostnameUsingServer -Domain $preferredHostname -Server $hotspotIp)
+    if ($resolvedIps.Count -gt 0) {
+      $hotspotHostnameTargetIp = [string]$resolvedIps[0]
+    }
+    $hotspotHostnameReady = ($resolvedIps -contains $hotspotIp)
+  }
+}
+
+if ($hotspotActive -and $hotspotIp -and $hotspotHttpReachable -and $hotspotDnsReady -and $hotspotHostnameReady) {
+  $hotspotReadiness = "ready"
+} elseif ($hotspotActive -and $hotspotIp -and $hotspotHttpReachable) {
+  $hotspotReadiness = "ip_only"
+}
+
 $recommendedMethod = "unknown"
 $primaryCandidate = $null
 
 if ($hotspotActive -and $hotspotIp) {
   $recommendedMethod = "hotspot"
-  $primaryCandidate = $hotspotIp
-  $notes.Add("Offline hotspot mode is the most stable field option on Windows because the hotspot host address normally remains 192.168.137.1.")
+  if ($hotspotReadiness -eq "ready" -and $preferredHostname) {
+    $primaryCandidate = $preferredHostname
+    $notes.Add("Offline hotspot mode is active and nearby clients should be able to use puente.link directly.")
+  } else {
+    $primaryCandidate = $hotspotIp
+    $notes.Add("Offline hotspot mode is the most stable field option on Windows because the hotspot host address normally remains 192.168.137.1.")
+  }
 } elseif ($bestLan) {
   $recommendedMethod = "lan"
   if (-not [string]::IsNullOrWhiteSpace($preferredStableIp)) {
@@ -292,7 +416,9 @@ if ($hotspotActive -and $hotspotIp) {
 
 $primaryUrl = if ($primaryCandidate) { "http://$primaryCandidate" } else { $null }
 $loopbackReachable = Test-TcpReachable -HostName "127.0.0.1" -Port $httpPort
-if ($primaryCandidate) {
+if ($recommendedMethod -eq "hotspot" -and $hotspotIp) {
+  $primaryReachable = Test-TcpReachable -HostName $hotspotIp -Port $httpPort
+} elseif ($primaryCandidate) {
   $primaryReachable = Test-TcpReachable -HostName $primaryCandidate -Port $httpPort
 } else {
   $primaryReachable = $false
@@ -303,16 +429,32 @@ if ($primaryCandidate -and -not $primaryReachable -and $httpListening) {
 }
 
 if ($hotspotSupport -eq "unsupported_or_disabled") {
-  $warnings.Add("Windows hosted-network mode is not available on this adapter or is disabled. Offline Wi-Fi hotspot mode may require Windows Mobile Hotspot support instead.")
+  $warnings.Add("Windows hotspot mode is not available on this adapter or is disabled.")
+}
+
+if ($hotspotActive -and -not $hotspotHttpReachable) {
+  $warnings.Add("Hotspot Wi-Fi is active but TCP port 80 is not reachable on $hotspotIp.")
+}
+if ($hotspotActive -and -not $hotspotDnsReady) {
+  $warnings.Add("Hotspot Wi-Fi is active but the laptop is not answering DNS on $hotspotIp:53.")
+}
+if ($hotspotActive -and $preferredHostname -and -not $hotspotHostnameReady) {
+  $warnings.Add("$preferredHostname is not resolving to $hotspotIp through the laptop's DNS service yet. Clients may need to use the hotspot IP.")
 }
 
 $hostnameCandidates = @()
 if ($preferredHostname) {
-  $hostnameCandidates += "http://$preferredHostname"
+  if ($hotspotReadiness -eq "ready" -or $recommendedMethod -eq "lan") {
+    $hostnameCandidates += "http://$preferredHostname"
+  }
   if ($preferredHostname -notmatch "\.") {
     $hostnameCandidates += "http://$preferredHostname.local"
   }
-  $notes.Add("OFFLINE_HOSTNAME is advisory only unless client DNS, mDNS, or hosts entries resolve it to the host IP.")
+  if ($hotspotReadiness -eq "ready") {
+    $notes.Add("OFFLINE_HOSTNAME is validated for hotspot clients and currently resolves through the AIBox DNS service.")
+  } else {
+    $notes.Add("OFFLINE_HOSTNAME is only advertised when client DNS, mDNS, or hosts entries resolve it to the host IP.")
+  }
 }
 $hostnameCandidates += "http://$($hostName.ToLowerInvariant())"
 $hostnameCandidates += "http://$($hostName.ToLowerInvariant()).local"
@@ -321,13 +463,13 @@ $hostnameCandidates = @($hostnameCandidates | Select-Object -Unique)
 $steps = @()
 switch ($recommendedMethod) {
   "hotspot" {
-    $steps += "On the host, start the offline hotspot with setup_hotspot.ps1 as Administrator."
     $steps += "On the client device, join SSID '$hotspotSsid'."
-    if ($preferredHostname) {
-      $steps += "Open http://$preferredHostname/ in a browser. Hotspot clients should receive the host as DNS automatically."
-      $steps += "If the hostname does not open, use $primaryUrl instead."
+    if ($hotspotReadiness -eq "ready" -and $preferredHostname) {
+      $steps += "Open http://$preferredHostname/ in a browser."
+      $steps += "If the page does not load, use http://$hotspotIp/ as a temporary fallback and rerun diagnose_local_access.ps1 on the host."
     } else {
-      $steps += "Open $primaryUrl in a browser."
+      $steps += "Open http://$hotspotIp/ in a browser."
+      $steps += "The hotspot is up, but puente.link is not fully ready yet."
     }
   }
   "lan" {
@@ -355,12 +497,21 @@ $info = [ordered]@{
     hostname  = $preferredHostname
   }
   hotspot = [ordered]@{
-    status    = if ($hotspotActive) { "active" } else { "inactive" }
-    support   = $hotspotSupport
-    ssid      = $hotspotSsid
-    password  = $configuredKey
-    host_ip   = $hotspotIp
-    dns_server = $hotspotIp
+    status      = if ($hotspotActive) { "active" } else { "inactive" }
+    backend     = $hotspotBackend
+    support     = $hotspotSupport
+    profile     = $hotspotProfile
+    readiness   = $hotspotReadiness
+    ssid        = $hotspotSsid
+    password    = $configuredKey
+    host_ip     = $hotspotIp
+    dns_server  = $hotspotIp
+    validation  = [ordered]@{
+      http_ready         = $hotspotHttpReachable
+      dns_ready          = $hotspotDnsReady
+      hostname_ready     = $hotspotHostnameReady
+      hostname_target_ip = $hotspotHostnameTargetIp
+    }
   }
   lan = [ordered]@{
     ips        = $lanIps
@@ -405,7 +556,8 @@ if (-not $Quiet) {
   Write-Host ""
   Write-Host "Recommended mode : $recommendedMethod"
   if ($hotspotActive) {
-    Write-Host "Hotspot          : ACTIVE  SSID: $hotspotSsid  IP: $hotspotIp" -ForegroundColor Green
+    Write-Host "Hotspot          : ACTIVE  SSID: $hotspotSsid  IP: $hotspotIp  Backend: $hotspotBackend" -ForegroundColor Green
+    Write-Host "Hotspot readiness: $hotspotReadiness"
   } else {
     Write-Host "Hotspot          : inactive" -ForegroundColor DarkYellow
   }
@@ -423,6 +575,7 @@ if (-not $Quiet) {
   }
   if ($preferredHostname) {
     Write-Host "Preferred host   : $preferredHostname"
+    Write-Host "Hostname ready   : $(if ($hotspotHostnameReady) { 'yes' } else { 'no' })"
   }
   foreach ($warning in $warnings) {
     Write-Host "WARN             : $warning" -ForegroundColor Yellow

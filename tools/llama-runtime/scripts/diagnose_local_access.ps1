@@ -8,7 +8,8 @@ $ErrorActionPreference = "Stop"
 
 function Format-Bool {
   param($Value)
-  if ($null -eq $Value -or $Value -eq "") { return "unknown" }
+  if ($null -eq $Value) { return "unknown" }
+  if ($Value -is [string] -and [string]::IsNullOrWhiteSpace($Value)) { return "unknown" }
   return [string][bool]$Value
 }
 
@@ -36,11 +37,21 @@ Write-Host ("Firewall port 80 : {0}" -f (Format-Bool $info.http.firewall_allowed
 
 if ($info.hotspot) {
   Write-Host ("Hotspot status   : {0}" -f $info.hotspot.status)
+  if ($info.hotspot.backend) {
+    Write-Host ("Hotspot backend  : {0}" -f $info.hotspot.backend)
+  }
+  if ($info.hotspot.readiness) {
+    Write-Host ("Hotspot ready    : {0}" -f $info.hotspot.readiness)
+  }
   if ($info.hotspot.ssid) {
     Write-Host ("Hotspot SSID     : {0}" -f $info.hotspot.ssid)
   }
   if ($info.hotspot.host_ip) {
     Write-Host ("Hotspot host IP  : {0}" -f $info.hotspot.host_ip)
+  }
+  if ($info.hotspot.validation) {
+    Write-Host ("Hotspot DNS      : {0}" -f (Format-Bool $info.hotspot.validation.dns_ready))
+    Write-Host ("Hostname ready   : {0}" -f (Format-Bool $info.hotspot.validation.hostname_ready))
   }
 }
 

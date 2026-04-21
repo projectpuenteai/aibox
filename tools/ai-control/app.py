@@ -110,14 +110,25 @@ def _docker() -> docker.DockerClient:
     return _docker_client
 
 
+def _describe_docker_error(exc: Exception) -> str:
+    """Collapse Docker client exceptions into a short user-facing message."""
+    return f"{type(exc).__name__}: {exc}"
+
+
+def _lookup_llama_container():
+    """Return the configured llama container plus any Docker access error."""
+    try:
+        return _docker().containers.get(LLAMA_CONTAINER_NAME), None
+    except NotFound:
+        return None, None
+    except DockerException as exc:
+        return None, _describe_docker_error(exc)
+
+
 def _get_llama_container():
     """Return the configured llama container object or `None` when it is unavailable."""
-    try:
-        return _docker().containers.get(LLAMA_CONTAINER_NAME)
-    except NotFound:
-        return None
-    except DockerException:
-        return None
+    container, _docker_error = _lookup_llama_container()
+    return container
 
 
 def _llama_reachable(timeout_s: float = 2.0) -> bool:
@@ -150,11 +161,12 @@ def _gpu_attachment(container) -> Dict[str, Any]:
 
 def _llama_status_snapshot() -> Dict[str, Any]:
     """Combine Docker state, HTTP reachability, and GPU info into one status payload."""
-    container = _get_llama_container()
+    container, docker_error = _lookup_llama_container()
+    docker_access = "ok" if docker_error is None else "unavailable"
     exists = container is not None
 
     running = False
-    status = "not_found"
+    status = "not_found" if docker_error is None else "docker_unavailable"
     container_health = None
     if container is not None:
         try:
@@ -168,7 +180,20 @@ def _llama_status_snapshot() -> Dict[str, Any]:
         container_health = (state.get("Health") or {}).get("Status")
 
     reachable = _llama_reachable()
+    if container is None and docker_error and reachable:
+        # When Docker socket access is unavailable but the llama health endpoint
+        # still answers, treat the runtime as healthy-but-unverified instead of
+        # incorrectly reporting "container not found".
+        exists = True
+        running = True
+        status = "running_unverified"
+        container_health = "unknown"
     gpu_info = _gpu_attachment(container)
+    gpu_attached = gpu_info["gpu_attached"]
+    gpu_status = "ok" if gpu_attached else "degraded_no_gpu_attachment"
+    if container is None and docker_error and reachable:
+        gpu_attached = True
+        gpu_status = "unverified_docker_unavailable"
 
     if not exists:
         llama_state = "not_found"
@@ -184,12 +209,14 @@ def _llama_status_snapshot() -> Dict[str, Any]:
         "exists": exists,
         "container_status": status,
         "container_health": container_health,
+        "docker_access": docker_access,
+        "docker_error": docker_error,
         "llama_state": llama_state,
         "llama_reachable": reachable,
         "health": health,
-        "gpu_attached": gpu_info["gpu_attached"],
+        "gpu_attached": gpu_attached,
         "gpu_device_requests": gpu_info["gpu_device_requests"],
-        "gpu_status": "ok" if gpu_info["gpu_attached"] else "degraded_no_gpu_attachment",
+        "gpu_status": gpu_status,
         "health_url": LLAMA_HEALTH_URL,
     }
 
@@ -358,6 +385,8 @@ def _status_payload() -> Dict[str, Any]:
     llama_ready = (not runtime_expected) or bool(snapshot["health"])
     storage_ready = bool(storage_snapshot.get("ready", True))
     readiness_ok = bool(service_ready and not startup_error and llama_ready and storage_ready)
+    docker_access = snapshot.get("docker_access")
+    docker_unavailable = docker_access == "unavailable"
     # portal_ok is the weaker gate the portal loading overlay watches: the
     # FastAPI process is up and the storage runtime mounted successfully. The
     # site (auth, docs, wiki proxy, Kolibri proxy) is usable in this state even
@@ -374,9 +403,11 @@ def _status_payload() -> Dict[str, Any]:
         status_reason = "startup_in_progress"
     elif mode == "forced_off":
         status_reason = "manual_forced_off"
+    elif docker_unavailable and runtime_expected and snapshot["health"]:
+        status_reason = "docker_unavailable_but_reachable"
     elif not snapshot["exists"]:
         status_reason = "llama_container_not_found"
-    elif not snapshot["gpu_attached"]:
+    elif not snapshot["gpu_attached"] and not docker_unavailable:
         status_reason = "gpu_not_attached"
     elif runtime_expected and not snapshot["health"]:
         status_reason = "llama_unhealthy"

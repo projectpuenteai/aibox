@@ -151,8 +151,13 @@ address, not `localhost`.
 ### Recommended field modes
 
 1. Hotspot mode for fully offline use.
-   Start `tools\llama-runtime\scripts\setup_hotspot.ps1` as Administrator.
-   Clients join the hotspot SSID and browse to `http://192.168.137.1/`.
+   Double-click `AIBox Control` for the one-click operator flow, or run
+   `tools\llama-runtime\scripts\up_stack.ps1` directly.
+   Startup brings up the Docker stack, starts Windows Mobile Hotspot, writes a
+   `puente.link` entry into the Windows `hosts` file for the hotspot DNS proxy,
+   and validates that hotspot clients can resolve it.
+   Clients join the hotspot SSID and browse to `http://puente.link/`.
+   If diagnostics show `ip_only`, use `http://192.168.137.1/` temporarily.
    This is the most stable no-router option on Windows.
 2. Fixed LAN IP mode when a router or switch exists.
    Reserve the Windows host IP in the router DHCP server or assign a static IPv4
@@ -181,15 +186,17 @@ The portal also exposes a field-facing guide at `/connect.html`.
 
 ### Simple hostname
 
-You can set `OFFLINE_HOSTNAME` in `stack/.env` so the diagnostics and connection
-page show a friendly name such as `puente.link`.
+You can set `OFFLINE_HOSTNAME` in `stack/.env` so the diagnostics, startup
+checks, and connection page target a friendly name such as `puente.link`.
 
-This does not create DNS by itself. A hostname works only when client devices
-can resolve it through one of these:
+During hotspot startup AIBox now validates whether nearby clients should
+actually be able to resolve that name through the laptop DNS service. If that
+check fails, diagnostics will fall back to the hotspot IP instead of claiming
+that the hostname is ready.
 
-- LAN DNS
-- mDNS / `.local`
-- client hosts file entries
+For hotspot mode specifically, AIBox relies on Windows ICS reading the host
+`hosts` file. Startup adds `192.168.137.1 puente.link # AIBox-Puente` and stop
+removes that tagged line again.
 
 ### Local DNS Name Like `puente.link`
 
@@ -199,7 +206,9 @@ For nearby clients to open `http://puente.link/` on the local network, you need:
 - clients using the AIBox DNS server
 - a local DNS record that maps `puente.link` to that host IP
 
-The repo includes a helper script for Technitium DNS:
+The repo includes a helper script for Technitium DNS when you are using LAN mode
+and want clients on the same router or switch to resolve `puente.link` through
+the AIBox DNS service:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\tools\llama-runtime\scripts\configure_local_dns_name.ps1 -Domain puente.link
@@ -214,6 +223,8 @@ By default it uses:
 Important:
 
 - this creates a local DNS answer only; it does not change public internet DNS
+- hotspot mode does not depend on this helper; hotspot DNS is driven by the
+  Windows `hosts` file mapping described above
 - clients must use the AIBox DNS server on port 53 for `puente.link` to resolve locally
 - `DNS_SERVER_DOMAIN` and `DNS_ADMIN_PASSWORD` only initialize Technitium on first start when its config volume is still empty
 
