@@ -2864,11 +2864,31 @@ def mount_app_storage(app, llama_base_url: str):
     rt.init_db()
     rt.seed_admin()
     def _background_startup():
+        # Retry RAG validation indefinitely so transient failures (slow disk,
+        # missing-then-restored index, model files still being copied) self-heal
+        # without requiring a container restart. Without this, a single failure
+        # at boot leaves startup_rag_ok=False forever and the portal loading
+        # screen never lifts.
+        retry_seconds = 60
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                rt.validate_startup_rag()
+            except Exception:
+                pass  # error already recorded via _update_rag_status
+            if rt._startup_rag_status.get("startup_rag_ok"):
+                logger.info("startup RAG validation succeeded on attempt %d", attempt)
+                break
+            logger.warning(
+                "startup RAG validation attempt %d failed; retrying in %ds",
+                attempt, retry_seconds,
+            )
+            time.sleep(retry_seconds)
         try:
-            rt.validate_startup_rag()
             rt.run_warmup_queries()
         except Exception:
-            pass  # errors are recorded inside those methods via _update_rag_status
+            logger.exception("warmup queries failed after RAG became ready")
 
     threading.Thread(target=_background_startup, daemon=True, name="app-storage-init").start()
     threading.Thread(target=rt.cleanup_loop, daemon=True, name="app-storage-cleanup").start()

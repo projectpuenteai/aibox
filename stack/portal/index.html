@@ -1209,6 +1209,22 @@
         transition: width 0.5s ease;
       }
       .loading-pct { font-size: 0.85rem; color: #64748b; font-weight: 600; }
+      .loading-hint {
+        font-size: 0.85rem; color: #64748b; margin: 0; line-height: 1.5;
+        min-height: 1.2em;
+      }
+      .loading-continue {
+        display: none;
+        margin-top: 4px;
+        padding: 8px 18px;
+        font-size: 0.9rem; font-weight: 600;
+        color: #1b4c8a;
+        background: #ffffff;
+        border: 1px solid #2f74db;
+        border-radius: 99px;
+        cursor: pointer;
+      }
+      .loading-continue:hover { background: #eaf2fb; }
     </style>
   </head>
   <body>
@@ -1225,6 +1241,10 @@
           <div class="loading-progress-fill" id="loadingProgressFill"></div>
         </div>
         <div class="loading-pct" id="loadingPct">0%</div>
+        <p class="loading-hint" id="loadingHint"></p>
+        <button type="button" class="loading-continue" id="loadingContinueBtn">
+          Continuar de todos modos / Continue anyway
+        </button>
       </div>
     </div>
     <div class="app">
@@ -3289,6 +3309,32 @@
       (function () {
         var _loadStart = 0;
         var _loadTimer = null;
+        var _continueShownAt = 0;
+        var _hardCapMs = 180000;     // auto-dismiss after 3 minutes
+        var _continueAfterMs = 60000; // offer "Continue anyway" after 60s
+        var _hintAfterMs = 25000;    // surface status_reason after 25s
+        var _settled = false;
+
+        var STATUS_REASON_HINTS = {
+          startup_in_progress: "Backend is starting up...",
+          llama_unhealthy: "AI model is warming up — this can take a minute on first boot.",
+          llama_container_not_found: "AI runtime container is not running.",
+          gpu_not_attached: "Waiting for GPU to attach to the AI runtime.",
+          startup_rag_unready: "Search index is loading...",
+          shutdown_in_progress: "Backend is shutting down.",
+          manual_forced_off: "AI is manually disabled — portal still usable.",
+          startup_failed: "Backend reported a startup error — see admin diagnostics.",
+        };
+
+        function _hintFor(payload) {
+          if (!payload) return "";
+          var reason = payload.status_reason || "";
+          if (STATUS_REASON_HINTS[reason]) return STATUS_REASON_HINTS[reason];
+          if (reason && reason.indexOf("rag") !== -1) {
+            return "Search index not ready: " + reason;
+          }
+          return reason ? ("Status: " + reason) : "";
+        }
 
         function _loadPct(elapsedMs) {
           var t = elapsedMs / 1000;
@@ -3296,17 +3342,33 @@
         }
 
         function _tickProgress() {
-          var pct = _loadPct(Date.now() - _loadStart);
+          var elapsed = Date.now() - _loadStart;
+          var pct = _loadPct(elapsed);
           var fill = document.getElementById("loadingProgressFill");
           var lbl  = document.getElementById("loadingPct");
           if (fill) fill.style.width = pct + "%";
           if (lbl)  lbl.textContent  = pct + "%";
+          if (elapsed >= _continueAfterMs && !_continueShownAt) {
+            _continueShownAt = Date.now();
+            var btn = document.getElementById("loadingContinueBtn");
+            if (btn) btn.style.display = "inline-block";
+          }
+          if (elapsed >= _hardCapMs && !_settled) {
+            _settled = true;
+            _forceContinue("timeout");
+          }
         }
 
         function showLoadingOverlay() {
           var el = document.getElementById("loading-overlay");
           if (!el) return;
           _loadStart = Date.now();
+          _continueShownAt = 0;
+          _settled = false;
+          var btn = document.getElementById("loadingContinueBtn");
+          if (btn) btn.style.display = "none";
+          var hint = document.getElementById("loadingHint");
+          if (hint) hint.textContent = "";
           el.style.display = "flex";
           _tickProgress();
           _loadTimer = setInterval(_tickProgress, 500);
@@ -3316,6 +3378,7 @@
           var el = document.getElementById("loading-overlay");
           if (!el) return;
           clearInterval(_loadTimer);
+          _loadTimer = null;
           var fill = document.getElementById("loadingProgressFill");
           var lbl  = document.getElementById("loadingPct");
           if (fill) fill.style.width = "100%";
@@ -3323,23 +3386,76 @@
           setTimeout(function () { el.style.display = "none"; }, 600);
         }
 
-        async function checkBackendReady() {
+        async function fetchBackendStatus() {
+          // Read /ai/api/health regardless of HTTP status — the 503 body still
+          // carries portal_ok, readiness_ok, and status_reason.
           try {
             var res = await fetch("/ai/api/health", { cache: "no-store" });
-            if (!res.ok) return false;
             var data = await res.json().catch(function () { return null; });
-            return !!(data && data.readiness_ok === true);
-          } catch (_) { return false; }
+            return {
+              ok: res.ok,
+              status: res.status,
+              data: data,
+              reachable: true,
+            };
+          } catch (_) {
+            return { ok: false, status: 0, data: null, reachable: false };
+          }
+        }
+
+        function _isPortalReady(snap) {
+          if (!snap || !snap.reachable || !snap.data) return false;
+          var d = snap.data;
+          // Prefer portal_ok (process up + storage mounted). Fall back to
+          // readiness_ok for older backends, then liveness_ok as last resort.
+          if (d.portal_ok === true) return true;
+          if (d.readiness_ok === true) return true;
+          if (d.portal_ok === undefined && d.readiness_ok === undefined && d.liveness_ok === true) return true;
+          return false;
+        }
+
+        var _onReadyCallback = null;
+        function _forceContinue(reason) {
+          if (_loadTimer) { clearInterval(_loadTimer); _loadTimer = null; }
+          var hint = document.getElementById("loadingHint");
+          if (hint && reason === "timeout") {
+            hint.textContent = "Backend slow to respond — entering portal in degraded mode.";
+          }
+          hideLoadingOverlay();
+          if (_onReadyCallback) {
+            var cb = _onReadyCallback;
+            _onReadyCallback = null;
+            setTimeout(cb, 650);
+          }
         }
 
         async function pollUntilReady(onReady) {
-          var ready = await checkBackendReady();
-          if (ready) { onReady(); return; }
+          _onReadyCallback = onReady;
+          var snap = await fetchBackendStatus();
+          if (_isPortalReady(snap)) { _onReadyCallback = null; onReady(); return; }
           showLoadingOverlay();
+          var btn = document.getElementById("loadingContinueBtn");
+          if (btn) {
+            btn.onclick = function () {
+              if (_settled) return;
+              _settled = true;
+              _forceContinue("user");
+            };
+          }
           (async function poll() {
-            var ok = await checkBackendReady();
-            if (ok) { hideLoadingOverlay(); setTimeout(onReady, 650); }
-            else    { setTimeout(poll, 3000); }
+            if (_settled) return;
+            var s = await fetchBackendStatus();
+            if (_isPortalReady(s)) {
+              _settled = true;
+              _onReadyCallback = onReady;
+              _forceContinue("ready");
+              return;
+            }
+            var hint = document.getElementById("loadingHint");
+            if (hint && (Date.now() - _loadStart) >= _hintAfterMs) {
+              hint.textContent = s.reachable ? _hintFor(s.data) : "Backend unreachable — retrying...";
+            }
+            setTimeout(poll, 3000);
           })();
         }
 
