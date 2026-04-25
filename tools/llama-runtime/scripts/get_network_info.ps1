@@ -153,39 +153,132 @@ namespace AIBox {
   Add-Type -TypeDefinition $code -ReferencedAssemblies System.Runtime.WindowsRuntime | Out-Null
 }
 
+function Get-InterfaceTypeLabel {
+  param($InterfaceType)
+
+  if ($null -eq $InterfaceType) { return "unknown" }
+
+  switch ([int]$InterfaceType) {
+    6 { return "ethernet" }
+    23 { return "ppp" }
+    24 { return "loopback" }
+    71 { return "wifi" }
+    131 { return "tunnel" }
+    default { return "type_$InterfaceType" }
+  }
+}
+
+function Get-ConnectionProfileMetadata {
+  param($Profile)
+
+  $adapterId = $null
+  $interfaceType = $null
+  try {
+    $networkAdapter = $Profile.NetworkAdapter
+    if ($networkAdapter) {
+      try { $adapterId = [string]$networkAdapter.NetworkAdapterId } catch {}
+      try { $interfaceType = [int]$networkAdapter.IanaInterfaceType } catch {}
+    }
+  } catch {}
+
+  $label = Get-InterfaceTypeLabel $interfaceType
+  return [pscustomobject]@{
+    profile_name         = [string]$Profile.ProfileName
+    adapter_id           = $adapterId
+    interface_type       = $interfaceType
+    interface_type_label = $label
+    is_ethernet          = ($interfaceType -eq 6)
+    is_wifi              = ($interfaceType -eq 71)
+  }
+}
+
+function Load-ManagedEthernetState {
+  if (-not (Test-Path $ethernetRestoreStateFile)) { return $null }
+  try {
+    return (Get-Content $ethernetRestoreStateFile -Raw -ErrorAction Stop | ConvertFrom-Json)
+  } catch {
+    return $null
+  }
+}
+
 function Get-MobileHotspotContext {
   Add-WinRtHelpers
   [void][Windows.Networking.Connectivity.NetworkInformation,Windows,ContentType=WindowsRuntime]
   [void][Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager,Windows,ContentType=WindowsRuntime]
 
   $profiles = New-Object System.Collections.Generic.List[object]
+  $seenKeys = New-Object System.Collections.Generic.HashSet[string]
   $internet = [Windows.Networking.Connectivity.NetworkInformation]::GetInternetConnectionProfile()
-  if ($internet) { [void]$profiles.Add($internet) }
+  if ($internet) {
+    $internetMeta = Get-ConnectionProfileMetadata -Profile $internet
+    $internetKey = "{0}|{1}" -f $internetMeta.profile_name, $internetMeta.adapter_id
+    if ($seenKeys.Add($internetKey)) { [void]$profiles.Add($internet) }
+  }
   foreach ($profile in [Windows.Networking.Connectivity.NetworkInformation]::GetConnectionProfiles()) {
     if (-not $profile) { continue }
-    $seen = $false
-    foreach ($existing in $profiles) {
-      if ($existing.ProfileName -eq $profile.ProfileName) {
-        $seen = $true
-        break
-      }
-    }
-    if (-not $seen) { [void]$profiles.Add($profile) }
+    $meta = Get-ConnectionProfileMetadata -Profile $profile
+    $key = "{0}|{1}" -f $meta.profile_name, $meta.adapter_id
+    if ($seenKeys.Add($key)) { [void]$profiles.Add($profile) }
   }
 
+  $internetProfileName = if ($internet) { [string]$internet.ProfileName } else { $null }
+  $candidates = New-Object System.Collections.Generic.List[object]
   foreach ($profile in $profiles) {
     try {
       $capability = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::GetTetheringCapabilityFromConnectionProfile($profile)
       if ($capability -eq [Windows.Networking.NetworkOperators.TetheringCapability]::Enabled) {
-        return [pscustomobject]@{
-          profile_name = $profile.ProfileName
-          capability   = [string]$capability
-          manager      = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::CreateFromConnectionProfile($profile)
-        }
+        $meta = Get-ConnectionProfileMetadata -Profile $profile
+        [void]$candidates.Add([pscustomobject]@{
+          profile_name         = $meta.profile_name
+          capability           = [string]$capability
+          manager              = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::CreateFromConnectionProfile($profile)
+          interface_type       = $meta.interface_type
+          interface_type_label = $meta.interface_type_label
+          is_ethernet          = $meta.is_ethernet
+          is_wifi              = $meta.is_wifi
+          adapter_id           = $meta.adapter_id
+          is_internet_preferred = ($internetProfileName -and $internetProfileName -eq $meta.profile_name)
+        })
       }
     } catch {}
   }
-  return $null
+
+  $activeCandidate = $null
+  foreach ($candidate in $candidates) {
+    try {
+      if ($candidate.manager.TetheringOperationalState -eq [Windows.Networking.NetworkOperators.TetheringOperationalState]::On) {
+        $activeCandidate = $candidate
+        break
+      }
+    } catch {}
+  }
+
+  $preferredCandidate = if ($activeCandidate) {
+    $activeCandidate
+  } else {
+    @($candidates | Where-Object { -not $_.is_ethernet } | Select-Object -First 1)[0]
+  }
+  if (-not $preferredCandidate -and $candidates.Count -gt 0) {
+    $preferredCandidate = $candidates[0]
+  }
+
+  if (-not $preferredCandidate) { return $null }
+
+  return [pscustomobject]@{
+    profile_name = $preferredCandidate.profile_name
+    capability = $preferredCandidate.capability
+    manager = $preferredCandidate.manager
+    interface_type = $preferredCandidate.interface_type
+    interface_type_label = $preferredCandidate.interface_type_label
+    is_ethernet = $preferredCandidate.is_ethernet
+    is_wifi = $preferredCandidate.is_wifi
+    adapter_id = $preferredCandidate.adapter_id
+    active_profile_name = if ($activeCandidate) { $activeCandidate.profile_name } else { $null }
+    active_interface_type = if ($activeCandidate) { $activeCandidate.interface_type } else { $null }
+    active_interface_type_label = if ($activeCandidate) { $activeCandidate.interface_type_label } else { $null }
+    active_is_ethernet = if ($activeCandidate) { $activeCandidate.is_ethernet } else { $false }
+    candidates = @($candidates)
+  }
 }
 
 function Resolve-HostnameUsingServer {
@@ -216,12 +309,21 @@ $runtimeDir   = Split-Path -Parent $scriptDir
 $toolsDir     = Split-Path -Parent $runtimeDir
 $aiboxDir     = Split-Path -Parent $toolsDir
 $stackEnvFile = Join-Path $aiboxDir "stack\.env"
+$backendDataDir = Join-Path $aiboxDir "backend-data"
+$appDataDir = Join-Path $backendDataDir "appdata"
+$hotspotStateDir = Join-Path $appDataDir "hotspot"
+$ethernetRestoreStateFile = Join-Path $hotspotStateDir "ethernet-restore-state.json"
 $portalDir    = Join-Path $aiboxDir "stack\portal"
 $outFile      = Join-Path $portalDir "network-info.json"
 
 # Read config
 $configuredSsid       = Read-EnvValue "HOTSPOT_SSID" "AIBox-Puente"
 $configuredKey        = Read-EnvValue "HOTSPOT_KEY" "puente1234"
+$hotspotEthernetPolicy = ([string](Read-EnvValue "HOTSPOT_ETHERNET_POLICY" "warn")).Trim().ToLowerInvariant()
+$hotspotWifiBand = ([string](Read-EnvValue "HOTSPOT_WIFI_BAND" "2.4ghz")).Trim().ToLowerInvariant()
+if ($hotspotEthernetPolicy -notin @("disable", "warn", "allow")) {
+  $hotspotEthernetPolicy = "warn"
+}
 $preferredStableIp    = Read-EnvValue "OFFLINE_ACCESS_IP" ""
 $preferredHostnameRaw = Read-EnvValue "OFFLINE_HOSTNAME" ""
 $preferredHostname    = Normalize-PreferredHostname $preferredHostnameRaw
@@ -234,12 +336,32 @@ $hotspotSsid     = $configuredSsid
 $hotspotSupport  = "unknown"
 $hotspotBackend  = "unknown"
 $hotspotProfile  = $null
+$hotspotSourceType = $null
+$hotspotSourceTypeLabel = "unknown"
+$hotspotSourceReady = $false
+$hotspotCandidateProfiles = @()
+$managedEthernetState = Load-ManagedEthernetState
 $hotspotContext  = Get-MobileHotspotContext
 
 if ($hotspotContext) {
   $hotspotBackend = "mobile_hotspot"
   $hotspotSupport = "available"
   $hotspotProfile = $hotspotContext.profile_name
+  $hotspotSourceType = $hotspotContext.interface_type
+  $hotspotSourceTypeLabel = $hotspotContext.interface_type_label
+  $hotspotSourceReady = (-not $hotspotContext.is_ethernet)
+  $hotspotCandidateProfiles = @(
+    $hotspotContext.candidates | ForEach-Object {
+      [ordered]@{
+        profile_name = $_.profile_name
+        interface_type = $_.interface_type
+        interface_type_label = $_.interface_type_label
+        is_ethernet = $_.is_ethernet
+        is_wifi = $_.is_wifi
+        is_internet_preferred = $_.is_internet_preferred
+      }
+    }
+  )
   try {
     $hotspotActive = ($hotspotContext.manager.TetheringOperationalState -eq [Windows.Networking.NetworkOperators.TetheringOperationalState]::On)
     $currentConfig = $hotspotContext.manager.GetCurrentAccessPointConfiguration()
@@ -438,6 +560,9 @@ if ($hotspotActive -and -not $hotspotHttpReachable) {
 if ($hotspotActive -and -not $hotspotDnsReady) {
   $warnings.Add("Hotspot Wi-Fi is active but the laptop is not answering DNS on $hotspotIp:53.")
 }
+if ($hotspotActive -and -not $hotspotSourceReady) {
+  $warnings.Add("Hotspot Wi-Fi is active but Windows selected a wired source profile ($hotspotSourceTypeLabel). AIBox is allowing this so the SSID remains visible and joinable.")
+}
 if ($hotspotActive -and $preferredHostname -and -not $hotspotHostnameReady) {
   $warnings.Add("$preferredHostname is not resolving to $hotspotIp through the laptop's DNS service yet. Clients may need to use the hotspot IP.")
 }
@@ -501,14 +626,24 @@ $info = [ordered]@{
     backend     = $hotspotBackend
     support     = $hotspotSupport
     profile     = $hotspotProfile
+    ethernet_policy = $hotspotEthernetPolicy
+    wifi_band  = $hotspotWifiBand
     readiness   = $hotspotReadiness
     ssid        = $hotspotSsid
     password    = $configuredKey
     host_ip     = $hotspotIp
     dns_server  = $hotspotIp
+    source      = [ordered]@{
+      interface_type = $hotspotSourceType
+      interface_type_label = $hotspotSourceTypeLabel
+      source_ready = $hotspotSourceReady
+    }
+    candidate_profiles = $hotspotCandidateProfiles
+    ethernet_restore = if ($managedEthernetState) { [ordered]@{ state_found = $true; adapters = @($managedEthernetState.adapters) } } else { [ordered]@{ state_found = $false; adapters = @() } }
     validation  = [ordered]@{
       http_ready         = $hotspotHttpReachable
       dns_ready          = $hotspotDnsReady
+      source_ready       = $hotspotSourceReady
       hostname_ready     = $hotspotHostnameReady
       hostname_target_ip = $hotspotHostnameTargetIp
     }
@@ -558,6 +693,7 @@ if (-not $Quiet) {
   if ($hotspotActive) {
     Write-Host "Hotspot          : ACTIVE  SSID: $hotspotSsid  IP: $hotspotIp  Backend: $hotspotBackend" -ForegroundColor Green
     Write-Host "Hotspot readiness: $hotspotReadiness"
+    Write-Host "Hotspot source   : $hotspotSourceTypeLabel"
   } else {
     Write-Host "Hotspot          : inactive" -ForegroundColor DarkYellow
   }

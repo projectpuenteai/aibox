@@ -1,5 +1,5 @@
 # Shuts down the AIBox stack: stops the Windows Mobile Hotspot (and removes the
-# puente.link hosts entry), then runs `docker compose down`. Self-elevates to
+# puente.link hosts entry), then runs `docker compose stop`. Self-elevates to
 # Administrator so the hotspot teardown can touch WinRT tethering + the hosts
 # file.
 #
@@ -85,6 +85,16 @@ if (-not $SkipHotspot) {
       if (Test-Path $jsonFile) {
         try { $result.hotspot = Get-Content $jsonFile -Raw | ConvertFrom-Json } catch {}
       }
+      if ($LASTEXITCODE -ne 0) {
+        $result.errors.Add("Hotspot stop exited with code $LASTEXITCODE")
+      }
+      if ($result.hotspot -and $result.hotspot.errors) {
+        foreach ($hotspotError in @($result.hotspot.errors)) {
+          if (-not [string]::IsNullOrWhiteSpace([string]$hotspotError)) {
+            $result.errors.Add([string]$hotspotError)
+          }
+        }
+      }
     } catch {
       $result.errors.Add("Hotspot stop threw: $($_.Exception.Message)")
     } finally {
@@ -97,24 +107,24 @@ if (-not $SkipHotspot) {
   Write-Host "[1/2] Skipping hotspot teardown (-SkipHotspot)."
 }
 
-# 2) docker compose down
+# 2) docker compose stop
 if (-not $SkipDocker) {
-  Write-Host "[2/2] docker compose down..."
+  Write-Host "[2/2] docker compose stop..."
   if (-not (Test-Path $ComposeFile)) {
     $result.errors.Add("Compose file not found: $ComposeFile")
   } else {
     try {
-      & docker compose -f $ComposeFile down
+      & docker compose -f $ComposeFile stop
       $result.docker = [ordered]@{ exit_code = $LASTEXITCODE }
       if ($LASTEXITCODE -ne 0) {
-        $result.errors.Add("docker compose down exited with code $LASTEXITCODE")
+        $result.errors.Add("docker compose stop exited with code $LASTEXITCODE")
       }
     } catch {
-      $result.errors.Add("docker compose down threw: $($_.Exception.Message)")
+      $result.errors.Add("docker compose stop threw: $($_.Exception.Message)")
     }
   }
 } else {
-  Write-Host "[2/2] Skipping docker compose down (-SkipDocker)."
+  Write-Host "[2/2] Skipping docker compose stop (-SkipDocker)."
 }
 
 if ($result.errors.Count -eq 0) {

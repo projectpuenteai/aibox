@@ -276,11 +276,14 @@ function Update-Status {
     if ($hs -and $hs.ssid)     { $ctrl.TxtSsid.Text = $hs.ssid }
     if ($hs -and $hs.password) { $ctrl.TxtPassword.Text = $hs.password }
 
-    $httpReady = $false; $dnsReady = $false; $hostReady = $false
+    $httpReady = $false; $dnsReady = $false; $hostReady = $false; $sourceReady = $true
     if ($hs -and $hs.validation) {
       $httpReady = [bool]$hs.validation.http_ready
       $dnsReady  = [bool]$hs.validation.dns_ready
       $hostReady = [bool]$hs.validation.hostname_ready
+      if ($null -ne $hs.validation.source_ready) {
+        $sourceReady = [bool]$hs.validation.source_ready
+      }
     }
     $ctrl.TxtHttp.Text = if ($httpReady) { "yes" } else { "no" }
     $ctrl.TxtDns.Text  = if ($dnsReady)  { "yes" } else { "no" }
@@ -294,6 +297,10 @@ function Update-Status {
       if (-not $script:connectUrl) { $script:connectUrl = "http://$hostname/" }
     }
     $ctrl.TxtUrl.Text = $script:connectUrl
+
+    if ($hs -and $hs.source -and -not $sourceReady) {
+      $ctrl.TxtFooter.Text = "Hotspot is usable, but Windows selected a wired source profile."
+    }
 
     if (-not $script:busy) {
       if ($hs -and $hs.status -eq "active" -and $httpReady) {

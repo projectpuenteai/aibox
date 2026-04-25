@@ -21,6 +21,11 @@ $runtimeDir   = Split-Path -Parent $scriptDir
 $toolsDir     = Split-Path -Parent $runtimeDir
 $aiboxDir     = Split-Path -Parent $toolsDir
 $stackEnvFile = Join-Path $aiboxDir "stack\.env"
+$backendDataDir = Join-Path $aiboxDir "backend-data"
+$appDataDir = Join-Path $backendDataDir "appdata"
+$hotspotStateDir = Join-Path $appDataDir "hotspot"
+$ethernetRestoreStateFile = Join-Path $hotspotStateDir "ethernet-restore-state.json"
+$script:restoreOnFailure = $false
 
 function Read-EnvValue {
   param([string]$Key, [string]$Default = "")
@@ -79,6 +84,7 @@ function New-Result {
       hotspot_active      = $false
       http_ready          = $false
       dns_ready           = $false
+      source_ready        = $false
       hostname_ready      = $false
       hostname_target_ip  = $null
     }
@@ -94,6 +100,22 @@ function Finalize-Result {
     [hashtable]$Result,
     [int]$ExitCode = 0
   )
+
+  if ($ExitCode -ne 0 -and $script:restoreOnFailure) {
+    try {
+      $restoreResult = Restore-ManagedEthernetAdapters -ClearState
+      $Result.details.failed_start_restore = $restoreResult
+      foreach ($restoreFailure in @($restoreResult.failures)) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$restoreFailure)) {
+          $Result.errors.Add("Ethernet restore failed after hotspot startup error: $restoreFailure")
+        }
+      }
+    } catch {
+      $Result.errors.Add("Ethernet restore failed after hotspot startup error: $($_.Exception.Message)")
+    } finally {
+      $script:restoreOnFailure = $false
+    }
+  }
 
   $json = $Result | ConvertTo-Json -Depth 8
   if (-not [string]::IsNullOrWhiteSpace($JsonOutFile)) {
@@ -243,6 +265,155 @@ function Remove-HostsEntry {
   }
 }
 
+function Get-InterfaceTypeLabel {
+  param($InterfaceType)
+
+  if ($null -eq $InterfaceType) { return "unknown" }
+
+  switch ([int]$InterfaceType) {
+    6 { return "ethernet" }
+    23 { return "ppp" }
+    24 { return "loopback" }
+    71 { return "wifi" }
+    131 { return "tunnel" }
+    default { return "type_$InterfaceType" }
+  }
+}
+
+function Ensure-HotspotStateDirectory {
+  if (-not (Test-Path $hotspotStateDir)) {
+    New-Item -ItemType Directory -Path $hotspotStateDir -Force | Out-Null
+  }
+}
+
+function Get-ConnectionProfileMetadata {
+  param($Profile)
+
+  $adapterId = $null
+  $interfaceType = $null
+  try {
+    $networkAdapter = $Profile.NetworkAdapter
+    if ($networkAdapter) {
+      try { $adapterId = [string]$networkAdapter.NetworkAdapterId } catch {}
+      try { $interfaceType = [int]$networkAdapter.IanaInterfaceType } catch {}
+    }
+  } catch {}
+
+  $label = Get-InterfaceTypeLabel $interfaceType
+  return [pscustomobject]@{
+    profile_name         = [string]$Profile.ProfileName
+    adapter_id           = $adapterId
+    interface_type       = $interfaceType
+    interface_type_label = $label
+    is_ethernet          = ($interfaceType -eq 6)
+    is_wifi              = ($interfaceType -eq 71)
+  }
+}
+
+function Get-NetAdapterFromAdapterId {
+  param([string]$AdapterId)
+
+  if ([string]::IsNullOrWhiteSpace($AdapterId)) { return $null }
+  try {
+    $guid = [guid]$AdapterId
+  } catch {
+    return $null
+  }
+
+  try {
+    return Get-NetAdapter -IncludeHidden -ErrorAction Stop |
+      Where-Object { $_.InterfaceGuid -eq $guid } |
+      Select-Object -First 1
+  } catch {
+    return $null
+  }
+}
+
+function Load-ManagedEthernetState {
+  if (-not (Test-Path $ethernetRestoreStateFile)) { return $null }
+  try {
+    return (Get-Content $ethernetRestoreStateFile -Raw -ErrorAction Stop | ConvertFrom-Json)
+  } catch {
+    return $null
+  }
+}
+
+function Save-ManagedEthernetState {
+  param([array]$Adapters)
+
+  Ensure-HotspotStateDirectory
+  $state = [ordered]@{
+    disabled_at = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssK")
+    adapters = @(
+      $Adapters | ForEach-Object {
+        [ordered]@{
+          name = $_.Name
+          interface_guid = [string]$_.InterfaceGuid
+          interface_description = $_.InterfaceDescription
+        }
+      }
+    )
+  }
+  ($state | ConvertTo-Json -Depth 6) | Set-Content -Path $ethernetRestoreStateFile -Encoding UTF8
+  return $state
+}
+
+function Clear-ManagedEthernetState {
+  if (Test-Path $ethernetRestoreStateFile) {
+    Remove-Item -LiteralPath $ethernetRestoreStateFile -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Restore-ManagedEthernetAdapters {
+  param([switch]$ClearState)
+
+  $restore = [ordered]@{
+    state_file = $ethernetRestoreStateFile
+    state_found = $false
+    restored = @()
+    failures = @()
+  }
+
+  $state = Load-ManagedEthernetState
+  if (-not $state) {
+    if ($ClearState) { Clear-ManagedEthernetState }
+    return $restore
+  }
+
+  $restore.state_found = $true
+  foreach ($entry in @($state.adapters)) {
+    if (-not $entry) { continue }
+    $adapter = $null
+    if ($entry.interface_guid) {
+      $adapter = Get-NetAdapterFromAdapterId -AdapterId ([string]$entry.interface_guid)
+    }
+    if (-not $adapter -and $entry.name) {
+      try {
+        $adapter = Get-NetAdapter -Name ([string]$entry.name) -IncludeHidden -ErrorAction SilentlyContinue
+      } catch {}
+    }
+    if (-not $adapter) {
+      $restore.failures += "Managed Ethernet adapter '$($entry.name)' could not be found for restore."
+      continue
+    }
+    try {
+      Enable-NetAdapter -Name $adapter.Name -Confirm:$false -ErrorAction Stop | Out-Null
+      $restore.restored += [ordered]@{
+        name = $adapter.Name
+        interface_guid = [string]$adapter.InterfaceGuid
+      }
+    } catch {
+      $restore.failures += "Failed to re-enable Ethernet adapter '$($adapter.Name)': $($_.Exception.Message)"
+    }
+  }
+
+  if ($ClearState -and $restore.failures.Count -eq 0) {
+    Clear-ManagedEthernetState
+  }
+
+  return $restore
+}
+
 function Configure-FirewallRules {
   if ($SkipFirewall) {
     Write-Host "[3/5] Skipping firewall (--SkipFirewall)."
@@ -274,52 +445,213 @@ function Configure-FirewallRules {
   }
 }
 
-function Get-TetheringContext {
+function Get-TetheringCandidates {
   [void][Windows.Networking.Connectivity.NetworkInformation,Windows,ContentType=WindowsRuntime]
   [void][Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager,Windows,ContentType=WindowsRuntime]
   [void][Windows.Networking.NetworkOperators.NetworkOperatorTetheringAccessPointConfiguration,Windows,ContentType=WindowsRuntime]
   [void][Windows.Networking.NetworkOperators.TetheringWiFiBand,Windows,ContentType=WindowsRuntime]
 
   $profiles = New-Object System.Collections.Generic.List[object]
+  $seenKeys = New-Object System.Collections.Generic.HashSet[string]
   $internet = [Windows.Networking.Connectivity.NetworkInformation]::GetInternetConnectionProfile()
-  if ($internet) { [void]$profiles.Add($internet) }
+  if ($internet) {
+    $internetMeta = Get-ConnectionProfileMetadata -Profile $internet
+    $internetKey = "{0}|{1}" -f $internetMeta.profile_name, $internetMeta.adapter_id
+    if ($seenKeys.Add($internetKey)) { [void]$profiles.Add($internet) }
+  }
 
   foreach ($profile in [Windows.Networking.Connectivity.NetworkInformation]::GetConnectionProfiles()) {
     if (-not $profile) { continue }
-    $alreadySeen = $false
-    foreach ($existing in $profiles) {
-      if ($existing.ProfileName -eq $profile.ProfileName) {
-        $alreadySeen = $true
-        break
-      }
-    }
-    if (-not $alreadySeen) { [void]$profiles.Add($profile) }
+    $meta = Get-ConnectionProfileMetadata -Profile $profile
+    $key = "{0}|{1}" -f $meta.profile_name, $meta.adapter_id
+    if ($seenKeys.Add($key)) { [void]$profiles.Add($profile) }
   }
 
+  $internetProfileName = if ($internet) { [string]$internet.ProfileName } else { $null }
+  $candidates = New-Object System.Collections.Generic.List[object]
   foreach ($profile in $profiles) {
     try {
       $capability = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::GetTetheringCapabilityFromConnectionProfile($profile)
-      if ($capability -eq [Windows.Networking.NetworkOperators.TetheringCapability]::Enabled) {
-        return [pscustomobject]@{
-          Profile    = $profile
-          Capability = $capability
-          Manager    = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::CreateFromConnectionProfile($profile)
-        }
+      if ($capability -ne [Windows.Networking.NetworkOperators.TetheringCapability]::Enabled) { continue }
+      $meta = Get-ConnectionProfileMetadata -Profile $profile
+      $manager = [Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager]::CreateFromConnectionProfile($profile)
+      [void]$candidates.Add([pscustomobject]@{
+        Profile             = $profile
+        Capability          = [string]$capability
+        Manager             = $manager
+        ProfileName         = $meta.profile_name
+        AdapterId           = $meta.adapter_id
+        InterfaceType       = $meta.interface_type
+        InterfaceTypeLabel  = $meta.interface_type_label
+        IsEthernet          = $meta.is_ethernet
+        IsWiFi              = $meta.is_wifi
+        IsInternetPreferred = ($internetProfileName -and $internetProfileName -eq $meta.profile_name)
+      })
+    } catch {}
+  }
+
+  return $candidates.ToArray()
+}
+
+function Get-TetheringContext {
+  $candidates = @(Get-TetheringCandidates)
+  $activeCandidate = $null
+
+  foreach ($candidate in $candidates) {
+    try {
+      if ($candidate.Manager.TetheringOperationalState -eq [Windows.Networking.NetworkOperators.TetheringOperationalState]::On) {
+        $activeCandidate = $candidate
+        break
       }
     } catch {}
   }
 
-  return $null
+  $preferredNonEthernet = @($candidates | Where-Object { -not $_.IsEthernet })
+  $ethernetCandidates = @($candidates | Where-Object { $_.IsEthernet })
+  $selected = if ($activeCandidate) {
+    $activeCandidate
+  } elseif ($preferredNonEthernet.Count -gt 0) {
+    $preferredNonEthernet[0]
+  } elseif ($candidates.Count -gt 0) {
+    $candidates[0]
+  } else {
+    $null
+  }
+
+  return [pscustomobject]@{
+    Selected = $selected
+    ActiveCandidate = $activeCandidate
+    Candidates = $candidates
+    NonEthernetCandidates = $preferredNonEthernet
+    EthernetCandidates = $ethernetCandidates
+  }
+}
+
+function Stop-AnyActiveHotspot {
+  param($Context)
+
+  $stopResult = [ordered]@{
+    attempted = @()
+    stopped = @()
+    failures = @()
+    active_found = $false
+  }
+
+  foreach ($candidate in @($Context.Candidates)) {
+    if (-not $candidate -or -not $candidate.Manager) { continue }
+    $currentState = $null
+    try {
+      $currentState = [string]$candidate.Manager.TetheringOperationalState
+    } catch {
+      $stopResult.failures += "Could not read hotspot state for '$($candidate.ProfileName)': $($_.Exception.Message)"
+      continue
+    }
+    if ($currentState -ne "On") { continue }
+
+    $stopResult.active_found = $true
+    $stopResult.attempted += [ordered]@{
+      profile_name = $candidate.ProfileName
+      interface_type_label = $candidate.InterfaceTypeLabel
+    }
+
+    try {
+      [void]$candidate.Manager.StopTetheringAsync()
+      $reached = Wait-TetheringState -Manager $candidate.Manager -TargetState ([Windows.Networking.NetworkOperators.TetheringOperationalState]::Off) -TimeoutMs 20000
+      if (-not $reached) {
+        $stopResult.failures += "Hotspot profile '$($candidate.ProfileName)' did not return to Off state within timeout."
+      } else {
+        $stopResult.stopped += [ordered]@{
+          profile_name = $candidate.ProfileName
+          interface_type_label = $candidate.InterfaceTypeLabel
+        }
+      }
+    } catch {
+      $stopResult.failures += "Failed to stop hotspot profile '$($candidate.ProfileName)': $($_.Exception.Message)"
+    }
+  }
+
+  return $stopResult
+}
+
+function Get-DisableEligibleEthernetAdapters {
+  param($Context)
+
+  $adapters = New-Object System.Collections.Generic.List[object]
+  $seen = New-Object System.Collections.Generic.HashSet[string]
+  foreach ($candidate in @($Context.EthernetCandidates)) {
+    $adapter = Get-NetAdapterFromAdapterId -AdapterId $candidate.AdapterId
+    if (-not $adapter) { continue }
+    $guidText = [string]$adapter.InterfaceGuid
+    if (-not $seen.Add($guidText)) { continue }
+    if ($adapter.Status -eq "Disabled" -or $adapter.Status -eq "Not Present") { continue }
+    if ($adapter.HardwareInterface -eq $false) { continue }
+    [void]$adapters.Add($adapter)
+  }
+  return $adapters.ToArray()
+}
+
+function Disable-ManagedEthernetAdapters {
+  param([array]$Adapters)
+
+  $disableResult = [ordered]@{
+    disabled = @()
+    failures = @()
+    state_file = $ethernetRestoreStateFile
+  }
+
+  $disabledAdapters = New-Object System.Collections.Generic.List[object]
+  foreach ($adapter in @($Adapters)) {
+    if (-not $adapter) { continue }
+    try {
+      Disable-NetAdapter -Name $adapter.Name -Confirm:$false -ErrorAction Stop | Out-Null
+      [void]$disabledAdapters.Add($adapter)
+      $disableResult.disabled += [ordered]@{
+        name = $adapter.Name
+        interface_guid = [string]$adapter.InterfaceGuid
+        interface_description = $adapter.InterfaceDescription
+      }
+    } catch {
+      $disableResult.failures += "Failed to disable Ethernet adapter '$($adapter.Name)': $($_.Exception.Message)"
+    }
+  }
+
+  if ($disabledAdapters.Count -gt 0) {
+    [void](Save-ManagedEthernetState -Adapters @($disabledAdapters))
+  }
+
+  return $disableResult
+}
+
+function Get-RequestedWifiBand {
+  param([string]$RawValue)
+
+  $value = ([string]$RawValue).Trim().ToLowerInvariant()
+  switch ($value) {
+    "2.4" { return [pscustomobject]@{ Label = "2.4ghz"; Enum = [Windows.Networking.NetworkOperators.TetheringWiFiBand]::TwoPointFourGigahertz } }
+    "2.4ghz" { return [pscustomobject]@{ Label = "2.4ghz"; Enum = [Windows.Networking.NetworkOperators.TetheringWiFiBand]::TwoPointFourGigahertz } }
+    "5" { return [pscustomobject]@{ Label = "5ghz"; Enum = [Windows.Networking.NetworkOperators.TetheringWiFiBand]::FiveGigahertz } }
+    "5ghz" { return [pscustomobject]@{ Label = "5ghz"; Enum = [Windows.Networking.NetworkOperators.TetheringWiFiBand]::FiveGigahertz } }
+    "6" { return [pscustomobject]@{ Label = "6ghz"; Enum = [Windows.Networking.NetworkOperators.TetheringWiFiBand]::SixGigahertz } }
+    "6ghz" { return [pscustomobject]@{ Label = "6ghz"; Enum = [Windows.Networking.NetworkOperators.TetheringWiFiBand]::SixGigahertz } }
+    default { return [pscustomobject]@{ Label = "auto"; Enum = [Windows.Networking.NetworkOperators.TetheringWiFiBand]::Auto } }
+  }
 }
 
 $ssid = Read-EnvValue "HOTSPOT_SSID" "AIBox-Puente"
 $key  = Read-EnvValue "HOTSPOT_KEY"  "puente1234"
 $preferredHostname = Read-EnvValue "OFFLINE_HOSTNAME" "puente.link"
+$ethernetPolicy = ([string](Read-EnvValue "HOTSPOT_ETHERNET_POLICY" "warn")).Trim().ToLowerInvariant()
+$wifiBand = Get-RequestedWifiBand -RawValue (Read-EnvValue "HOTSPOT_WIFI_BAND" "2.4ghz")
+if ($ethernetPolicy -notin @("disable", "warn", "allow")) {
+  $ethernetPolicy = "warn"
+}
 
 $result = New-Result
 $result.ssid = $ssid
 $result.password = $key
 $result.domain = $preferredHostname
+$result.details.ethernet_policy = $ethernetPolicy
+$result.details.wifi_band = $wifiBand.Label
 
 if (-not (Test-IsAdministrator)) {
   $result.errors.Add("Hotspot setup requires an Administrator PowerShell session.")
@@ -343,8 +675,58 @@ if ($wlanSvc.Status -ne "Running") {
   Finalize-Result -Result $result -ExitCode 1
 }
 
-$context = Get-TetheringContext
-if (-not $context) {
+$context = $null
+try {
+  $context = Get-TetheringContext
+} catch {
+  $result.errors.Add("Failed to enumerate tethering profiles: $($_.Exception.Message)")
+  Write-Host "ERROR: Could not query Windows Mobile Hotspot capabilities." -ForegroundColor Red
+  Write-Host "  $($_.Exception.Message)" -ForegroundColor Red
+  Finalize-Result -Result $result -ExitCode 1
+}
+$candidateDiagnostics = @(
+  @($(if ($context) { $context.Candidates } else { @() })) | ForEach-Object {
+    [ordered]@{
+      profile_name = $_.ProfileName
+      capability = $_.Capability
+      interface_type = $_.InterfaceType
+      interface_type_label = $_.InterfaceTypeLabel
+      is_ethernet = $_.IsEthernet
+      is_wifi = $_.IsWiFi
+      is_internet_preferred = $_.IsInternetPreferred
+    }
+  }
+)
+$result.details.candidate_profiles = $candidateDiagnostics
+
+if ($Stop) {
+  Write-Host "Stopping Windows Mobile Hotspot..."
+  $stopResult = Stop-AnyActiveHotspot -Context $context
+  $result.details.hotspot_stop = $stopResult
+  foreach ($stopFailure in @($stopResult.failures)) {
+    $result.errors.Add([string]$stopFailure)
+  }
+  if (-not $stopResult.active_found) {
+    $result.details.stop_reached_off = $true
+    Write-Host "      = Hotspot already off."
+  }
+  $hostsRemoved = Remove-HostsEntry -Domain $preferredHostname
+  $result.details.hosts_entry_removed = $hostsRemoved
+  $restoreResult = Restore-ManagedEthernetAdapters -ClearState
+  $result.details.ethernet_restore = $restoreResult
+  foreach ($restoreFailure in @($restoreResult.failures)) {
+    $result.errors.Add($restoreFailure)
+  }
+  if ($restoreResult.state_found -and @($restoreResult.restored).Count -gt 0) {
+    Write-Host "      + Restored AIBox-managed Ethernet adapters."
+  }
+  $result.ok = ($result.errors.Count -eq 0)
+  $result.status = "stopped"
+  $exitCode = if ($result.errors.Count -gt 0) { 1 } else { 0 }
+  Finalize-Result -Result $result -ExitCode $exitCode
+}
+
+if (-not $context.Selected) {
   $result.errors.Add("Windows Mobile Hotspot is not available on the current adapter/profile.")
   $result.warnings.Add("This laptop cannot expose a Mobile Hotspot through the Windows tethering APIs right now.")
   $result.warnings.Add("Check that Wi-Fi is enabled and the adapter supports Mobile Hotspot on this Windows build.")
@@ -353,39 +735,81 @@ if (-not $context) {
   Finalize-Result -Result $result -ExitCode 1
 }
 
-$manager = $context.Manager
-$result.backend = "mobile_hotspot"
-$result.details.profile_name = $context.Profile.ProfileName
-$result.details.tethering_capability = [string]$context.Capability
-
-if ($Stop) {
-  Write-Host "Stopping Windows Mobile Hotspot..."
-  try {
-    if ($manager.TetheringOperationalState -ne [Windows.Networking.NetworkOperators.TetheringOperationalState]::Off) {
-      [void]$manager.StopTetheringAsync()
-      $reached = Wait-TetheringState -Manager $manager -TargetState ([Windows.Networking.NetworkOperators.TetheringOperationalState]::Off) -TimeoutMs 20000
-      $result.details.stop_reached_off = $reached
-      if (-not $reached) {
-        $result.errors.Add("Hotspot did not return to Off state within timeout (current: $($manager.TetheringOperationalState)).")
-        Finalize-Result -Result $result -ExitCode 1
-      }
-    } else {
-      $result.details.stop_reached_off = $true
-      Write-Host "      = Hotspot already off."
+$selectedCandidate = $context.Selected
+if ($selectedCandidate.IsEthernet -and $ethernetPolicy -eq "disable") {
+  Write-Host "[0/5] Ethernet-backed hotspot source detected. Disabling Ethernet adapters before hotspot start..."
+  $adaptersToDisable = @(Get-DisableEligibleEthernetAdapters -Context $context)
+  if ($adaptersToDisable.Count -eq 0) {
+    $result.errors.Add("Windows selected Ethernet as the hotspot source, but no eligible Ethernet adapter could be disabled automatically.")
+    $result.details.source_profile = [ordered]@{
+      profile_name = $selectedCandidate.ProfileName
+      interface_type = $selectedCandidate.InterfaceType
+      interface_type_label = $selectedCandidate.InterfaceTypeLabel
+      is_ethernet = $selectedCandidate.IsEthernet
     }
-  } catch {
-    $result.errors.Add("Failed to stop the Windows Mobile Hotspot: $($_.Exception.Message)")
     Finalize-Result -Result $result -ExitCode 1
   }
-  $hostsRemoved = Remove-HostsEntry -Domain $preferredHostname
-  $result.details.hosts_entry_removed = $hostsRemoved
-  $result.ok = $true
-  $result.status = "stopped"
-  Finalize-Result -Result $result -ExitCode 0
+
+  $disableResult = Disable-ManagedEthernetAdapters -Adapters $adaptersToDisable
+  $result.details.ethernet_disable = $disableResult
+  foreach ($disableFailure in @($disableResult.failures)) {
+    $result.errors.Add($disableFailure)
+  }
+  if (@($disableResult.disabled).Count -gt 0) {
+    $script:restoreOnFailure = $true
+    Start-Sleep -Seconds 3
+  }
+
+  $context = Get-TetheringContext
+  $result.details.candidate_profiles_after_isolation = @(
+    $context.Candidates | ForEach-Object {
+      [ordered]@{
+        profile_name = $_.ProfileName
+        capability = $_.Capability
+        interface_type = $_.InterfaceType
+        interface_type_label = $_.InterfaceTypeLabel
+        is_ethernet = $_.IsEthernet
+        is_wifi = $_.IsWiFi
+        is_internet_preferred = $_.IsInternetPreferred
+      }
+    }
+  )
+  if (-not $context.Selected -or $context.Selected.IsEthernet) {
+    $result.errors.Add("Windows still exposes only an Ethernet-backed tethering profile after Ethernet isolation. Offline Wi-Fi-only hotspot mode is unavailable.")
+    Finalize-Result -Result $result -ExitCode 1
+  }
+  $selectedCandidate = $context.Selected
+} elseif ($selectedCandidate.IsEthernet) {
+  $result.warnings.Add("Windows selected an Ethernet-backed hotspot source. AIBox is allowing it so the hotspot remains visible and joinable on this machine.")
 }
+
+$manager = $selectedCandidate.Manager
+$result.backend = "mobile_hotspot"
+$result.details.source_profile = [ordered]@{
+  profile_name = $selectedCandidate.ProfileName
+  interface_type = $selectedCandidate.InterfaceType
+  interface_type_label = $selectedCandidate.InterfaceTypeLabel
+  is_ethernet = $selectedCandidate.IsEthernet
+  is_wifi = $selectedCandidate.IsWiFi
+}
+$result.details.tethering_capability = [string]$selectedCandidate.Capability
+$result.details.rejected_profiles = @(
+  @($context.Candidates) |
+    Where-Object { $_.ProfileName -ne $selectedCandidate.ProfileName -or $_.AdapterId -ne $selectedCandidate.AdapterId } |
+    ForEach-Object {
+      [ordered]@{
+        profile_name = $_.ProfileName
+        interface_type = $_.InterfaceType
+        interface_type_label = $_.InterfaceTypeLabel
+        rejection_reason = if ($_.IsEthernet -and -not $selectedCandidate.IsEthernet) { "wired_source_rejected" } else { "lower_priority_candidate" }
+      }
+    }
+)
 
 Write-Host "SSID     : $ssid"
 Write-Host "Password : $key"
+Write-Host "Band     : $($wifiBand.Label)"
+Write-Host "Policy   : Ethernet source = $ethernetPolicy"
 Write-Host ""
 
 Write-Host "[1/5] Configuring Windows Mobile Hotspot..."
@@ -394,13 +818,21 @@ try {
   $config.Ssid = $ssid
   $config.Passphrase = $key
   try {
-    $config.Band = [Windows.Networking.NetworkOperators.TetheringWiFiBand]::Auto
+    $config.Band = $wifiBand.Enum
   } catch {}
   [void]$manager.ConfigureAccessPointAsync($config)
   # Configuration is applied quickly; the WinRT async result isn't inspectable
   # from PS 5.1, so we pause briefly and re-read the applied SSID to confirm.
   Start-Sleep -Milliseconds 1500
   $applied = $manager.GetCurrentAccessPointConfiguration()
+  $result.details.applied_ssid = $applied.Ssid
+  try {
+    $result.details.applied_band = [string]$applied.Band
+    $result.details.band_ignored = ([string]$applied.Band -ne [string]$wifiBand.Enum)
+  } catch {
+    $result.details.applied_band = $null
+    $result.details.band_ignored = $false
+  }
   if ($applied.Ssid -ne $ssid) {
     $result.warnings.Add("Hotspot SSID did not persist as expected (wanted '$ssid', got '$($applied.Ssid)').")
   }
@@ -418,7 +850,7 @@ try {
     $reached = Wait-TetheringState -Manager $manager -TargetState ([Windows.Networking.NetworkOperators.TetheringOperationalState]::On) -TimeoutMs 25000
     $result.details.start_reached_on = $reached
     $result.details.start_final_state = [string]$manager.TetheringOperationalState
-    if (-not $reached) {
+  if (-not $reached) {
       $message = "Windows Mobile Hotspot did not reach the On state (current: $($manager.TetheringOperationalState))."
       $result.errors.Add($message)
       Write-Host "ERROR: $message" -ForegroundColor Red
@@ -435,6 +867,8 @@ try {
   Finalize-Result -Result $result -ExitCode 1
 }
 
+Start-Sleep -Seconds 4
+
 Configure-FirewallRules
 
 Write-Host "[4/5] Validating hotspot and offline DNS..."
@@ -442,6 +876,7 @@ $hostIp = Wait-ForHotspotIp -TimeoutSeconds 20
 $result.host_ip = $hostIp
 $result.dns_server = $hostIp
 $result.validation.hotspot_active = ($manager.TetheringOperationalState -eq [Windows.Networking.NetworkOperators.TetheringOperationalState]::On)
+$result.validation.source_ready = (-not $selectedCandidate.IsEthernet)
 
 if (-not $hostIp) {
   $result.errors.Add("The hotspot started but no 192.168.137.x host IP appeared on the laptop.")
@@ -513,6 +948,7 @@ if ($result.status -eq "ready") {
   Write-Host "==========================================" -ForegroundColor Green
   Write-Host "  Join Wi-Fi : $ssid" -ForegroundColor Cyan
   Write-Host "  Password   : $key" -ForegroundColor Cyan
+  Write-Host "  Source     : $($selectedCandidate.InterfaceTypeLabel)" -ForegroundColor Cyan
   Write-Host "  Open       : http://$preferredHostname/" -ForegroundColor Cyan
   Write-Host "  Fallback   : http://$hostIp/" -ForegroundColor Cyan
   Finalize-Result -Result $result -ExitCode 0
@@ -524,6 +960,7 @@ if ($result.status -eq "ip_only") {
   Write-Host "==========================================" -ForegroundColor Yellow
   Write-Host "  Join Wi-Fi : $ssid" -ForegroundColor Cyan
   Write-Host "  Password   : $key" -ForegroundColor Cyan
+  Write-Host "  Source     : $($selectedCandidate.InterfaceTypeLabel)" -ForegroundColor Cyan
   Write-Host "  Use        : http://$hostIp/" -ForegroundColor Cyan
   Write-Host "  Hostname   : $preferredHostname is not ready yet" -ForegroundColor Yellow
   Finalize-Result -Result $result -ExitCode 2
