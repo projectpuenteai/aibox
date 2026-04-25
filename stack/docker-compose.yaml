@@ -159,6 +159,7 @@ services:
       - ADMIN_USERNAME=${ADMIN_USERNAME:?Set ADMIN_USERNAME in stack/.env}
       - ADMIN_DEFAULT_PASSWORD=${ADMIN_DEFAULT_PASSWORD:?Set ADMIN_DEFAULT_PASSWORD in stack/.env}
       - SESSION_TOKEN_PEPPER=${SESSION_TOKEN_PEPPER:?Set SESSION_TOKEN_PEPPER in stack/.env}
+      - SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-false}
       # ── RAG / retrieval ──
       # CHROMA paths point to their own mounts, not under /data, so the index
       # and user data can be managed and backed up independently.
