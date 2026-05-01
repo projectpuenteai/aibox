@@ -32,9 +32,15 @@ if ($existing) {
 }
 
 # 2) Desktop shortcut
-$desktopLink = Join-Path ([Environment]::GetFolderPath("Desktop")) "AIBox Control.lnk"
-if (Test-Path $desktopLink) {
-  Remove-Item -LiteralPath $desktopLink -Force
+$desktopRemoved = $false
+foreach ($shortcutName in @("Consola Puente Admin.lnk", "AIBox Control.lnk")) {
+  $desktopLink = Join-Path ([Environment]::GetFolderPath("Desktop")) $shortcutName
+  if (Test-Path $desktopLink) {
+    Remove-Item -LiteralPath $desktopLink -Force
+    $desktopRemoved = $true
+  }
+}
+if ($desktopRemoved) {
   Write-Host "[2/3] - Removed Desktop shortcut." -ForegroundColor Green
 } else {
   Write-Host "[2/3] = No Desktop shortcut to remove."
@@ -42,9 +48,15 @@ if (Test-Path $desktopLink) {
 
 # 3) Start Menu shortcut + folder (if empty)
 $startMenuDir = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\AIBox"
-$startLink = Join-Path $startMenuDir "AIBox Control.lnk"
-if (Test-Path $startLink) {
-  Remove-Item -LiteralPath $startLink -Force
+$startRemoved = $false
+foreach ($shortcutName in @("Consola Puente Admin.lnk", "AIBox Control.lnk")) {
+  $startLink = Join-Path $startMenuDir $shortcutName
+  if (Test-Path $startLink) {
+    Remove-Item -LiteralPath $startLink -Force
+    $startRemoved = $true
+  }
+}
+if ($startRemoved) {
   Write-Host "[3/3] - Removed Start Menu shortcut." -ForegroundColor Green
 } else {
   Write-Host "[3/3] = No Start Menu shortcut to remove."

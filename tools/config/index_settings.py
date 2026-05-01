@@ -14,7 +14,7 @@ EMBED_DIM = 1024
 COLLECTION_NAME = os.getenv("CHROMA_COLLECTION", "simplewiki_chunks")
 DEFAULT_DEVICE = os.getenv("INDEX_DEVICE", "cpu")
 BACKEND_DATA_DIR = REPO_ROOT / "backend-data"
-PERSIST_DIR = str(BACKEND_DATA_DIR / "chroma_db")
+PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", str(BACKEND_DATA_DIR / "chroma_db"))
 PAGES_FILE = str(BACKEND_DATA_DIR / "pages.jsonl")
 CHUNKS_FILE = str(BACKEND_DATA_DIR / "chunks.jsonl")
 

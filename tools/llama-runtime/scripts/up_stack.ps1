@@ -102,6 +102,46 @@ function Wait-DockerDaemon {
   return $false
 }
 
+function Test-DockerDaemon {
+  $saved = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $null = & docker info 2>&1
+    return ($LASTEXITCODE -eq 0)
+  } finally {
+    $ErrorActionPreference = $saved
+  }
+}
+
+function Start-DockerDesktopIfNeeded {
+  param(
+    [int]$TimeoutSeconds = 300
+  )
+
+  if (Test-DockerDaemon) {
+    Write-Host "[info] Docker daemon is already reachable."
+    return
+  }
+
+  $dockerDesktopCandidates = @(
+    (Join-Path $env:ProgramFiles "Docker\Docker\Docker Desktop.exe"),
+    (Join-Path ${env:ProgramFiles(x86)} "Docker\Docker\Docker Desktop.exe")
+  ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+  $dockerDesktop = $dockerDesktopCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+  if (-not $dockerDesktop) {
+    throw "Docker daemon is not reachable and Docker Desktop.exe was not found under Program Files."
+  }
+
+  Write-Host "[info] Docker daemon is not reachable. Launching Docker Desktop..."
+  Start-Process -FilePath $dockerDesktop -WindowStyle Minimized | Out-Null
+  Write-Host "[info] Waiting for Docker daemon to become reachable..."
+  if (-not (Wait-DockerDaemon -TimeoutSeconds $TimeoutSeconds -IntervalSeconds 3)) {
+    throw "Docker daemon did not become reachable within $TimeoutSeconds seconds after launching Docker Desktop."
+  }
+  Write-Host "[ok] Docker daemon is reachable."
+}
+
 function Get-ComposeExistingServices {
   param([string]$ComposeFilePath)
 
@@ -132,6 +172,8 @@ $aiboxDir = Split-Path -Parent $toolsDir
 if ([string]::IsNullOrWhiteSpace($ComposeFile)) {
   $ComposeFile = Join-Path $aiboxDir "stack\docker-compose.yaml"
 }
+
+Start-DockerDesktopIfNeeded -TimeoutSeconds 300
 
 if (-not $SkipCpuSync) {
   $syncScript = Join-Path $scriptDir "sync_wsl_cpu.ps1"

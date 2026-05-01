@@ -25,7 +25,10 @@ $backendDataDir = Join-Path $aiboxDir "backend-data"
 $appDataDir = Join-Path $backendDataDir "appdata"
 $hotspotStateDir = Join-Path $appDataDir "hotspot"
 $ethernetRestoreStateFile = Join-Path $hotspotStateDir "ethernet-restore-state.json"
+$wifiRestoreStateFile = Join-Path $hotspotStateDir "wifi-restore-state.json"
+$hotspotLastResultFile = Join-Path $hotspotStateDir "hotspot-last-result.json"
 $script:restoreOnFailure = $false
+$script:restoreWifiOnFailure = $false
 
 function Read-EnvValue {
   param([string]$Key, [string]$Default = "")
@@ -117,7 +120,27 @@ function Finalize-Result {
     }
   }
 
+  if ($ExitCode -ne 0 -and $script:restoreWifiOnFailure) {
+    try {
+      $wifiRestoreResult = Restore-ManagedWifiConnection -ClearState
+      $Result.details.failed_start_wifi_restore = $wifiRestoreResult
+      foreach ($wifiRestoreFailure in @($wifiRestoreResult.failures)) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$wifiRestoreFailure)) {
+          $Result.errors.Add("Wi-Fi reconnect failed after hotspot startup error: $wifiRestoreFailure")
+        }
+      }
+    } catch {
+      $Result.errors.Add("Wi-Fi reconnect failed after hotspot startup error: $($_.Exception.Message)")
+    } finally {
+      $script:restoreWifiOnFailure = $false
+    }
+  }
+
   $json = $Result | ConvertTo-Json -Depth 8
+  try {
+    Ensure-HotspotStateDirectory
+    $json | Set-Content -Path $hotspotLastResultFile -Encoding UTF8
+  } catch {}
   if (-not [string]::IsNullOrWhiteSpace($JsonOutFile)) {
     $json | Set-Content -Path $JsonOutFile -Encoding UTF8
   }
@@ -362,6 +385,169 @@ function Clear-ManagedEthernetState {
   if (Test-Path $ethernetRestoreStateFile) {
     Remove-Item -LiteralPath $ethernetRestoreStateFile -Force -ErrorAction SilentlyContinue
   }
+}
+
+function Get-ConnectedWifiProfile {
+  $raw = ""
+  try {
+    $raw = (& netsh wlan show interfaces 2>&1 | Out-String)
+  } catch {
+    return $null
+  }
+
+  if ($raw -notmatch "(?im)^\s*State\s*:\s*connected\s*$") { return $null }
+
+  $interfaceName = $null
+  $ssid = $null
+  $profileName = $null
+  $channel = $null
+  $radioType = $null
+
+  if ($raw -match "(?im)^\s*Name\s*:\s*(.+?)\s*$") { $interfaceName = $Matches[1].Trim() }
+  if ($raw -match "(?im)^\s*SSID\s*:\s*(.+?)\s*$") { $ssid = $Matches[1].Trim() }
+  if ($raw -match "(?im)^\s*Profile\s*:\s*(.+?)\s*$") { $profileName = $Matches[1].Trim() }
+  if ($raw -match "(?im)^\s*Channel\s*:\s*(\d+)\s*$") { $channel = [int]$Matches[1] }
+  if ($raw -match "(?im)^\s*Radio type\s*:\s*(.+?)\s*$") { $radioType = $Matches[1].Trim() }
+  if ([string]::IsNullOrWhiteSpace($profileName)) { $profileName = $ssid }
+
+  if ([string]::IsNullOrWhiteSpace($interfaceName) -or [string]::IsNullOrWhiteSpace($profileName)) {
+    return $null
+  }
+
+  return [pscustomobject]@{
+    interface_name = $interfaceName
+    profile_name = $profileName
+    ssid = $ssid
+    channel = $channel
+    radio_type = $radioType
+  }
+}
+
+function Save-ManagedWifiState {
+  param($Profile)
+  if (-not $Profile) { return $null }
+  Ensure-HotspotStateDirectory
+  $state = [ordered]@{
+    disconnected_at = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssK")
+    interface_name = [string]$Profile.interface_name
+    profile_name = [string]$Profile.profile_name
+    ssid = [string]$Profile.ssid
+    channel = $Profile.channel
+    radio_type = [string]$Profile.radio_type
+  }
+  ($state | ConvertTo-Json -Depth 5) | Set-Content -Path $wifiRestoreStateFile -Encoding UTF8
+  return $state
+}
+
+function Load-ManagedWifiState {
+  if (-not (Test-Path $wifiRestoreStateFile)) { return $null }
+  try {
+    return (Get-Content $wifiRestoreStateFile -Raw -ErrorAction Stop | ConvertFrom-Json)
+  } catch {
+    return $null
+  }
+}
+
+function Clear-ManagedWifiState {
+  if (Test-Path $wifiRestoreStateFile) {
+    Remove-Item -LiteralPath $wifiRestoreStateFile -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Disconnect-UpstreamWifiForHotspot {
+  $disconnectResult = [ordered]@{
+    attempted = $false
+    disconnected = $false
+    skipped_reason = $null
+    profile = $null
+    failures = @()
+  }
+
+  $profile = Get-ConnectedWifiProfile
+  if (-not $profile) {
+    $disconnectResult.skipped_reason = "no_connected_wifi_profile"
+    return $disconnectResult
+  }
+
+  $disconnectResult.attempted = $true
+  $disconnectResult.profile = [ordered]@{
+    interface_name = $profile.interface_name
+    profile_name = $profile.profile_name
+    ssid = $profile.ssid
+    channel = $profile.channel
+    radio_type = $profile.radio_type
+  }
+
+  try {
+    [void](Save-ManagedWifiState -Profile $profile)
+    Write-Host "      + Saved upstream Wi-Fi profile '$($profile.profile_name)' for reconnect on stop."
+    $output = & netsh wlan disconnect interface="$($profile.interface_name)" 2>&1
+    $disconnectResult.output = @($output | ForEach-Object { [string]$_ })
+    Start-Sleep -Seconds 3
+    $after = Get-ConnectedWifiProfile
+    if ($after -and $after.interface_name -eq $profile.interface_name) {
+      $disconnectResult.failures += "Wi-Fi interface '$($profile.interface_name)' is still connected to '$($after.profile_name)' after disconnect."
+    } else {
+      $disconnectResult.disconnected = $true
+      $script:restoreWifiOnFailure = $true
+    }
+  } catch {
+    $disconnectResult.failures += "Failed to disconnect upstream Wi-Fi: $($_.Exception.Message)"
+  }
+
+  return $disconnectResult
+}
+
+function Restore-ManagedWifiConnection {
+  param([switch]$ClearState)
+
+  $restore = [ordered]@{
+    state_file = $wifiRestoreStateFile
+    state_found = $false
+    attempted = $false
+    reconnected = $false
+    profile_name = $null
+    interface_name = $null
+    failures = @()
+  }
+
+  $state = Load-ManagedWifiState
+  if (-not $state) {
+    if ($ClearState) { Clear-ManagedWifiState }
+    return $restore
+  }
+
+  $restore.state_found = $true
+  $restore.profile_name = [string]$state.profile_name
+  $restore.interface_name = [string]$state.interface_name
+  if ([string]::IsNullOrWhiteSpace($restore.profile_name)) {
+    $restore.failures += "Saved Wi-Fi reconnect state did not include a profile name."
+    return $restore
+  }
+
+  try {
+    $restore.attempted = $true
+    $args = @("wlan", "connect", "name=$($restore.profile_name)")
+    if (-not [string]::IsNullOrWhiteSpace($restore.interface_name)) {
+      $args += "interface=$($restore.interface_name)"
+    }
+    $output = & netsh @args 2>&1
+    $restore.output = @($output | ForEach-Object { [string]$_ })
+    Start-Sleep -Seconds 4
+    $connected = Get-ConnectedWifiProfile
+    $restore.reconnected = ($connected -and $connected.profile_name -eq $restore.profile_name)
+    if (-not $restore.reconnected) {
+      $restore.failures += "Windows did not reconnect to Wi-Fi profile '$($restore.profile_name)' within the validation window."
+    }
+  } catch {
+    $restore.failures += "Failed to reconnect Wi-Fi profile '$($restore.profile_name)': $($_.Exception.Message)"
+  }
+
+  if ($ClearState -and $restore.failures.Count -eq 0) {
+    Clear-ManagedWifiState
+  }
+
+  return $restore
 }
 
 function Restore-ManagedEthernetAdapters {
@@ -641,9 +827,13 @@ $ssid = Read-EnvValue "HOTSPOT_SSID" "AIBox-Puente"
 $key  = Read-EnvValue "HOTSPOT_KEY"  "puente1234"
 $preferredHostname = Read-EnvValue "OFFLINE_HOSTNAME" "puente.link"
 $ethernetPolicy = ([string](Read-EnvValue "HOTSPOT_ETHERNET_POLICY" "warn")).Trim().ToLowerInvariant()
+$wifiClientPolicy = ([string](Read-EnvValue "HOTSPOT_WIFI_CLIENT_POLICY" "disconnect")).Trim().ToLowerInvariant()
 $wifiBand = Get-RequestedWifiBand -RawValue (Read-EnvValue "HOTSPOT_WIFI_BAND" "2.4ghz")
 if ($ethernetPolicy -notin @("disable", "warn", "allow")) {
   $ethernetPolicy = "warn"
+}
+if ($wifiClientPolicy -notin @("disconnect", "warn", "allow")) {
+  $wifiClientPolicy = "disconnect"
 }
 
 $result = New-Result
@@ -651,6 +841,7 @@ $result.ssid = $ssid
 $result.password = $key
 $result.domain = $preferredHostname
 $result.details.ethernet_policy = $ethernetPolicy
+$result.details.wifi_client_policy = $wifiClientPolicy
 $result.details.wifi_band = $wifiBand.Label
 
 if (-not (Test-IsAdministrator)) {
@@ -719,6 +910,18 @@ if ($Stop) {
   }
   if ($restoreResult.state_found -and @($restoreResult.restored).Count -gt 0) {
     Write-Host "      + Restored AIBox-managed Ethernet adapters."
+  }
+  $wifiRestoreResult = Restore-ManagedWifiConnection -ClearState
+  $result.details.wifi_restore = $wifiRestoreResult
+  foreach ($wifiRestoreFailure in @($wifiRestoreResult.failures)) {
+    $result.errors.Add($wifiRestoreFailure)
+  }
+  if ($wifiRestoreResult.state_found -and $wifiRestoreResult.attempted) {
+    if ($wifiRestoreResult.reconnected) {
+      Write-Host "      + Reconnected upstream Wi-Fi profile '$($wifiRestoreResult.profile_name)'."
+    } else {
+      Write-Host "      ! Upstream Wi-Fi reconnect attempted but not confirmed." -ForegroundColor Yellow
+    }
   }
   $result.ok = ($result.errors.Count -eq 0)
   $result.status = "stopped"
@@ -810,6 +1013,7 @@ Write-Host "SSID     : $ssid"
 Write-Host "Password : $key"
 Write-Host "Band     : $($wifiBand.Label)"
 Write-Host "Policy   : Ethernet source = $ethernetPolicy"
+Write-Host "Policy   : Upstream Wi-Fi = $wifiClientPolicy"
 Write-Host ""
 
 Write-Host "[1/5] Configuring Windows Mobile Hotspot..."
@@ -846,6 +1050,29 @@ try {
 Write-Host "[2/5] Starting Windows Mobile Hotspot..."
 try {
   if ($manager.TetheringOperationalState -ne [Windows.Networking.NetworkOperators.TetheringOperationalState]::On) {
+    if ($wifiClientPolicy -eq "disconnect") {
+      Write-Host "      + Checking for upstream Wi-Fi client connection before hotspot start..."
+      $wifiDisconnectResult = Disconnect-UpstreamWifiForHotspot
+      $result.details.wifi_client_disconnect = $wifiDisconnectResult
+      foreach ($wifiDisconnectFailure in @($wifiDisconnectResult.failures)) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$wifiDisconnectFailure)) {
+          $result.errors.Add([string]$wifiDisconnectFailure)
+        }
+      }
+      if (@($wifiDisconnectResult.failures).Count -gt 0) {
+        Write-Host "ERROR: Could not isolate the Wi-Fi radio for Mobile Hotspot." -ForegroundColor Red
+        Finalize-Result -Result $result -ExitCode 1
+      }
+      if ($wifiDisconnectResult.disconnected) {
+        $result.warnings.Add("Disconnected upstream Wi-Fi profile '$($wifiDisconnectResult.profile.profile_name)' so the Mobile Hotspot SSID can broadcast reliably on this single-radio adapter.")
+      }
+    } elseif ($wifiClientPolicy -eq "warn") {
+      $connectedWifi = Get-ConnectedWifiProfile
+      if ($connectedWifi) {
+        $result.warnings.Add("The laptop is still connected to upstream Wi-Fi profile '$($connectedWifi.profile_name)'. On single-radio adapters this can prevent the hotspot SSID from appearing.")
+        $result.details.connected_wifi_warning = $connectedWifi
+      }
+    }
     [void]$manager.StartTetheringAsync()
     $reached = Wait-TetheringState -Manager $manager -TargetState ([Windows.Networking.NetworkOperators.TetheringOperationalState]::On) -TimeoutMs 25000
     $result.details.start_reached_on = $reached

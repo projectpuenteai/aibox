@@ -1,4 +1,19 @@
 :80 {
+  log {
+    output file /var/log/caddy/access.log {
+      roll_size 10mb
+      roll_keep 5
+      roll_keep_for 168h
+    }
+    format filter {
+      wrap json
+      fields {
+        request>headers delete
+        resp_headers delete
+      }
+    }
+  }
+
   # ---- Reverse proxy routes ----
   handle_path /ai/api/* {
     reverse_proxy ai-control:8081

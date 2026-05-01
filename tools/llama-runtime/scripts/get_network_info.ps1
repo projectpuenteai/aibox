@@ -313,8 +313,18 @@ $backendDataDir = Join-Path $aiboxDir "backend-data"
 $appDataDir = Join-Path $backendDataDir "appdata"
 $hotspotStateDir = Join-Path $appDataDir "hotspot"
 $ethernetRestoreStateFile = Join-Path $hotspotStateDir "ethernet-restore-state.json"
+$hotspotLastResultFile = Join-Path $hotspotStateDir "hotspot-last-result.json"
 $portalDir    = Join-Path $aiboxDir "stack\portal"
 $outFile      = Join-Path $portalDir "network-info.json"
+
+function Load-LastHotspotResult {
+  if (-not (Test-Path $hotspotLastResultFile)) { return $null }
+  try {
+    return (Get-Content $hotspotLastResultFile -Raw -ErrorAction Stop | ConvertFrom-Json)
+  } catch {
+    return $null
+  }
+}
 
 # Read config
 $configuredSsid       = Read-EnvValue "HOTSPOT_SSID" "AIBox-Puente"
@@ -341,6 +351,7 @@ $hotspotSourceTypeLabel = "unknown"
 $hotspotSourceReady = $false
 $hotspotCandidateProfiles = @()
 $managedEthernetState = Load-ManagedEthernetState
+$lastHotspotResult = Load-LastHotspotResult
 $hotspotContext  = Get-MobileHotspotContext
 
 if ($hotspotContext) {
@@ -351,15 +362,13 @@ if ($hotspotContext) {
   $hotspotSourceTypeLabel = $hotspotContext.interface_type_label
   $hotspotSourceReady = (-not $hotspotContext.is_ethernet)
   $hotspotCandidateProfiles = @(
-    $hotspotContext.candidates | ForEach-Object {
-      [ordered]@{
-        profile_name = $_.profile_name
-        interface_type = $_.interface_type
-        interface_type_label = $_.interface_type_label
-        is_ethernet = $_.is_ethernet
-        is_wifi = $_.is_wifi
-        is_internet_preferred = $_.is_internet_preferred
-      }
+    [ordered]@{
+      profile_name = $hotspotContext.profile_name
+      interface_type = $hotspotContext.interface_type
+      interface_type_label = $hotspotContext.interface_type_label
+      is_ethernet = $hotspotContext.is_ethernet
+      is_wifi = $hotspotContext.is_wifi
+      is_internet_preferred = $true
     }
   )
   try {
@@ -387,6 +396,29 @@ if ($hotspotContext) {
   } elseif ($hostedNetOutput -match '(?i)SSID name\s*:\s*(\S+)') {
     $hotspotSsid = $Matches[1].Trim()
   }
+}
+
+if (-not $hotspotActive -and $lastHotspotResult -and $lastHotspotResult.status -in @("ready", "ip_only")) {
+  $hotspotActive = $true
+  $hotspotBackend = if ($lastHotspotResult.backend) { [string]$lastHotspotResult.backend } else { "mobile_hotspot" }
+  $hotspotSupport = "available"
+  if ($lastHotspotResult.ssid) { $hotspotSsid = [string]$lastHotspotResult.ssid }
+  if ($lastHotspotResult.details -and $lastHotspotResult.details.source_profile) {
+    $hotspotProfile = [string]$lastHotspotResult.details.source_profile.profile_name
+    $hotspotSourceType = $lastHotspotResult.details.source_profile.interface_type
+    $hotspotSourceTypeLabel = [string]$lastHotspotResult.details.source_profile.interface_type_label
+    $hotspotSourceReady = $true
+  }
+  $hotspotCandidateProfiles = @(
+    [ordered]@{
+      profile_name = $hotspotProfile
+      interface_type = $hotspotSourceType
+      interface_type_label = $hotspotSourceTypeLabel
+      is_ethernet = $false
+      is_wifi = ($hotspotSourceTypeLabel -eq "wifi")
+      is_internet_preferred = $true
+    }
+  )
 }
 
 $lanCandidates = @()
