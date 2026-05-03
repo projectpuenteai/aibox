@@ -633,6 +633,7 @@ $prefs = Read-Prefs
 $script:language    = if ($prefs.ContainsKey("language") -and $prefs.language) { [string]$prefs.language } else { "es" }
 $script:busy        = $false
 $script:lastReady   = $false
+$script:lastStatusInfo = $null
 $script:connectUrl  = "http://$hostname/"
 $script:activeJobs  = @()
 $script:lastRequestFingerprint = ""
@@ -642,6 +643,7 @@ $script:dialHistory = @{}
 $script:lastCpuValue = 0
 $script:perCoreVisible = $false
 $script:firstShowDone = $false
+$script:busyLabelKey = "starting"
 
 if ($prefs.ContainsKey("windowWidth") -and $prefs.windowWidth) {
   try { $window.Width = [double]$prefs.windowWidth } catch {}
@@ -687,6 +689,7 @@ $Text = @{
     startingHint = "Ejecutando comandos de arranque. El hotspot puede tardar un momento en aparecer."
     stoppingHint = "Apagando contenedores y hotspot. Espera unos segundos."
     copied = "URL copiada"
+    copyFailed = "No se pudo copiar"
     noRequests = "Sin solicitudes todavia."
     requestMissing = "Esperando el archivo de acceso de Caddy..."
     dockerOn = "Docker activo"
@@ -694,6 +697,12 @@ $Text = @{
     unknown = "desconocido"
     yes = "si"
     no = "no"
+    ssidInline = "Red: {0}"
+    checksLine = "HTTP {0} / DNS {1}"
+    footerAdmin = "Admin: {0}"
+    sourceWifi = "Wi-Fi"
+    sourceEthernet = "Ethernet"
+    sourceMobile = "celular"
     coreTitle = "Uso por nucleo de CPU"
     hotkey = "Ctrl+L limpia consola, Ctrl+E enfoca eventos, Ctrl+Q sale."
     cmdHint = "Salida de up_stack.ps1 / down_stack.ps1"
@@ -734,6 +743,7 @@ $Text = @{
     startingHint = "Startup commands are running. The hotspot can take a moment to appear."
     stoppingHint = "Shutting down containers and hotspot. Wait a few seconds."
     copied = "Copied URL"
+    copyFailed = "Copy failed"
     noRequests = "No requests yet."
     requestMissing = "Waiting for the Caddy access log..."
     dockerOn = "Docker active"
@@ -741,6 +751,12 @@ $Text = @{
     unknown = "unknown"
     yes = "yes"
     no = "no"
+    ssidInline = "SSID: {0}"
+    checksLine = "HTTP {0} / DNS {1}"
+    footerAdmin = "Admin: {0}"
+    sourceWifi = "Wi-Fi"
+    sourceEthernet = "Ethernet"
+    sourceMobile = "mobile"
     coreTitle = "CPU usage by core"
     hotkey = "Ctrl+L clears console, Ctrl+E focuses events, Ctrl+Q quits."
     cmdHint = "Output of up_stack.ps1 / down_stack.ps1"
@@ -752,7 +768,43 @@ if (-not $Text.ContainsKey($script:language)) {
   $script:language = "es"
 }
 
-function T { param([string]$Key) return $Text[$script:language][$Key] }
+function T {
+  param([string]$Key)
+  $lang = $script:language
+  if (-not $Text.ContainsKey($lang)) { $lang = "es" }
+  if ($Text[$lang].ContainsKey($Key)) { return $Text[$lang][$Key] }
+  if ($Text.en.ContainsKey($Key)) { return $Text.en[$Key] }
+  return $Key
+}
+
+function TF {
+  param(
+    [string]$Key,
+    [Parameter(ValueFromRemainingArguments = $true)] [object[]]$FormatArgs
+  )
+  $template = [string](T $Key)
+  return [regex]::Replace($template, '\{(\d+)\}', {
+    param($m)
+    $idx = [int]$m.Groups[1].Value
+    if ($idx -ge 0 -and $idx -lt $FormatArgs.Count) {
+      return [string]$FormatArgs[$idx]
+    }
+    return $m.Value
+  })
+}
+
+function Get-LocalizedSourceLabel {
+  param($Source)
+  $label = ""
+  try { $label = [string]$Source.interface_type_label } catch {}
+  if ([string]::IsNullOrWhiteSpace($label)) { return (T "unknown") }
+  switch -Regex ($label.ToLowerInvariant()) {
+    "wi-?fi|wireless" { return (T "sourceWifi") }
+    "ethernet|wired" { return (T "sourceEthernet") }
+    "mobile|cellular|wwan" { return (T "sourceMobile") }
+    default { return $label }
+  }
+}
 
 # ---- Brushes + helpers -----------------------------------------------------
 
@@ -937,8 +989,8 @@ function Invoke-Background {
     $timer.Stop()
     $value = $null
     try {
-      $output = $ps.EndInvoke($handle)
-      if ($null -ne $output -and $output.Count -gt 0) { $value = $output[$output.Count - 1] }
+      $output = @($ps.EndInvoke($handle))
+      if ($output.Count -gt 0) { $value = $output[$output.Count - 1] }
     } catch {
       $st = $_.ScriptStackTrace; if (-not $st) { $st = "" }
       Write-BootstrapLog "Invoke-Background[$Key] error: $($_.Exception.Message)`n  $st"
@@ -1003,7 +1055,8 @@ function New-Dial {
     [string]$Label,
     [string]$Unit,
     [double]$Min = 0,
-    [double]$Max = 100
+    [double]$Max = 100,
+    [scriptblock]$Formatter = { param($v) "$([int]$v)" }
   )
 
   $root = New-Object System.Windows.Controls.Border
@@ -1094,6 +1147,15 @@ function New-Dial {
     Spark = $spark
     Min   = $Min
     Max   = $Max
+    Formatter    = $Formatter
+    TargetPct    = 0.0
+    CurrentPct   = 0.0
+    TargetValue  = 0.0
+    CurrentValue = 0.0
+    HasValue     = $false
+    LastText     = "-"
+    LastColorPct = -1.0
+    SparkDirty   = $false
   }
   return $root
 }
@@ -1129,38 +1191,102 @@ function Get-DialColor {
   return (New-Brush 47 116 219)
 }
 
-function Update-Dial {
-  param([string]$Key, $Value, [string]$DisplayText = $null)
+function Set-DialTarget {
+  param([string]$Key, $Value)
   $d = $script:dialCtrls[$Key]
   if (-not $d) { return }
   if ($null -eq $Value) {
-    $d.Value.Text = "-"
-    $d.Fg.Data = New-DialGeometry -Pct 0
+    $d.HasValue = $false
+    $d.TargetPct = 0.0
+    $d.TargetValue = 0.0
+    if ($d.LastText -ne "-") {
+      $d.Value.Text = "-"
+      $d.LastText = "-"
+    }
+    $hist = $script:dialHistory[$Key]
+    if ($hist.Count -gt 0) {
+      $hist.Clear()
+      $d.SparkDirty = $true
+    }
     return
   }
   $v = [double]$Value
   $pct = (($v - $d.Min) / [Math]::Max(0.001, ($d.Max - $d.Min))) * 100.0
   if ($pct -lt 0) { $pct = 0 }
   if ($pct -gt 100) { $pct = 100 }
-  if ($DisplayText) { $d.Value.Text = $DisplayText } else { $d.Value.Text = "$([int]$v)" }
-  $d.Fg.Data = New-DialGeometry -Pct $pct
-  $d.Fg.Stroke = Get-DialColor -Pct $pct
-
+  if (-not $d.HasValue) {
+    # First real sample after a null/startup gap: snap so the arc doesn't sweep up from 0.
+    $d.CurrentPct = $pct
+    $d.CurrentValue = $v
+  }
+  $d.HasValue = $true
+  $d.TargetPct = $pct
+  $d.TargetValue = $v
   $hist = $script:dialHistory[$Key]
   $hist.Enqueue($pct)
   while ($hist.Count -gt 60) { [void]$hist.Dequeue() }
-  $arr = @($hist.ToArray())
-  if ($arr.Count -ge 2) {
-    $w = $d.Spark.Width
-    $h = $d.Spark.Height
-    $pts = New-Object System.Windows.Media.PointCollection
-    for ($i = 0; $i -lt $arr.Count; $i++) {
-      $x = [double]$i / [double]($arr.Count - 1) * $w
-      $y = $h - ([double]$arr[$i] / 100.0 * $h)
-      $pts.Add((New-Object System.Windows.Point $x, $y))
+  $d.SparkDirty = $true
+}
+
+function Step-DialAnimation {
+  $factor = 0.22
+  foreach ($key in @($script:dialCtrls.Keys)) {
+    $d = $script:dialCtrls[$key]
+    if (-not $d) { continue }
+    $changed = $false
+
+    $dPct = $d.TargetPct - $d.CurrentPct
+    if ([Math]::Abs($dPct) -gt 0.05) {
+      $d.CurrentPct = $d.CurrentPct + $dPct * $factor
+      $changed = $true
+    } elseif ($d.CurrentPct -ne $d.TargetPct) {
+      $d.CurrentPct = $d.TargetPct
+      $changed = $true
     }
-    $d.Spark.Points = $pts
-    $d.Spark.Stroke = Get-DialColor -Pct $arr[-1]
+
+    $dVal = $d.TargetValue - $d.CurrentValue
+    $valEpsilon = [Math]::Max(0.0005, [Math]::Abs($d.TargetValue) * 0.001)
+    if ([Math]::Abs($dVal) -gt $valEpsilon) {
+      $d.CurrentValue = $d.CurrentValue + $dVal * $factor
+      $changed = $true
+    } elseif ($d.CurrentValue -ne $d.TargetValue) {
+      $d.CurrentValue = $d.TargetValue
+      $changed = $true
+    }
+
+    if ($changed) {
+      $d.Fg.Data = New-DialGeometry -Pct $d.CurrentPct
+      if ([Math]::Abs($d.CurrentPct - $d.LastColorPct) -gt 1.0) {
+        $d.Fg.Stroke = Get-DialColor -Pct $d.CurrentPct
+        $d.LastColorPct = $d.CurrentPct
+      }
+      if ($d.HasValue) {
+        $text = & $d.Formatter $d.CurrentValue
+        if ($text -ne $d.LastText) {
+          $d.Value.Text = $text
+          $d.LastText = $text
+        }
+      }
+    }
+
+    if ($d.SparkDirty) {
+      $arr = @($script:dialHistory[$key].ToArray())
+      if ($arr.Count -ge 2) {
+        $w = $d.Spark.Width
+        $h = $d.Spark.Height
+        $pts = New-Object System.Windows.Media.PointCollection
+        for ($i = 0; $i -lt $arr.Count; $i++) {
+          $x = [double]$i / [double]($arr.Count - 1) * $w
+          $y = $h - ([double]$arr[$i] / 100.0 * $h)
+          $pts.Add((New-Object System.Windows.Point $x, $y))
+        }
+        $d.Spark.Points = $pts
+        $d.Spark.Stroke = Get-DialColor -Pct $arr[-1]
+      } else {
+        $d.Spark.Points = New-Object System.Windows.Media.PointCollection
+      }
+      $d.SparkDirty = $false
+    }
   }
 }
 
@@ -1270,6 +1396,7 @@ function Set-HeroButton {
 
 function Update-Status {
   param($Info = $null)
+  $script:lastStatusInfo = $Info
 
   $hs = $null
   if ($Info) { $hs = $Info.hotspot }
@@ -1299,7 +1426,13 @@ function Update-Status {
       if ($script:busy) {
         # Don't override busy display.
         $ctrl.TxtConnectUrl.Text = $script:connectUrl
-        $ctrl.TxtSsidInline.Text = "SSID: $ssid"
+        $ctrl.TxtSsidInline.Text = (TF "ssidInline" $ssid)
+        if ($hs -and $hs.ssid) { $ctrl.TxtSsid.Text = [string]$hs.ssid } else { $ctrl.TxtSsid.Text = $ssid }
+        if ($hs -and $hs.password) { $ctrl.TxtPassword.Text = [string]$hs.password } else { $ctrl.TxtPassword.Text = $key }
+        if ($hs -and $hs.source) { $ctrl.TxtSource.Text = (Get-LocalizedSourceLabel $hs.source) } else { $ctrl.TxtSource.Text = (T "unknown") }
+        $httpStr = if ($httpReady) { (T "yes") } else { (T "no") }
+        $dnsStr = if ($dnsReady) { (T "yes") } else { (T "no") }
+        $ctrl.TxtChecks.Text = (TF "checksLine" $httpStr $dnsStr)
         return
       }
       if ($script:lastReady) {
@@ -1314,13 +1447,13 @@ function Update-Status {
         Set-HeroButton -LabelKey "start" -Variant "start" -Spinning $false -Enabled $true
       }
       $ctrl.TxtConnectUrl.Text = $script:connectUrl
-      $ctrl.TxtSsidInline.Text = "SSID: $ssid"
+      $ctrl.TxtSsidInline.Text = (TF "ssidInline" $ssid)
       if ($hs -and $hs.ssid) { $ctrl.TxtSsid.Text = [string]$hs.ssid } else { $ctrl.TxtSsid.Text = $ssid }
       if ($hs -and $hs.password) { $ctrl.TxtPassword.Text = [string]$hs.password } else { $ctrl.TxtPassword.Text = $key }
-      if ($hs -and $hs.source) { $ctrl.TxtSource.Text = [string]$hs.source.interface_type_label } else { $ctrl.TxtSource.Text = (T "unknown") }
+      if ($hs -and $hs.source) { $ctrl.TxtSource.Text = (Get-LocalizedSourceLabel $hs.source) } else { $ctrl.TxtSource.Text = (T "unknown") }
       $httpStr = if ($httpReady) { (T "yes") } else { (T "no") }
       $dnsStr = if ($dnsReady) { (T "yes") } else { (T "no") }
-      $ctrl.TxtChecks.Text = "HTTP $httpStr / DNS $dnsStr"
+      $ctrl.TxtChecks.Text = (TF "checksLine" $httpStr $dnsStr)
     } catch {
       $st = $_.ScriptStackTrace; if (-not $st) { $st = "" }
       Write-BootstrapLog "Update-Status dispatcher action error: $($_.Exception.Message)`n  $st"
@@ -1345,43 +1478,32 @@ function Update-Metrics {
         $cpu = $null
         try { $cpu = $metrics.cpu.load_percent } catch {}
         if ($null -ne $cpu) { $script:lastCpuValue = [double]$cpu }
-        $cpuText = if ($null -ne $cpu) { "$cpu%" } else { "-" }
-        Update-Dial -Key "cpu" -Value $cpu -DisplayText $cpuText
+        Set-DialTarget -Key "cpu" -Value $cpu
 
         $gpuAvail = $false
         try { $gpuAvail = [bool]$metrics.gpu.available } catch {}
         if ($gpuAvail) {
-          Update-Dial -Key "gpu" -Value $metrics.gpu.load_percent -DisplayText "$($metrics.gpu.load_percent)%"
-          $temp = $metrics.gpu.temperature_c
-          if ($null -ne $temp) {
-            Update-Dial -Key "gputemp" -Value $temp -DisplayText "$([int]$temp)C"
-          } else {
-            Update-Dial -Key "gputemp" -Value $null
-          }
-          $clk = $metrics.gpu.graphics_clock_mhz
-          if ($null -ne $clk) {
-            Update-Dial -Key "gpuclk" -Value $clk -DisplayText "$([int]$clk)"
-          } else {
-            Update-Dial -Key "gpuclk" -Value $null
-          }
+          Set-DialTarget -Key "gpu" -Value $metrics.gpu.load_percent
+          Set-DialTarget -Key "gputemp" -Value $metrics.gpu.temperature_c
+          Set-DialTarget -Key "gpuclk" -Value $metrics.gpu.graphics_clock_mhz
         } else {
-          Update-Dial -Key "gpu" -Value $null
-          Update-Dial -Key "gputemp" -Value $null
-          Update-Dial -Key "gpuclk" -Value $null
+          Set-DialTarget -Key "gpu" -Value $null
+          Set-DialTarget -Key "gputemp" -Value $null
+          Set-DialTarget -Key "gpuclk" -Value $null
         }
 
-        $rxBps = 0; $txBps = 0
-        try { $rxBps = [double]$metrics.network.receive_bps } catch {}
-        try { $txBps = [double]$metrics.network.send_bps } catch {}
-        Update-Dial -Key "netDown" -Value $rxBps -DisplayText (Format-BytesPerSecond $rxBps)
-        Update-Dial -Key "netUp"   -Value $txBps -DisplayText (Format-BytesPerSecond $txBps)
+        $rxBps = $null; $txBps = $null
+        try { if ($null -ne $metrics.network.receive_bps) { $rxBps = [double]$metrics.network.receive_bps } } catch {}
+        try { if ($null -ne $metrics.network.send_bps)    { $txBps = [double]$metrics.network.send_bps } } catch {}
+        Set-DialTarget -Key "netDown" -Value $rxBps
+        Set-DialTarget -Key "netUp"   -Value $txBps
       } else {
-        Update-Dial -Key "cpu" -Value $null
-        Update-Dial -Key "gpu" -Value $null
-        Update-Dial -Key "gputemp" -Value $null
-        Update-Dial -Key "gpuclk" -Value $null
-        Update-Dial -Key "netUp" -Value $null
-        Update-Dial -Key "netDown" -Value $null
+        Set-DialTarget -Key "cpu" -Value $null
+        Set-DialTarget -Key "gpu" -Value $null
+        Set-DialTarget -Key "gputemp" -Value $null
+        Set-DialTarget -Key "gpuclk" -Value $null
+        Set-DialTarget -Key "netUp" -Value $null
+        Set-DialTarget -Key "netDown" -Value $null
         $ctrl.TxtDevices.Text = "-"
       }
       if ($dockerReady) {
@@ -1607,6 +1729,7 @@ function Update-PerCorePopup {
 function Set-Busy {
   param([bool]$On, [string]$LabelKey = "starting")
   $script:busy = $On
+  $script:busyLabelKey = $LabelKey
   $window.Dispatcher.Invoke([action]{
     try {
       if ($On) {
@@ -1739,16 +1862,31 @@ function Set-LanguageLabels {
   if ($script:dialCtrls.gpuclk) { $script:dialCtrls.gpuclk.Label.Text = (T "gpuclk") }
   if ($script:dialCtrls.netDown) { $script:dialCtrls.netDown.Label.Text = (T "netDown") }
   if ($script:dialCtrls.netUp) { $script:dialCtrls.netUp.Label.Text = (T "netUp") }
+  if ($script:busy) {
+    $labelKey = if ($script:busyLabelKey) { $script:busyLabelKey } else { "starting" }
+    $ctrl.TxtMainStatus.Text = (T $labelKey)
+    $ctrl.TxtStatusHint.Text = if ($labelKey -eq "stopping") { (T "stoppingHint") } else { (T "startingHint") }
+    Set-Status -BadgeKey $labelKey -BadgeKind "busy"
+    Set-HeroButton -LabelKey $labelKey -Variant "busy" -Spinning $true -Enabled $false
+    try { Update-Status -Info $script:lastStatusInfo } catch {}
+  } else {
+    try { Update-Status -Info $script:lastStatusInfo } catch {}
+  }
 }
 
 # ---- Build dial grid -------------------------------------------------------
 
-[void]$ctrl.DialGrid.Children.Add((New-Dial -Key "cpu" -Label "CPU" -Unit "%" -Min 0 -Max 100))
-[void]$ctrl.DialGrid.Children.Add((New-Dial -Key "gpu" -Label "GPU" -Unit "%" -Min 0 -Max 100))
-[void]$ctrl.DialGrid.Children.Add((New-Dial -Key "gputemp" -Label "GPU Temp" -Unit "C" -Min 30 -Max 95))
-[void]$ctrl.DialGrid.Children.Add((New-Dial -Key "gpuclk" -Label "GPU Clock" -Unit "MHz" -Min 200 -Max 2200))
-[void]$ctrl.DialGrid.Children.Add((New-Dial -Key "netDown" -Label "Down" -Unit "B/s" -Min 0 -Max 12500000))
-[void]$ctrl.DialGrid.Children.Add((New-Dial -Key "netUp" -Label "Up" -Unit "B/s" -Min 0 -Max 12500000))
+$pctFmt  = { param($v) "$([int][Math]::Round($v))%" }
+$tempFmt = { param($v) "$([int][Math]::Round($v))C" }
+$mhzFmt  = { param($v) "$([int][Math]::Round($v))" }
+$bpsFmt  = { param($v) Format-BytesPerSecond $v }
+
+[void]$ctrl.DialGrid.Children.Add((New-Dial -Key "cpu" -Label "CPU" -Unit "%" -Min 0 -Max 100 -Formatter $pctFmt))
+[void]$ctrl.DialGrid.Children.Add((New-Dial -Key "gpu" -Label "GPU" -Unit "%" -Min 0 -Max 100 -Formatter $pctFmt))
+[void]$ctrl.DialGrid.Children.Add((New-Dial -Key "gputemp" -Label "GPU Temp" -Unit "C" -Min 30 -Max 95 -Formatter $tempFmt))
+[void]$ctrl.DialGrid.Children.Add((New-Dial -Key "gpuclk" -Label "GPU Clock" -Unit "MHz" -Min 200 -Max 2200 -Formatter $mhzFmt))
+[void]$ctrl.DialGrid.Children.Add((New-Dial -Key "netDown" -Label "Down" -Unit "B/s" -Min 0 -Max 12500000 -Formatter $bpsFmt))
+[void]$ctrl.DialGrid.Children.Add((New-Dial -Key "netUp" -Label "Up" -Unit "B/s" -Min 0 -Max 12500000 -Formatter $bpsFmt))
 
 # CPU dial click -> popup with per-core breakdown
 $script:dialCtrls.cpu.Root.Add_MouseLeftButtonUp({
@@ -1783,7 +1921,7 @@ $ctrl.BtnCopy.Add_Click({
     [System.Windows.Clipboard]::SetText($script:connectUrl)
     $ctrl.TxtFooter.Text = "$(T 'copied'): $script:connectUrl"
   } catch {
-    $ctrl.TxtFooter.Text = "Copy failed: $($_.Exception.Message)"
+    $ctrl.TxtFooter.Text = "$(T 'copyFailed'): $($_.Exception.Message)"
   }
 })
 
@@ -1838,8 +1976,9 @@ function Refresh-Status {
   $shouldRefresh = $ForceNetRefresh.IsPresent -or `
     ((Get-Date) - $script:lastNetRefresh).TotalSeconds -ge 30
   if ($shouldRefresh) { $script:lastNetRefresh = Get-Date }
+  $key = if ($ForceNetRefresh.IsPresent) { "status-force" } else { "status" }
 
-  Invoke-Background -Key "status" `
+  Invoke-Background -Key $key `
     -Arguments @([bool]$shouldRefresh, [string]$netInfoScript, [string]$netInfoFile) `
     -Work {
       param($refresh, $script, $file)
@@ -1857,14 +1996,17 @@ function Refresh-Metrics {
     -Work {
       # $metricsScriptPath is injected via SessionStateProxy in Invoke-Background.
       $m = $null
+      $err = $null
       try {
         if ((Test-Path $metricsScriptPath) -and -not (Get-Command Get-SystemMetricsData -ErrorAction SilentlyContinue)) {
           . $metricsScriptPath
         }
         $m = Get-SystemMetricsData
-      } catch {}
+      } catch {
+        $err = $_.Exception.Message
+      }
       $d = bgGet-DockerReady
-      return [pscustomobject]@{ Metrics = $m; Docker = $d }
+      return [pscustomobject]@{ Metrics = $m; Docker = $d; Error = $err }
     } `
     -OnResult {
       param($r)
@@ -1873,6 +2015,16 @@ function Refresh-Metrics {
           # Mirror the result into the UI-thread docker cache so other callers see
           # the same value without having to re-shell to docker info.
           $script:dockerCache = @{ At = (Get-Date); Ready = [bool]$r.Docker }
+          if ($null -eq $r.Metrics) {
+            if (-not $script:metricsErrorLogged) {
+              $script:metricsErrorLogged = $true
+              $msg = if ($r.Error) { $r.Error } else { "Get-SystemMetricsData returned null" }
+              Write-BootstrapLog "Refresh-Metrics: no snapshot ($msg)"
+            }
+          } else {
+            $script:metricsErrorLogged = $false
+            $script:lastMetricsAt = Get-Date
+          }
           Update-Metrics -Metrics $r.Metrics -DockerReady ([bool]$r.Docker)
         }
         if ($script:perCoreVisible) { Update-PerCorePopup }
@@ -1926,7 +2078,7 @@ $statusTimer.Add_Tick({
 $statusTimer.Start()
 
 $metricsTimer = New-Object System.Windows.Threading.DispatcherTimer
-$metricsTimer.Interval = [TimeSpan]::FromSeconds(3)
+$metricsTimer.Interval = [TimeSpan]::FromSeconds(1)
 $metricsTimer.Add_Tick({
   try { Refresh-Metrics }
   catch { Write-BootstrapLog "metricsTimer tick error: $($_.Exception.Message)" }
@@ -1949,12 +2101,20 @@ $securityTimer.Add_Tick({
 })
 $securityTimer.Start()
 
+$animationTimer = New-Object System.Windows.Threading.DispatcherTimer
+$animationTimer.Interval = [TimeSpan]::FromMilliseconds(33)
+$animationTimer.Add_Tick({
+  try { Step-DialAnimation }
+  catch { Write-BootstrapLog "animationTimer tick error: $($_.Exception.Message)" }
+})
+$animationTimer.Start()
+
 # ---- First paint -----------------------------------------------------------
 
 Set-LanguageLabels
 $ctrl.TxtSsid.Text = $ssid
 $ctrl.TxtPassword.Text = $key
-$ctrl.TxtFooter.Text = "Admin: $env:COMPUTERNAME"
+$ctrl.TxtFooter.Text = (TF "footerAdmin" $env:COMPUTERNAME)
 
 # Defer first refresh to after window is shown so user sees UI immediately.
 $window.Add_ContentRendered({

@@ -170,6 +170,8 @@ class StorageRuntime:
         self.chroma_collection = os.getenv("CHROMA_COLLECTION", "simplewiki_chunks").strip() or "simplewiki_chunks"
         self.chroma_persist_dir_es = Path(os.getenv("CHROMA_PERSIST_DIR_ES", str(self.data_root / "chroma_db_es")))
         self.chroma_collection_es = os.getenv("CHROMA_COLLECTION_ES", "simplewiki_chunks").strip() or "simplewiki_chunks"
+        self.load_es_index_at_startup = _coerce_bool(os.getenv("LOAD_ES_INDEX_AT_STARTUP", "0"), default=False)
+        self.warmup_en_at_startup = _coerce_bool(os.getenv("WARMUP_EN_AT_STARTUP", "1"), default=True)
         self.embed_model = os.getenv("EMBED_MODEL", "/models/embed").strip() or "/models/embed"
         self.retrieval_device = os.getenv("RETRIEVAL_DEVICE", "cpu").strip() or "cpu"
         self.retrieval_enabled_default = _coerce_bool(os.getenv("RETRIEVAL_ENABLED_DEFAULT", "1"), default=True)
@@ -192,7 +194,19 @@ class StorageRuntime:
             "question, answer from your own knowledge. Never mention retrieval, snippets, wiki "
             "support, or hidden context unless the user explicitly asks.",
         ).strip()
+        self.retrieval_instruction_es = os.getenv(
+            "WIKI_RETRIEVAL_INSTRUCTION_ES",
+            "Eres un tutor experto que ayuda a un estudiante a aprender. Los siguientes pasajes "
+            "fueron recuperados de Wikipedia para ayudarte a dar una respuesta precisa y bien "
+            "fundamentada. Úsalos para aportar detalles factuales, corregir conceptos erróneos y "
+            "explicar las ideas con claridad. Cuando un pasaje sea directamente relevante, cita "
+            'su título de forma natural en tu respuesta (por ejemplo, "Según el artículo sobre '
+            '[Tema]..."). Si los pasajes no son relevantes para la pregunta, responde con tu '
+            "propio conocimiento. Nunca menciones la recuperación, los fragmentos, el soporte "
+            "wiki ni el contexto oculto a menos que el estudiante lo pida explícitamente.",
+        ).strip()
         self.base_system_prompt = (os.getenv("BASE_SYSTEM_PROMPT", "") or "").strip()
+        self.base_system_prompt_es = (os.getenv("BASE_SYSTEM_PROMPT_ES", "") or "").strip()
 
         self.runtime_backend_name = (os.getenv("RUNTIME_BACKEND_NAME", "llama.cpp") or "llama.cpp").strip() or "llama.cpp"
         self.runtime_host = (os.getenv("RUNTIME_HOST", socket.gethostname()) or socket.gethostname()).strip() or socket.gethostname()
@@ -374,6 +388,7 @@ class StorageRuntime:
         self._wiki_collection: Any = None
         self._chroma_client_es: Any = None
         self._wiki_collection_es: Any = None
+        self._es_load_started: bool = False
         self._reranker: Any = None
         self.analytics_export_version = 1
         self.analytics_frontend_events = {
@@ -695,32 +710,46 @@ class StorageRuntime:
         return out
 
     def _language_directive(self, response_language: Optional[str] = None) -> str:
-        """Build a language directive to append to the system prompt."""
+        """Build a language directive to append to the system prompt.
+
+        The directive itself is written in the target language to keep the entire
+        system prompt monolingual — mixed-language prompts cause Qwen to drift to
+        Chinese mid-stream on Spanish queries.
+        """
         if not response_language:
             return ""
         lang = response_language.strip().lower()
         if lang == "es":
-            return "IMPORTANT: You MUST respond in Spanish (español). The student's preferred language is Spanish."
+            return "IMPORTANTE: Debes responder SIEMPRE en español. El idioma del estudiante es español. No uses inglés ni otros idiomas en tu respuesta bajo ninguna circunstancia."
         elif lang == "en":
             return "IMPORTANT: You MUST respond in English. The student's preferred language is English."
         return ""
 
     def _build_retrieval_system_message(self, context: str, response_language: Optional[str] = None, rag_index_language: Optional[str] = None) -> str:
         parts = []
-        if self.base_system_prompt:
-            parts.append(self.base_system_prompt)
+        prompt_language = (response_language or "en").strip().lower()
+        is_es = prompt_language == "es"
+        base_system_prompt = self.base_system_prompt_es if is_es and self.base_system_prompt_es else self.base_system_prompt
+        if base_system_prompt:
+            parts.append(base_system_prompt)
         lang_directive = self._language_directive(response_language)
         if lang_directive:
             parts.append(lang_directive)
-        parts.append(self.retrieval_instruction)
+        retrieval_instruction = self.retrieval_instruction_es if is_es and self.retrieval_instruction_es else self.retrieval_instruction
+        parts.append(retrieval_instruction)
         # Add cross-lingual note when the index language differs from the response language
-        resp_lang = (response_language or "en").strip().lower()
         idx_lang = (rag_index_language or "en").strip().lower()
-        if idx_lang == "es" and resp_lang == "en":
+        if idx_lang == "es" and not is_es:
             parts.append("Note: The retrieved Wikipedia passages below are in Spanish. Read them to extract the relevant facts, then write your response in English.")
-        elif idx_lang == "en" and resp_lang == "es":
-            parts.append("Nota: Los pasajes de Wikipedia recuperados están en inglés. Léelos para extraer los hechos relevantes y luego responde en español.")
-        parts.append(f"\nWikipedia context:\n{str(context or '').strip()}")
+        elif idx_lang == "en" and is_es:
+            parts.append("Nota: Los pasajes de Wikipedia recuperados están en inglés. Léelos para extraer los hechos relevantes y luego responde en español. NO copies inglés en tu respuesta — tradúcelo siempre.")
+        context_heading = "Contexto de Wikipedia" if is_es else "Wikipedia context"
+        parts.append(f"\n{context_heading}:\n{str(context or '').strip()}")
+        if is_es:
+            # Final anchor right before the user message — keeps the model from
+            # drifting to Chinese at generation time, which Qwen 2.5 will do when
+            # the prompt mixes languages or contains long English context.
+            parts.append("Recordatorio final: tu respuesta debe estar 100% en español.")
         return "\n\n".join(parts).strip()
 
     def _build_prompt_preview(self, messages: List[Dict[str, Any]]) -> str:
@@ -1217,6 +1246,88 @@ class StorageRuntime:
             if self._rag_required_at_startup():
                 raise RuntimeError(error) from exc
 
+    def validate_startup_rag_es(self) -> None:
+        """Spanish-first variant of the startup smoke test. Used when
+        WARMUP_EN_AT_STARTUP=0 — validates the Spanish collection (already
+        kicked off as eager-load) instead of the English one, then marks
+        startup_rag_ok=True so the portal loading screen lifts. The English
+        collection stays cold until the first English request triggers
+        ensure_wiki_retriever()."""
+        checked_at = self.now_iso()
+        smoke_query = "¿Quién fue Simón Bolívar?"
+        try:
+            self._ensure_wiki_retriever_es()
+            if self._wiki_collection_es is None:
+                raise RuntimeError("Spanish ChromaDB not loaded (still warming or path missing)")
+            # Load embedder without touching the English chroma client (it
+            # stays cold until the first English request).
+            if self._embedder is None:
+                from sentence_transformers import SentenceTransformer
+                with self._retriever_init_lock:
+                    if self._embedder is None:
+                        try:
+                            self._embedder = SentenceTransformer(
+                                self.embed_model,
+                                device=self.retrieval_device,
+                                local_files_only=True,
+                            )
+                        except TypeError:
+                            self._embedder = SentenceTransformer(
+                                self.embed_model,
+                                device=self.retrieval_device,
+                            )
+            rerank_error = self.ensure_reranker()
+            if rerank_error is not None or self._reranker is None:
+                raise RuntimeError(f"reranker unavailable: {rerank_error or 'failed_to_initialize'}")
+            candidates = self.retrieve_wiki_chunks(
+                smoke_query,
+                limit=max(20, self.retrieval_candidate_k),
+                user_language="es",
+            )
+            ranked, rerank_enabled, rerank_ms, rerank_error = self.rerank_wiki_chunks(smoke_query, candidates)
+            matches = self._serialize_debug_chunks(ranked[:3])
+            if not matches:
+                raise RuntimeError("startup retrieval test (es) returned no matches")
+            if not rerank_enabled:
+                raise RuntimeError(f"startup rerank test (es) did not enable reranker: {rerank_error or 'unknown'}")
+            self._update_rag_status(
+                startup_rag_ok=True,
+                startup_rag_error=None,
+                startup_rag_checked_at=checked_at,
+                startup_rag_test_query=smoke_query,
+                startup_rag_test_matches=matches,
+                startup_reranker_ok=True,
+                startup_reranker_error=None,
+                rerank_model_path=str(self.rerank_model),
+                rerank_available=True,
+            )
+            logger.info(
+                "Spanish startup retrieval test query=%r matches=%s",
+                smoke_query, json.dumps(matches, ensure_ascii=False),
+            )
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            self._update_rag_status(
+                startup_rag_ok=False,
+                startup_rag_error=error,
+                startup_rag_checked_at=checked_at,
+                startup_rag_test_query=smoke_query,
+                startup_rag_test_matches=[],
+                startup_reranker_ok=False,
+                startup_reranker_error=error,
+                embed_model_path=str(self.embed_model),
+                embed_model_exists=Path(self.embed_model).exists(),
+                chroma_persist_dir=str(self.chroma_persist_dir_es),
+                chroma_persist_exists=self.chroma_persist_dir_es.exists(),
+                chroma_collection=self.chroma_collection_es,
+                chroma_count=0,
+                embed_dimension=self._embed_dimension,
+                collection_dimension=self._collection_dimension,
+                rerank_model_path=str(self.rerank_model),
+                rerank_available=bool(self._reranker is not None),
+            )
+            logger.error("startup RAG validation (es) failed: %s", error)
+
     def run_warmup_queries(self) -> None:
         """Run diverse warm-up queries to keep the HNSW index and embedding model hot."""
         warmup_queries = [
@@ -1256,8 +1367,31 @@ class StorageRuntime:
             return
         self._load_retriever_runtime()
 
+    def _kick_off_wiki_retriever_es_load(self) -> None:
+        """Start a background load of the Spanish ChromaDB if not already loaded
+        or loading. Returns immediately so callers don't block on a multi-minute
+        cold-load."""
+        if self._wiki_collection_es is not None:
+            return
+        if not self.chroma_persist_dir_es.exists():
+            return
+        # Cheap, non-blocking check first
+        if self._es_load_started:
+            return
+        with self._retriever_init_lock_es:
+            if self._es_load_started or self._wiki_collection_es is not None:
+                return
+            self._es_load_started = True
+        threading.Thread(
+            target=self._ensure_wiki_retriever_es,
+            daemon=True,
+            name="app-storage-es-load",
+        ).start()
+
     def _ensure_wiki_retriever_es(self) -> None:
-        """Lazy-load the Spanish ChromaDB collection on first Spanish-user request."""
+        """Load the Spanish ChromaDB collection. Called from the background
+        startup thread or from the kickoff helper — never inside a request path
+        because the cold-load takes minutes on the 12 GB HNSW."""
         if self._wiki_collection_es is not None:
             return
         if not self.chroma_persist_dir_es.exists():
@@ -1266,20 +1400,24 @@ class StorageRuntime:
         try:
             import chromadb
             from chromadb.config import Settings
+            t0 = time.perf_counter()
             with self._retriever_init_lock_es:
                 if self._wiki_collection_es is not None:
                     return  # another thread beat us here
                 if self._chroma_client_es is None:
-                    logger.info("Loading Spanish ChromaDB from %s (first Spanish-user request — may take a moment)...", self.chroma_persist_dir_es)
+                    logger.info("Loading Spanish ChromaDB from %s (cold load can take 1–3 minutes for the 2.8M-chunk index)...", self.chroma_persist_dir_es)
                     self._chroma_client_es = chromadb.PersistentClient(
                         path=str(self.chroma_persist_dir_es),
                         settings=Settings(anonymized_telemetry=False),
                     )
-                self._wiki_collection_es = self._chroma_client_es.get_collection(self.chroma_collection_es)
-                logger.info("Spanish ChromaDB loaded: %s (%d chunks)", self.chroma_collection_es, self._wiki_collection_es.count())
+                collection = self._chroma_client_es.get_collection(self.chroma_collection_es)
+                count = collection.count()
+                self._wiki_collection_es = collection
+                logger.info("Spanish ChromaDB loaded: %s (%d chunks) in %.1fs", self.chroma_collection_es, count, time.perf_counter() - t0)
         except Exception as exc:
             self._chroma_client_es = None
             self._wiki_collection_es = None
+            self._es_load_started = False  # allow retry on next request
             logger.warning("Spanish ChromaDB unavailable, falling back to English index: %s", exc)
 
     def ensure_reranker(self) -> Optional[str]:
@@ -1633,10 +1771,12 @@ class StorageRuntime:
         self.ensure_wiki_retriever()
         assert self._embedder is not None
         assert self._wiki_collection is not None
-        # Lazy-load Spanish collection if this is a Spanish-user request
-        if str(user_language or "en").strip().lower() == "es":
-            self._ensure_wiki_retriever_es()
-        # Select Spanish collection when user prefers Spanish and it is loaded
+        # Spanish collection: only used when already loaded. The 12 GB HNSW on a
+        # WSL2 9P-bind-mount serializes filesystem I/O with active queries, so
+        # an in-request lazy-load stalls the entire chat. The load is opt-in via
+        # LOAD_ES_INDEX_AT_STARTUP and runs in the background-startup thread.
+        # When the Spanish index is not loaded, fall back to the English index
+        # (bge-m3 is multilingual, so cross-lingual retrieval works).
         use_es = (str(user_language or "en").strip().lower() == "es" and self._wiki_collection_es is not None)
         active_collection = self._wiki_collection_es if use_es else self._wiki_collection
         rag_index_language = "es" if use_es else "en"
@@ -1907,11 +2047,13 @@ class StorageRuntime:
     def inject_wiki_context(self, base_messages: List[Dict[str, str]], context: str, missing_reason: Optional[str] = None, response_language: Optional[str] = None, rag_index_language: Optional[str] = None) -> List[Dict[str, str]]:
         if context.strip():
             content = self._build_retrieval_system_message(context, response_language=response_language, rag_index_language=rag_index_language)
-        elif self.base_system_prompt:
-            lang_directive = self._language_directive(response_language)
-            content = f"{self.base_system_prompt}\n\n{lang_directive}".strip() if lang_directive else self.base_system_prompt
         else:
-            return [dict(message) for message in base_messages]
+            prompt_language = (response_language or "").strip().lower()
+            base = self.base_system_prompt_es if prompt_language == "es" and self.base_system_prompt_es else self.base_system_prompt
+            if not base:
+                return [dict(message) for message in base_messages]
+            lang_directive = self._language_directive(response_language)
+            content = f"{base}\n\n{lang_directive}".strip() if lang_directive else base
         system_message = {"role": "system", "content": content}
         conversation: List[Dict[str, str]] = []
         inserted = False
@@ -2147,6 +2289,8 @@ CREATE TABLE IF NOT EXISTS documents(id TEXT PRIMARY KEY,user_id TEXT NOT NULL,t
 CREATE TABLE IF NOT EXISTS user_restrictions(user_id TEXT PRIMARY KEY,docs_write_blocked_until TEXT,docs_block_reason TEXT,ai_prompt_cooldown_until TEXT,ai_send_blocked_until TEXT,manual_locked_until TEXT,manual_lock_reason TEXT,manual_locked_by TEXT,manual_lock_permanent INTEGER NOT NULL DEFAULT 0,updated_at TEXT,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS rate_events(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id TEXT NOT NULL,event_type TEXT NOT NULL,bytes INTEGER NOT NULL DEFAULT 0,created_ts INTEGER NOT NULL,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
 CREATE INDEX IF NOT EXISTS ix_rate_events_user_type_ts ON rate_events(user_id,event_type,created_ts);
+CREATE TABLE IF NOT EXISTS ip_rate_events(id INTEGER PRIMARY KEY AUTOINCREMENT,key TEXT NOT NULL,event_type TEXT NOT NULL,created_ts INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_ip_rate_events_key_type_ts ON ip_rate_events(key,event_type,created_ts);
 CREATE TABLE IF NOT EXISTS security_events(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id TEXT,username TEXT,ip TEXT,endpoint TEXT,event_type TEXT NOT NULL,severity TEXT NOT NULL,detail TEXT,observed REAL,threshold REAL,action TEXT,created_at TEXT NOT NULL,created_ts INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS cleanup_events(id INTEGER PRIMARY KEY AUTOINCREMENT,reason TEXT NOT NULL,level TEXT NOT NULL,bytes_reclaimed INTEGER NOT NULL,items_deleted INTEGER NOT NULL,used_percent REAL NOT NULL,free_bytes INTEGER NOT NULL,details TEXT,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS usage_events(id INTEGER PRIMARY KEY AUTOINCREMENT,event_type TEXT NOT NULL,surface TEXT NOT NULL,day_bucket TEXT NOT NULL,created_at TEXT NOT NULL,created_ts INTEGER NOT NULL,user_id TEXT,username TEXT,user_role TEXT,preferred_language TEXT,session_id TEXT,value INTEGER NOT NULL DEFAULT 1,metadata_json TEXT NOT NULL DEFAULT '{}');
@@ -2486,6 +2630,13 @@ CREATE TABLE IF NOT EXISTS analytics_exports(id TEXT PRIMARY KEY,format TEXT NOT
     def rate_add(self, c: sqlite3.Connection, uid_: str, typ: str, b: int = 0) -> None:
         c.execute("INSERT INTO rate_events(user_id,event_type,bytes,created_ts) VALUES(?,?,?,?)", (uid_, typ, int(b), self.now_ts()))
 
+    def ip_rate_count(self, c: sqlite3.Connection, key: str, typ: str, sec: int = 60) -> int:
+        r = c.execute("SELECT COUNT(*) c FROM ip_rate_events WHERE key=? AND event_type=? AND created_ts>=?", (key, typ, self.now_ts() - sec)).fetchone()
+        return int(r["c"] if r else 0)
+
+    def ip_rate_add(self, c: sqlite3.Connection, key: str, typ: str) -> None:
+        c.execute("INSERT INTO ip_rate_events(key,event_type,created_ts) VALUES(?,?,?)", (key, typ, self.now_ts()))
+
     def check_limit(self, c: sqlite3.Connection, user: sqlite3.Row, ip_: str, endpoint: str, metric: str, obs: float, th: float, warnings: List[Dict[str, Any]], scope: str = "") -> None:
         scope = (scope or "").strip().lower()
         warn_type = f"{scope}_limit_warning" if scope else "limit_warning"
@@ -2640,6 +2791,7 @@ CREATE TABLE IF NOT EXISTS analytics_exports(id TEXT PRIMARY KEY,format TEXT NOT
             # --- TTL cleanup for unbounded tables ---
             rate_cut_ts = int((now - timedelta(days=self.rate_events_retention_days)).timestamp())
             conn.execute("DELETE FROM rate_events WHERE created_ts < ?", (rate_cut_ts,))
+            conn.execute("DELETE FROM ip_rate_events WHERE created_ts < ?", (rate_cut_ts,))
             sec_cut = (now - timedelta(days=self.security_events_retention_days)).isoformat()
             conn.execute("DELETE FROM security_events WHERE created_at < ?", (sec_cut,))
             usage_cut_ts = int((now - timedelta(days=self.usage_events_retention_days)).timestamp())
@@ -2870,6 +3022,34 @@ def mount_app_storage(app, llama_base_url: str):
         # at boot leaves startup_rag_ok=False forever and the portal loading
         # screen never lifts.
         retry_seconds = 60
+        # Spanish-first mode: eager-load Spanish before doing any English work.
+        # Used when WARMUP_EN_AT_STARTUP=0 — the English collection is left
+        # cold and will load lazily on the first English request.
+        if rt.load_es_index_at_startup:
+            try:
+                rt._kick_off_wiki_retriever_es_load()
+            except Exception:
+                logger.exception("failed to schedule Spanish ChromaDB background load")
+        if not rt.warmup_en_at_startup:
+            # Wait for the Spanish collection to come online, then validate
+            # against it. Sets startup_rag_ok=True so the portal loading
+            # screen lifts even though English never warmed.
+            attempt = 0
+            while True:
+                attempt += 1
+                try:
+                    rt.validate_startup_rag_es()
+                except Exception:
+                    pass
+                if rt._startup_rag_status.get("startup_rag_ok"):
+                    logger.info("startup RAG validation (es) succeeded on attempt %d", attempt)
+                    break
+                logger.warning(
+                    "startup RAG validation (es) attempt %d failed; retrying in %ds",
+                    attempt, retry_seconds,
+                )
+                time.sleep(retry_seconds)
+            return
         attempt = 0
         while True:
             attempt += 1
@@ -2925,18 +3105,17 @@ def mount_app_storage(app, llama_base_url: str):
         if len(pw) < 4: raise HTTPException(400, "Password must be at least 4 characters")
         if len(pw) > 128: raise HTTPException(400, "Password must be at most 128 characters")
         if role not in ("user", "guest"): role = "user"
-        if role == "guest": preferred_theme = "light"
-        # Per-IP signup rate limit. Key on a synthetic user_id ("ip:<addr>") so the
-        # existing rate_events table and TTL cleanup cover this for free.
-        rate_key = f"ip:{ip_}" if ip_ else "ip:unknown"
+        # Per-IP signup rate limit. Stored in the FK-free ip_rate_events table
+        # since there is no user row to anchor a synthetic ip:<addr> key against.
+        rate_key = ip_ or "unknown"
         with rt.tx() as c:
-            recent = rt.rate_count(c, rate_key, "signup", sec=3600)
+            recent = rt.ip_rate_count(c, rate_key, "signup", sec=3600)
             if recent >= rt.signup_max_per_hour_per_ip:
                 rt.log_event(c, user=None, ip_=ip_, endpoint=endpoint, et="signup_rate_block", sev="warning", detail=f"Signup blocked: {recent} attempts in last hour from ip={ip_}", obs=float(recent), th=float(rt.signup_max_per_hour_per_ip), act="rate_block")
                 rt.persist_and_raise(c, 429, "Too many signups from this network; try later")
             if c.execute("SELECT 1 FROM users WHERE username_norm=?", (rt.nuser(username),)).fetchone() is not None:
                 rt.log_event(c, user=None, ip_=ip_, endpoint=endpoint, et="signup_conflict", sev="info", detail=f"Signup rejected: username {username!r} already exists", act="blocked")
-                rt.rate_add(c, rate_key, "signup", b=0)
+                rt.ip_rate_add(c, rate_key, "signup")
                 rt.persist_and_raise(c, 409, "Username already exists")
             uid_ = rt.uid(); rt.ensure_user_dirs(uid_)
             c.execute(
@@ -2946,7 +3125,7 @@ def mount_app_storage(app, llama_base_url: str):
             rt.ensure_restrictions_row(c, uid_)
             created_user = c.execute("SELECT * FROM users WHERE id=?", (uid_,)).fetchone()
             rt.record_analytics_event(c, event_type="accounts_created", surface="auth", user=created_user)
-            rt.rate_add(c, rate_key, "signup", b=0)
+            rt.ip_rate_add(c, rate_key, "signup")
             rt.log_event(c, user=created_user, ip_=ip_, endpoint=endpoint, et="account_created", sev="info", detail=f"Account created: {username} role={role}", act="signup")
         return {"ok": True, "user": {"id": uid_, "username": username, "role": role, "preferred_language": preferred_language, "preferred_theme": preferred_theme}}
 
@@ -3045,8 +3224,6 @@ def mount_app_storage(app, llama_base_url: str):
             u = rt.req_user(c, req, write=True)
             preferred_language = normalize_language_preference(p.preferred_language, default=normalize_language_preference(u["preferred_language"], default="en"))
             preferred_theme = normalize_theme_preference(p.preferred_theme, default=normalize_theme_preference(u["preferred_theme"], default="light"))
-            if u["role"] == "guest":
-                preferred_theme = "light"
             c.execute("UPDATE users SET preferred_language=?, preferred_theme=? WHERE id=?", (preferred_language, preferred_theme, u["id"]))
             return {"ok": True, "user": {"id": u["id"], "username": u["username"], "role": u["role"], "preferred_language": preferred_language, "preferred_theme": preferred_theme}}
 
@@ -4370,7 +4547,6 @@ LIMIT ?
             rt.remove_active_generation(request_id)
 
     return rt
-
 
 
 

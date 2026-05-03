@@ -1,5 +1,6 @@
 ﻿"""Measure title-only recall for the local embedding model and Chroma index."""
 
+import os
 import random
 import sys
 import time
@@ -23,9 +24,10 @@ from tools.config.index_settings import (
 MODEL_NAME = EMBED_MODEL_NAME
 DEVICE = DEFAULT_DEVICE  # set to "cpu" if needed
 
-N = 2000       # number of titles to test
-K = 10         # top-k
-GET_LIMIT = 50000  # how many items to pull for sampling (increase if you want)
+N = int(os.getenv("BENCH_N", "2000"))       # number of titles to test
+K = int(os.getenv("BENCH_K", "10"))         # top-k
+GET_LIMIT = int(os.getenv("BENCH_GET_LIMIT", "20000"))  # how many items to pull for sampling
+GET_PAGE = int(os.getenv("BENCH_GET_PAGE", "500"))  # SQLite variable-limit-friendly page size
 FUSION_CANDIDATES = 10  # candidates per template query before fusion
 
 # Query expansion improves title-only benchmark recall for this collection/model.
@@ -47,9 +49,22 @@ def main():
             f"Embedding dim mismatch for benchmark model: expected {EMBED_DIM}, got {len(test_vec[0])}"
         )
 
-    # Pull a bunch of items and sample unique titles
-    data = col.get(limit=GET_LIMIT, include=["metadatas"])
-    metas = data["metadatas"]
+    # Pull items in pages — SQLite has a ~999-variable cap so we can't ask
+    # for 50k rows in one shot on collections of this size.
+    metas = []
+    pulled = 0
+    offset = 0
+    while pulled < GET_LIMIT:
+        page_size = min(GET_PAGE, GET_LIMIT - pulled)
+        data = col.get(limit=page_size, offset=offset, include=["metadatas"])
+        page_metas = data.get("metadatas") or []
+        if not page_metas:
+            break
+        metas.extend(page_metas)
+        pulled += len(page_metas)
+        offset += len(page_metas)
+        if len(page_metas) < page_size:
+            break
 
     titles = [m.get("title","").strip() for m in metas if m and m.get("title")]
     titles = list({t for t in titles if len(t) >= 3})

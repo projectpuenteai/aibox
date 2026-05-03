@@ -439,6 +439,10 @@
         display: grid;
         gap: 16px;
       }
+      .compact-card .flow-sidebar {
+        position: static;
+        top: auto;
+      }
       .back-row {
         display: flex;
         justify-content: flex-start;
@@ -3406,11 +3410,11 @@
         function _isPortalReady(snap) {
           if (!snap || !snap.reachable || !snap.data) return false;
           var d = snap.data;
-          // Prefer portal_ok (process up + storage mounted). Fall back to
-          // readiness_ok for older backends, then liveness_ok as last resort.
-          if (d.portal_ok === true) return true;
+          // Strict gate: wait for llama to be healthy AND RAG smoke test to
+          // pass (readiness_ok). "Continue anyway" + 180 s hard timeout cover
+          // the case where warm-up stalls.
           if (d.readiness_ok === true) return true;
-          if (d.portal_ok === undefined && d.readiness_ok === undefined && d.liveness_ok === true) return true;
+          if (d.readiness_ok === undefined && d.liveness_ok === true) return true;
           return false;
         }
 

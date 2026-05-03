@@ -387,12 +387,11 @@ def _status_payload() -> Dict[str, Any]:
     readiness_ok = bool(service_ready and not startup_error and llama_ready and storage_ready)
     docker_access = snapshot.get("docker_access")
     docker_unavailable = docker_access == "unavailable"
-    # portal_ok is the weaker gate the portal loading overlay watches: the
-    # FastAPI process is up and the storage runtime mounted successfully. The
-    # site (auth, docs, wiki proxy, Kolibri proxy) is usable in this state even
-    # if llama or RAG are still warming up or degraded — those features gate
-    # themselves separately. Without this, a single failed RAG smoke test would
-    # trap users on the loading screen forever.
+    # portal_ok is a diagnostic flag: FastAPI process is up and storage runtime
+    # mounted. The portal loading overlay watches the stricter readiness_ok
+    # (llama healthy + RAG smoke test passed) so users see a meaningful loading
+    # state during warm-up. portal_ok stays in the payload for admin tooling
+    # that distinguishes "FastAPI up, llama warming" from "FastAPI down".
     portal_ok = bool(service_ready and not startup_error and storage_snapshot.get("available", True))
     status_reason = "ok"
     if startup_error:

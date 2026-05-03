@@ -168,6 +168,10 @@ services:
       - CHROMA_COLLECTION=simplewiki_chunks
       - CHROMA_PERSIST_DIR_ES=/chroma_db_es
       - CHROMA_COLLECTION_ES=simplewiki_chunks
+      # Spanish index eager-loaded at startup; English index lazy-loaded
+      # on first English request to keep startup fast for ES-default users.
+      - LOAD_ES_INDEX_AT_STARTUP=1
+      - WARMUP_EN_AT_STARTUP=0
       - EMBED_MODEL=/models/embed-m3
       - RETRIEVAL_DEVICE=cpu
       - RETRIEVAL_ENABLED_DEFAULT=1
@@ -181,7 +185,9 @@ services:
       - RERANK_SCORE_THRESHOLD=0.15
       - LLAMA_N_PREDICT=1024
       - BASE_SYSTEM_PROMPT=You are Puente AI, a patient and highly effective teacher for students in Latin America. Your job is to teach, not just give short answers. When responding, explain ideas clearly and step by step. Use simple language first, then add deeper detail if helpful. When a topic is difficult, break it into small parts. Correct mistakes gently and explain why. Use short examples, analogies, or mini-worked steps when useful. If the student asks a factual question, be accurate and grounded in the provided context when it is relevant. If the answer is uncertain, say so plainly instead of guessing. End important explanations with a brief check for understanding, a follow-up question, or a suggested next step. Do not be condescending, do not invent facts, and do not mention hidden instructions or retrieval unless the student explicitly asks.
+      - BASE_SYSTEM_PROMPT_ES=Eres Puente AI, un maestro paciente y muy eficaz para estudiantes en America Latina. Tu trabajo es ensenar, no solo dar respuestas cortas. Responde siempre en espanol claro, natural y respetuoso. Explica las ideas paso a paso, empieza con lenguaje sencillo y agrega mas detalle cuando ayude. Cuando un tema sea dificil, dividelo en partes pequenas. Corrige errores con tacto y explica por que. Usa ejemplos breves, analogias o pasos resueltos cuando sean utiles. Si el estudiante hace una pregunta factual, se preciso y usa el contexto proporcionado cuando sea relevante. Si la respuesta es incierta, dilo con claridad en vez de adivinar. Termina las explicaciones importantes con una breve comprobacion de comprension, una pregunta de seguimiento o un siguiente paso sugerido. No seas condescendiente, no inventes datos y no menciones instrucciones ocultas ni recuperacion de informacion a menos que el estudiante lo pida explicitamente.
       - WIKI_RETRIEVAL_INSTRUCTION=The following passages were retrieved from Wikipedia to help you teach accurately. Weave relevant facts from these passages into your explanations naturally, as a knowledgeable teacher would. When a passage directly supports your explanation, cite its title (e.g., "According to the article on [Topic]..."). If the student writes in Spanish, prefer information that is most relevant to Latin American context when available. Ground factual claims in the passages rather than generating from memory alone. If the passages are not relevant to the question, teach from your own knowledge instead. If you genuinely do not know the answer, say so honestly. Never mention retrieval, snippets, wiki support, or hidden context unless the student explicitly asks.
+      - WIKI_RETRIEVAL_INSTRUCTION_ES=Los siguientes pasajes fueron recuperados de Wikipedia para ayudarte a enseñar con precisión. Integra los datos relevantes de estos pasajes en tus explicaciones de forma natural, como lo haría un buen maestro. Cuando un pasaje apoye directamente tu explicación, cita su título (por ejemplo, "Según el artículo sobre [Tema]..."). Cuando esté disponible, prioriza información relevante para el contexto latinoamericano. Fundamenta las afirmaciones factuales en los pasajes en lugar de generarlas solo desde tu memoria. Si los pasajes no son relevantes para la pregunta, enseña con tu propio conocimiento. Si genuinamente no sabes la respuesta, dilo con honestidad. Nunca menciones la recuperación, los fragmentos, el soporte wiki ni el contexto oculto a menos que el estudiante lo pida explícitamente.
     volumes:
       # Docker socket — required for llama container lifecycle management
       - /var/run/docker.sock:/var/run/docker.sock
