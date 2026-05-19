@@ -13,6 +13,7 @@ import re
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
+from datetime import datetime, timezone
 from itertools import repeat
 from pathlib import Path
 
@@ -20,7 +21,10 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from tools.config.index_settings import CHUNKS_FILE, PAGES_FILE
+from tools.config.index_settings import CHUNKS_FILE, EMBED_DIM, EMBED_MODEL_NAME, PAGES_FILE
+
+CHUNK_TOOL_VERSION = "2026-05-15.1"
+CHECKPOINT_INTERVAL = int(os.getenv("CHUNK_CHECKPOINT_INTERVAL", "500"))
 
 DEFAULT_CHUNK_WORDS = int(os.getenv("CHUNK_WORDS", "900"))
 DEFAULT_CHUNK_CHARS = int(os.getenv("CHUNK_CHARS", "5600"))
@@ -29,6 +33,41 @@ DEFAULT_MIN_CHUNK_WORDS = int(os.getenv("MIN_CHUNK_WORDS", "120"))
 DEFAULT_MAX_CPU_PERCENT = 90
 DEFAULT_WORKERS = max(1, int(int(os.getenv("CHUNK_WORKERS", os.cpu_count() or 1)) * DEFAULT_MAX_CPU_PERCENT / 100))
 DEFAULT_MAP_CHUNKSIZE = int(os.getenv("CHUNK_MAP_CHUNKSIZE", "32"))
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    """Write JSON atomically: tmp file + fsync + os.replace, so an interrupted
+    write can never leave a half-written file behind."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    data = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(data)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError:
+            pass
+    os.replace(tmp, path)
+
+
+def _load_checkpoint(path: Path) -> dict | None:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"[checkpoint] failed to load {path}: {exc} — starting from scratch")
+        return None
+
+
+def _build_chunk_config(chunk_words, chunk_chars, overlap_words, min_chunk_words) -> dict:
+    return {
+        "chunk_words": int(chunk_words),
+        "chunk_chars": int(chunk_chars),
+        "overlap_words": int(overlap_words),
+        "min_chunk_words": int(min_chunk_words),
+    }
 
 def count_lines(filepath: str) -> int:
     """Fast line count without loading entire file into memory."""
@@ -387,38 +426,98 @@ def main(
     min_chunk_words,
     workers,
     map_chunksize,
+    resume: bool = True,
 ):
     set_low_priority()
 
     in_path = Path(input_file)
     out_path = Path(output_file)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = out_path.parent / ".checkpoint.json"
+    manifest_path = out_path.parent / "chunks_manifest.json"
+
+    config = _build_chunk_config(
+        max(1, int(chunk_words_limit)),
+        max(256, int(chunk_chars_limit)),
+        max(0, int(overlap_words)),
+        max(1, int(min_chunk_words)),
+    )
+
+    # ── Resume logic ────────────────────────────────────────────────────
+    skip_pages = 0
+    chunks_already_written = 0
+    short_pages_already = 0
+    resume_state = _load_checkpoint(checkpoint_path) if resume else None
+    if resume_state is not None:
+        prev_config = resume_state.get("chunk_config") or {}
+        if prev_config != config:
+            print(
+                f"[checkpoint] config changed (was {prev_config}, now {config}) — "
+                "ignoring stale checkpoint and restarting from scratch"
+            )
+            resume_state = None
+        elif resume_state.get("input_file") != str(in_path.resolve()):
+            print(
+                f"[checkpoint] input_file changed (was {resume_state.get('input_file')}) — "
+                "ignoring stale checkpoint and restarting from scratch"
+            )
+            resume_state = None
+        else:
+            skip_pages = int(resume_state.get("pages_processed", 0))
+            chunks_already_written = int(resume_state.get("chunks_written", 0))
+            short_pages_already = int(resume_state.get("short_pages", 0))
+            if skip_pages > 0:
+                print(
+                    f"[checkpoint] resuming from page offset {skip_pages:,} "
+                    f"({chunks_already_written:,} chunks already written)"
+                )
 
     print(f"[init] counting pages in {in_path} ...")
     total_pages = count_lines(str(in_path))
     print(f"[init] {total_pages:,} pages to process")
 
-    pages_seen = 0
-    chunks_written = 0
-    short_pages = 0
-    config = {
-        "chunk_words": max(1, int(chunk_words_limit)),
-        "chunk_chars": max(256, int(chunk_chars_limit)),
-        "overlap_words": max(0, int(overlap_words)),
-        "min_chunk_words": max(1, int(min_chunk_words)),
-    }
+    pages_seen = skip_pages
+    chunks_written = chunks_already_written
+    short_pages = short_pages_already
 
     print(
         "[config] "
         f"workers={workers} map_chunksize={map_chunksize} "
         f"chunk_words={config['chunk_words']} chunk_chars={config['chunk_chars']} "
-        f"overlap_words={config['overlap_words']} min_chunk_words={config['min_chunk_words']}"
+        f"overlap_words={config['overlap_words']} min_chunk_words={config['min_chunk_words']} "
+        f"resume={'on' if resume_state is not None else 'off'}"
     )
 
     t0 = time.time()
     last_report = t0
+    last_checkpoint_at = pages_seen
 
-    with open(in_path, "r", encoding="utf-8") as fin, open(out_path, "w", encoding="utf-8") as fout:
+    # Open output in append mode when resuming so we don't truncate prior work.
+    open_mode = "a" if (resume_state is not None and skip_pages > 0) else "w"
+
+    def _persist_checkpoint() -> None:
+        _atomic_write_json(
+            checkpoint_path,
+            {
+                "schema_version": 1,
+                "tool": "tools/data_prep/chunk_pages_for_rag.py",
+                "tool_version": CHUNK_TOOL_VERSION,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "input_file": str(in_path.resolve()),
+                "output_file": str(out_path.resolve()),
+                "pages_processed": int(pages_seen),
+                "chunks_written": int(chunks_written),
+                "short_pages": int(short_pages),
+                "chunk_config": config,
+            },
+        )
+
+    with open(in_path, "r", encoding="utf-8") as fin, open(out_path, open_mode, encoding="utf-8") as fout:
+        # Skip already-processed input lines when resuming.
+        for _ in range(skip_pages):
+            if fin.readline() == "":
+                break
+
         with ProcessPoolExecutor(max_workers=workers) as executor:
             for records, written, short in executor.map(process_page, fin, repeat(config), chunksize=map_chunksize):
                 pages_seen += 1
@@ -429,10 +528,21 @@ def main(
                 chunks_written += written
                 short_pages += short
 
+                if pages_seen - last_checkpoint_at >= CHECKPOINT_INTERVAL:
+                    # Flush + fsync output before persisting checkpoint so the
+                    # checkpoint never references chunks that aren't on disk.
+                    fout.flush()
+                    try:
+                        os.fsync(fout.fileno())
+                    except OSError:
+                        pass
+                    _persist_checkpoint()
+                    last_checkpoint_at = pages_seen
+
                 now = time.time()
                 if now - last_report >= 2:
                     elapsed = now - t0
-                    rate = pages_seen / max(1e-9, elapsed)
+                    rate = (pages_seen - skip_pages) / max(1e-9, elapsed)
                     remaining = max(0, total_pages - pages_seen)
                     eta_sec = remaining / rate if rate > 0 else 0
                     pct = (pages_seen / total_pages * 100) if total_pages > 0 else 0
@@ -443,13 +553,43 @@ def main(
                     )
                     last_report = now
 
+        # Final flush + checkpoint after the loop finishes
+        fout.flush()
+        try:
+            os.fsync(fout.fileno())
+        except OSError:
+            pass
+        _persist_checkpoint()
+
     dt = time.time() - t0
     print(f"[done] pages processed: {pages_seen:,}")
     print(f"[done] chunks written: {chunks_written:,}")
     print(f"[done] short-page fallbacks: {short_pages:,}")
     print(f"[done] workers used: {workers}")
-    print(f"[done] time: {dt:,.1f} sec | avg rate: {pages_seen / max(1e-9, dt):,.0f} pages/sec")
+    print(f"[done] time: {dt:,.1f} sec | avg rate: {(pages_seen - skip_pages) / max(1e-9, dt):,.0f} pages/sec")
     print(f"[done] output file: {out_path}")
+
+    # ── Manifest (SEC-19) ───────────────────────────────────────────────
+    manifest = {
+        "schema_version": 1,
+        "tool": "tools/data_prep/chunk_pages_for_rag.py",
+        "tool_version": CHUNK_TOOL_VERSION,
+        "built_at": datetime.now(timezone.utc).isoformat(),
+        "input_file": str(in_path.resolve()),
+        "output_file": str(out_path.resolve()),
+        "chunk_config": config,
+        "embedding_model": {
+            "name": str(EMBED_MODEL_NAME),
+            "dimension": int(EMBED_DIM),
+        },
+        "totals": {
+            "pages_processed": int(pages_seen),
+            "chunks_written": int(chunks_written),
+            "short_pages": int(short_pages),
+        },
+    }
+    _atomic_write_json(manifest_path, manifest)
+    print(f"[done] manifest: {manifest_path}")
 
 
 if __name__ == "__main__":
@@ -462,6 +602,11 @@ if __name__ == "__main__":
     parser.add_argument("--min-chunk-words", type=int, default=DEFAULT_MIN_CHUNK_WORDS)
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
     parser.add_argument("--map-chunksize", type=int, default=DEFAULT_MAP_CHUNKSIZE)
+    parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Ignore any existing .checkpoint.json and start chunking from scratch.",
+    )
     args = parser.parse_args()
     main(
         args.input_file,
@@ -472,6 +617,7 @@ if __name__ == "__main__":
         args.min_chunk_words,
         max(1, args.workers),
         max(1, args.map_chunksize),
+        resume=not args.no_resume,
     )
 
 

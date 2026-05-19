@@ -468,6 +468,26 @@
           return rows;
         }
 
+        function replaceChildrenSafe(parent, children) {
+          if (!parent) return;
+          while (parent.firstChild) parent.removeChild(parent.firstChild);
+          children.forEach(function (child) { parent.appendChild(child); });
+        }
+
+        function node(tag, className, textValue) {
+          var el = document.createElement(tag);
+          if (className) el.className = className;
+          if (textValue !== undefined && textValue !== null) el.textContent = String(textValue);
+          return el;
+        }
+
+        function copyChip(className, value, copyValue) {
+          var chip = node("span", className, value);
+          chip.title = "Click to copy";
+          chip.addEventListener("click", function () { copyText(copyValue || value, chip); });
+          return chip;
+        }
+
         fetch("/network-info.json?_=" + Date.now(), { cache: "no-store" })
           .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
           .then(function (d) {
@@ -503,18 +523,27 @@
             var quickGuide = buildQuickGuide(d);
             if (quickGuide.length > 0) {
               show("quickGuideCard");
-              document.getElementById("quickGuideRows").innerHTML = quickGuide.map(function (row, idx) {
-                return '<div class="guide-row"><div class="guide-badge">' + (idx + 1) + '</div><div><div class="guide-main">' + escHtml(row.main) + '</div><div class="guide-sub">' + escHtml(row.sub) + '</div></div></div>';
-              }).join("");
+              replaceChildrenSafe(document.getElementById("quickGuideRows"), quickGuide.map(function (row, idx) {
+                var item = node("div", "guide-row");
+                item.appendChild(node("div", "guide-badge", idx + 1));
+                var body = node("div");
+                body.appendChild(node("div", "guide-main", row.main));
+                body.appendChild(node("div", "guide-sub", row.sub));
+                item.appendChild(body);
+                return item;
+              }));
             }
 
             var steps = (d.diagnostics && Array.isArray(d.diagnostics.steps)) ? d.diagnostics.steps.slice() : [];
             if (steps.length > 0) {
               show("stepsCard");
               var list = document.getElementById("stepsList");
-              list.innerHTML = steps.map(function (s, i) {
-                return '<div class="step"><span class="step-num">' + (i + 1) + '</span><span class="step-text">' + escHtml(s) + '</span></div>';
-              }).join("");
+              replaceChildrenSafe(list, steps.map(function (s, i) {
+                var item = node("div", "step");
+                item.appendChild(node("span", "step-num", i + 1));
+                item.appendChild(node("span", "step-text", s));
+                return item;
+              }));
             }
 
             if (d.lan) {
@@ -522,9 +551,9 @@
               if (ips.length > 0) {
                 show("lanCard");
                 var container = document.getElementById("lanIPs");
-                container.innerHTML = ips.map(function (ip) {
-                  return '<span class="ip-chip" title="Click to copy" onclick="copyText(\'http://' + escJs(ip) + '\', this)">' + escHtml(ip) + '</span>';
-                }).join("");
+                replaceChildrenSafe(container, ips.map(function (ip) {
+                  return copyChip("ip-chip", ip, "http://" + ip);
+                }));
               }
               if (d.lan.hostname) {
                 var hn = document.getElementById("hostname");
@@ -539,9 +568,9 @@
             if (d.hostnames && Array.isArray(d.hostnames.candidates) && d.hostnames.candidates.length > 0) {
               show("hostnamesCard");
               var hostContainer = document.getElementById("hostnameCandidates");
-              hostContainer.innerHTML = d.hostnames.candidates.map(function (name) {
-                return '<span class="host-chip" title="Click to copy" onclick="copyText(\'' + escJs(name) + '\', this)">' + escHtml(name) + '</span>';
-              }).join("");
+              replaceChildrenSafe(hostContainer, d.hostnames.candidates.map(function (name) {
+                return copyChip("host-chip", name, name);
+              }));
             }
 
             show("diagnosticsCard");
@@ -563,23 +592,24 @@
             }
             if (d.preferred && d.preferred.stable_ip) facts.push(["Preferred stable IP", d.preferred.stable_ip]);
             if (d.preferred && d.preferred.hostname) facts.push(["Preferred hostname", d.preferred.hostname]);
-            document.getElementById("diagnosticFacts").innerHTML = facts.map(function (pair) {
-              return '<div class="mini-row"><div class="mini-k">' + escHtml(pair[0]) + '</div><div class="mini-v">' + escHtml(String(pair[1])) + '</div></div>';
-            }).join("");
+            replaceChildrenSafe(document.getElementById("diagnosticFacts"), facts.map(function (pair) {
+              var item = node("div", "mini-row");
+              item.appendChild(node("div", "mini-k", pair[0]));
+              item.appendChild(node("div", "mini-v", String(pair[1])));
+              return item;
+            }));
 
             if (d.diagnostics && Array.isArray(d.diagnostics.warnings) && d.diagnostics.warnings.length > 0) {
               show("warningsBox");
-              document.getElementById("warningsBox").innerHTML =
-                "<strong>Warnings</strong>" + d.diagnostics.warnings.map(function (w) {
-                  return "<div>" + escHtml(w) + "</div>";
-                }).join("");
+              var warnings = [node("strong", "", "Warnings")];
+              d.diagnostics.warnings.forEach(function (w) { warnings.push(node("div", "", w)); });
+              replaceChildrenSafe(document.getElementById("warningsBox"), warnings);
             }
             if (d.diagnostics && Array.isArray(d.diagnostics.notes) && d.diagnostics.notes.length > 0) {
               show("notesBox");
-              document.getElementById("notesBox").innerHTML =
-                "<strong>Operator notes</strong>" + d.diagnostics.notes.map(function (n) {
-                  return "<div>" + escHtml(n) + "</div>";
-                }).join("");
+              var notes = [node("strong", "", "Operator notes")];
+              d.diagnostics.notes.forEach(function (n) { notes.push(node("div", "", n)); });
+              replaceChildrenSafe(document.getElementById("notesBox"), notes);
             }
 
             if (d.generated_at) {

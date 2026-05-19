@@ -1,0 +1,15 @@
+name: aibox
+
+# Optional override for deployments that need admin start/stop/restart controls
+# for the llama container. This exposes the host Docker socket to ai-control and
+# should only be used on trusted operator-controlled machines.
+#
+# Usage:
+#   docker compose -f docker-compose.yaml -f docker-compose.runtime-control.yaml up -d
+
+services:
+  ai-control:
+    environment:
+      - RUNTIME_CONTROL_ENABLED=true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

@@ -33,7 +33,14 @@ kiwix/**
 *.log
 *.tmp
 *.bak
+logs/**
+!logs/
+!logs/.gitkeep
+tools/tests/results/**
+tools/benchmarks/results/**
 stack/Caddyfile.dir-backup-*/
+stack/Caddyfile;*
+stack/portal/network-info.json
 backend-data/_tmp_*
 
 # OS junk

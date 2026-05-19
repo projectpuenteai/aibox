@@ -5,7 +5,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $testsRoot = Join-Path $repoRoot "tools\tests"
 $timestamp = (Get-Date).ToUniversalTime().ToString("yyyyMMddTHHmmssZ")
 if (-not $ResultDir) {
@@ -14,8 +14,42 @@ if (-not $ResultDir) {
 
 $puenteDir = Join-Path $repoRoot "tools\tests\puente_e2e"
 
+function Get-DotEnvMap {
+  param([string]$Path)
+
+  $map = @{}
+  if (-not (Test-Path -LiteralPath $Path)) {
+    return $map
+  }
+  foreach ($line in Get-Content -LiteralPath $Path) {
+    $trimmed = $line.Trim()
+    if (-not $trimmed -or $trimmed.StartsWith("#")) {
+      continue
+    }
+    $idx = $trimmed.IndexOf("=")
+    if ($idx -lt 1) {
+      continue
+    }
+    $key = $trimmed.Substring(0, $idx).Trim()
+    $value = $trimmed.Substring($idx + 1).Trim()
+    if ($value.StartsWith('"') -and $value.EndsWith('"') -and $value.Length -ge 2) {
+      $value = $value.Substring(1, $value.Length - 2)
+    }
+    $map[$key] = $value
+  }
+  return $map
+}
+
 New-Item -ItemType Directory -Force -Path $ResultDir | Out-Null
 Write-Host "ResultDir: $ResultDir"
+
+$stackEnv = Get-DotEnvMap -Path (Join-Path $repoRoot "stack\.env")
+if ($stackEnv.ContainsKey("ADMIN_USERNAME")) {
+  $env:AIBOX_E2E_ADMIN_USERNAME = $stackEnv["ADMIN_USERNAME"]
+}
+if ($stackEnv.ContainsKey("ADMIN_DEFAULT_PASSWORD")) {
+  $env:AIBOX_E2E_ADMIN_PASSWORD = $stackEnv["ADMIN_DEFAULT_PASSWORD"]
+}
 
 node (Join-Path $puenteDir "live_checks.mjs") --base-url $BaseUrl --result-dir $ResultDir
 
@@ -56,6 +90,7 @@ try {
   docker cp (Join-Path $testsRoot "test_rag_comprehensive.py") "aibox-ai-control:/tmp/puente-rag/tests/test_rag_comprehensive.py"
   docker cp (Join-Path $testsRoot "test_cases.json") "aibox-ai-control:/tmp/puente-rag/tests/test_cases.json"
   docker cp (Join-Path $repoRoot "tools\ai-control\app_storage.py") "aibox-ai-control:/tmp/puente-rag/ai-control/app_storage.py"
+  docker cp (Join-Path $repoRoot "tools\ai-control\storage_migrations.py") "aibox-ai-control:/tmp/puente-rag/ai-control/storage_migrations.py"
   docker exec aibox-ai-control python /tmp/puente-rag/tests/test_rag_comprehensive.py --mode direct --save --output-dir /data/test-clones/$timestamp/rag
   $ragOutDir = Join-Path $ResultDir "rag"
   New-Item -ItemType Directory -Force -Path $ragOutDir | Out-Null

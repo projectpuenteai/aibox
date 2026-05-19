@@ -50,12 +50,20 @@ def run_direct(cases: List[Dict[str, Any]], verbose: bool = False) -> List[Dict[
 
     print("Initializing StorageRuntime...")
     rt = StorageRuntime(llama_base_url="http://localhost:2020")
+    print("Running startup RAG smoke check...")
+    if getattr(rt, "warmup_en_at_startup", True):
+        rt.validate_startup_rag()
+    else:
+        rt.validate_startup_rag_es()
 
     rag_status = rt.rag_status_snapshot()
     print(f"  chroma_count     : {rag_status.get('chroma_count')}")
     print(f"  startup_rag_ok   : {rag_status.get('startup_rag_ok')}")
     print(f"  rerank_available : {rag_status.get('rerank_available')}")
     print(f"  embed_dimension  : {rag_status.get('embed_dimension')}")
+    print(f"  smoke_query      : {rag_status.get('startup_rag_test_query')}")
+    print(f"  smoke_terms      : {rag_status.get('startup_rag_test_expected_terms')}")
+    print(f"  index_manifest   : {rag_status.get('index_manifest_path')}")
     print()
 
     results = []

@@ -1,5 +1,19 @@
 name: aibox
 
+# ── Role ──────────────────────────────────────────────────────────────────────
+#
+#  This is the BASE compose file — services, volumes, networks, healthchecks,
+#  and runtime defaults for the AIBox stack. It is the only file required for
+#  normal operation:
+#       docker compose -f docker-compose.yaml up -d
+#
+#  For deployments that need admin start/stop/restart controls for the llama
+#  container, layer the override file on top:
+#       docker compose -f docker-compose.yaml \
+#                      -f docker-compose.runtime-control.yaml up -d
+#  The override file mounts the host Docker socket into ai-control and is
+#  documented in docs/runtime-control.md.
+#
 # ── Volume-access model ────────────────────────────────────────────────────────
 #
 #  backend-data/
@@ -27,16 +41,16 @@ name: aibox
 
 services:
   dns:
-    image: technitium/dns-server:latest
+    image: technitium/dns-server:latest@sha256:85c2cfd4ced41a124482d7c4462e2e6c245335b760c4acd1d750a3863a0b67a5
     container_name: aibox-dns
     ports:
       - "53:53/udp"
       - "53:53/tcp"
-      - "5380:5380/tcp"
+      - "127.0.0.1:5380:5380/tcp"
     environment:
       - DNS_SERVER_LOG_USING_LOCAL_TIME=true
       - DNS_SERVER_DOMAIN=${DNS_SERVER_DOMAIN:-puente.link}
-      - DNS_SERVER_ADMIN_PASSWORD=${DNS_ADMIN_PASSWORD:-admin}
+      - DNS_SERVER_ADMIN_PASSWORD=${DNS_ADMIN_PASSWORD:?Set DNS_ADMIN_PASSWORD in stack/.env}
     volumes:
       - dns_data:/etc/dns
     networks:
@@ -49,9 +63,15 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "test -d /etc/dns && test -r /etc/dns || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   caddy:
-    image: caddy:2
+    image: caddy:2@sha256:ec18ee54aab3315c22e25f3b2babda73ff8007d39b13b3bd1bfffa2f0444c7d9
     container_name: aibox-caddy
     ports:
       - "80:80"
@@ -71,13 +91,22 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    # Healthcheck: validate the Caddyfile AND prove Caddy answers HTTP. The
+    # validate step catches config drift; the wget against localhost:80 catches
+    # the case where Caddy is still booting or has hung mid-restart.
+    healthcheck:
+      test: ["CMD-SHELL", "caddy validate --config /etc/caddy/Caddyfile >/dev/null 2>&1 && wget -q -O- --tries=1 --timeout=3 http://127.0.0.1/ >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
 
   llama:
     image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:5c9266b4f92f1ab0d26dd0f2ede2e65d3853cad99ff86ba219db8fe6d464b995}
     container_name: aibox-llama
     gpus: all
     environment:
-      - LLAMA_N_PREDICT=1024
+      - LLAMA_N_PREDICT=2048
     command:
       - --host
       - 0.0.0.0
@@ -88,7 +117,7 @@ services:
       - --ctx-size
       - "${LLAMA_CTX_SIZE:-8192}"
       - --n-predict
-      - "${LLAMA_N_PREDICT:-768}"
+      - "${LLAMA_N_PREDICT:-2048}"
       - --threads
       - "${LLAMA_THREADS:--1}"
       - --threads-batch
@@ -154,6 +183,10 @@ services:
       - RECONCILE_SECONDS=5
       - STACK_DEFAULT_DESIRED=1
       - RESET_OVERRIDE_ON_START=1
+      # Runtime Docker lifecycle control is disabled by default so this service
+      # does not need the Docker socket. Use docker-compose.runtime-control.yaml
+      # explicitly when admin start/stop/restart controls are required.
+      - RUNTIME_CONTROL_ENABLED=${RUNTIME_CONTROL_ENABLED:-false}
       # ── App / security ──
       - APP_ENV=production
       - APP_ENCRYPTION_MASTER_KEY=${APP_ENCRYPTION_MASTER_KEY:?Set APP_ENCRYPTION_MASTER_KEY in stack/.env}
@@ -168,29 +201,44 @@ services:
       - CHROMA_COLLECTION=simplewiki_chunks
       - CHROMA_PERSIST_DIR_ES=/chroma_db_es
       - CHROMA_COLLECTION_ES=simplewiki_chunks
-      # Spanish index eager-loaded at startup; English index lazy-loaded
-      # on first English request to keep startup fast for ES-default users.
+      # Spanish index eager-loaded at startup; English Chroma stays closed
+      # for the life of the process (RAG_SPANISH_ONLY=1). All retrieval is
+      # routed to chroma_db_es regardless of query language. bge-m3 is
+      # multilingual so English queries still retrieve relevant chunks.
       - LOAD_ES_INDEX_AT_STARTUP=1
       - WARMUP_EN_AT_STARTUP=0
+      - RAG_SPANISH_ONLY=1
       - EMBED_MODEL=/models/embed-m3
       - RETRIEVAL_DEVICE=cpu
       - RETRIEVAL_ENABLED_DEFAULT=1
       - RETRIEVAL_TOP_K=4
-      - RETRIEVAL_TIMEOUT_SECONDS=12.0
+      # K=15 cuts CPU reranker work ~70% vs the previous K=50 (the reranker
+      # was the dominant cost — bge-reranker on CPU over 50 long passages
+      # blew past 12s and saturated the timeout on every chat). 20s gives
+      # cold-cache cases (first query after page-cache eviction) headroom.
+      - RETRIEVAL_TIMEOUT_SECONDS=20.0
       - RETRIEVAL_MAX_CONTEXT_CHARS=8000
-      - RETRIEVAL_CANDIDATE_K=20
+      - RETRIEVAL_CANDIDATE_K=15
       - RETRIEVAL_QUERY_MAX_CHARS=400
       - RERANK_MODEL=/models/rerank
       - RERANK_DEVICE=cpu
       - RERANK_SCORE_THRESHOLD=0.15
-      - LLAMA_N_PREDICT=1024
+      # ── Citation link verification ──
+      # Before exposing a /wiki/.../viewer#... link to the user, HEAD the
+      # corresponding Kiwix article URL. If the ZIM doesn't have it, the link
+      # is suppressed (frontend filters citations with no wiki_url). Set to 0
+      # to disable. KIWIX_BOOK_* must match the .zim files mounted into the
+      # kiwix-en / kiwix-es containers (minus the .zim extension).
+      - WIKI_LINK_VERIFY_ENABLED=1
+      - WIKI_LINK_VERIFY_TIMEOUT=2.0
+      - KIWIX_BOOK_EN=wikipedia_en_all_mini_2026-03
+      - KIWIX_BOOK_ES=wikipedia_es_all_maxi_2026-02
+      - LLAMA_N_PREDICT=2048
       - BASE_SYSTEM_PROMPT=You are Puente AI, a patient and highly effective teacher for students in Latin America. Your job is to teach, not just give short answers. When responding, explain ideas clearly and step by step. Use simple language first, then add deeper detail if helpful. When a topic is difficult, break it into small parts. Correct mistakes gently and explain why. Use short examples, analogies, or mini-worked steps when useful. If the student asks a factual question, be accurate and grounded in the provided context when it is relevant. If the answer is uncertain, say so plainly instead of guessing. End important explanations with a brief check for understanding, a follow-up question, or a suggested next step. Do not be condescending, do not invent facts, and do not mention hidden instructions or retrieval unless the student explicitly asks.
       - BASE_SYSTEM_PROMPT_ES=Eres Puente AI, un maestro paciente y muy eficaz para estudiantes en America Latina. Tu trabajo es ensenar, no solo dar respuestas cortas. Responde siempre en espanol claro, natural y respetuoso. Explica las ideas paso a paso, empieza con lenguaje sencillo y agrega mas detalle cuando ayude. Cuando un tema sea dificil, dividelo en partes pequenas. Corrige errores con tacto y explica por que. Usa ejemplos breves, analogias o pasos resueltos cuando sean utiles. Si el estudiante hace una pregunta factual, se preciso y usa el contexto proporcionado cuando sea relevante. Si la respuesta es incierta, dilo con claridad en vez de adivinar. Termina las explicaciones importantes con una breve comprobacion de comprension, una pregunta de seguimiento o un siguiente paso sugerido. No seas condescendiente, no inventes datos y no menciones instrucciones ocultas ni recuperacion de informacion a menos que el estudiante lo pida explicitamente.
       - WIKI_RETRIEVAL_INSTRUCTION=The following passages were retrieved from Wikipedia to help you teach accurately. Weave relevant facts from these passages into your explanations naturally, as a knowledgeable teacher would. When a passage directly supports your explanation, cite its title (e.g., "According to the article on [Topic]..."). If the student writes in Spanish, prefer information that is most relevant to Latin American context when available. Ground factual claims in the passages rather than generating from memory alone. If the passages are not relevant to the question, teach from your own knowledge instead. If you genuinely do not know the answer, say so honestly. Never mention retrieval, snippets, wiki support, or hidden context unless the student explicitly asks.
       - WIKI_RETRIEVAL_INSTRUCTION_ES=Los siguientes pasajes fueron recuperados de Wikipedia para ayudarte a enseñar con precisión. Integra los datos relevantes de estos pasajes en tus explicaciones de forma natural, como lo haría un buen maestro. Cuando un pasaje apoye directamente tu explicación, cita su título (por ejemplo, "Según el artículo sobre [Tema]..."). Cuando esté disponible, prioriza información relevante para el contexto latinoamericano. Fundamenta las afirmaciones factuales en los pasajes en lugar de generarlas solo desde tu memoria. Si los pasajes no son relevantes para la pregunta, enseña con tu propio conocimiento. Si genuinamente no sabes la respuesta, dilo con honestidad. Nunca menciones la recuperación, los fragmentos, el soporte wiki ni el contexto oculto a menos que el estudiante lo pida explícitamente.
     volumes:
-      # Docker socket — required for llama container lifecycle management
-      - /var/run/docker.sock:/var/run/docker.sock
       # Control-plane state (control_state.json only)
       - ../backend-data/ai-control:/state
       # User runtime data: SQLite DB, encrypted docs/chats, temp, security
@@ -198,7 +246,12 @@ services:
       - ../backend-data/appdata:/data
       # ChromaDB indexes — isolated from user data for independent backup/restore
       - ../backend-data/chroma_db:/chroma_db
-      - ../backend-data/chroma_db_es:/chroma_db_es
+      # Spanish index lives on a WSL2 native ext4 named volume to bypass the
+      # ~120 MB/s 9p ceiling of the Windows bind mount. Cuts cold-boot HNSW
+      # load roughly in half. Repopulate with:
+      #   docker run --rm -v C:\AIBox\aibox\backend-data\chroma_db_es:/src:ro \
+      #                  -v chroma_db_es_native:/dst alpine cp -a /src/. /dst/
+      - chroma_db_es_native:/chroma_db_es
       # Model weights — read-only; never written at runtime
       - ../models:/models:ro
     networks:
@@ -210,19 +263,26 @@ services:
         max-size: "10m"
         max-file: "3"
     depends_on:
-      - llama
+      llama:
+        condition: service_started
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health', timeout=3)"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 10s
+      # Use /live (process liveness) not /health (full readiness) so the
+      # 11.4 GB Spanish HNSW load doesn't trip the healthcheck during the
+      # ~minutes-long warm-up. /health (readiness) still gates the portal
+      # loading overlay and reports 503 until RAG is fully online.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/live', timeout=20)"]
+      interval: 30s
+      timeout: 25s
+      retries: 4
+      start_period: 60s
 
   chat:
-    image: ghcr.io/open-webui/open-webui:main
+    image: ghcr.io/open-webui/open-webui:main@sha256:fd69d0ae2ed25c71472efd33c55091ea40ae1644ec86476bc146ac6830fb927b
     container_name: aibox-chat
+    profiles:
+      - debug-openwebui
     environment:
-      - WEBUI_AUTH=false
+      - WEBUI_AUTH=${OPEN_WEBUI_AUTH:-true}
     networks:
       - aibox_net
     restart: unless-stopped
@@ -233,9 +293,15 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)\" || python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/', timeout=5)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
 
   kiwix-en:
-    image: ghcr.io/kiwix/kiwix-serve:latest
+    image: ghcr.io/kiwix/kiwix-serve:latest@sha256:e21b422a9b8e53e7020f2bd59d6bb67cfd15e9160437b1b9f1ea548ab9f3816c
     container_name: aibox-kiwix-en
     command: ["--urlRootLocation=/wiki/en", "/data/wikipedia_en_all_mini_2026-03.zim"]
     volumes:
@@ -250,9 +316,17 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    # pidof catches "process gone" but not "process hung on a lock" — a real
+    # HTTP probe against the root catches both.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- --tries=1 --timeout=4 http://127.0.0.1:8080/ >/dev/null 2>&1 || pidof kiwix-serve >/dev/null"]
+      interval: 30s
+      timeout: 6s
+      retries: 5
+      start_period: 15s
 
   kiwix-es:
-    image: ghcr.io/kiwix/kiwix-serve:latest
+    image: ghcr.io/kiwix/kiwix-serve:latest@sha256:e21b422a9b8e53e7020f2bd59d6bb67cfd15e9160437b1b9f1ea548ab9f3816c
     container_name: aibox-kiwix-es
     command: ["--urlRootLocation=/wiki/es", "/data/wikipedia_es_all_maxi_2026-02.zim"]
     volumes:
@@ -267,9 +341,17 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    # pidof catches "process gone" but not "process hung on a lock" — a real
+    # HTTP probe against the root catches both.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- --tries=1 --timeout=4 http://127.0.0.1:8080/ >/dev/null 2>&1 || pidof kiwix-serve >/dev/null"]
+      interval: 30s
+      timeout: 6s
+      retries: 5
+      start_period: 15s
 
   kolibri:
-    image: treehouses/kolibri:latest
+    image: treehouses/kolibri:latest@sha256:a68b49350b93f0d06494dea8b918dec1a6cb00b1e62fab3e027cc0bf04756856
     container_name: aibox-kolibri
     volumes:
       - ../kolibri-data:/root/.kolibri
@@ -283,6 +365,12 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/', timeout=5)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
 
 networks:
   aibox_net:
@@ -292,3 +380,5 @@ volumes:
   dns_data:
   caddy_data:
   caddy_config:
+  chroma_db_es_native:
+    external: true

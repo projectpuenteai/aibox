@@ -12,6 +12,11 @@ async function run() {
   await ensureDir(screenshotDir);
 
   const context = JSON.parse(await fs.readFile(path.join(resultDir, "test-context.json"), "utf8"));
+  const adminUsername = process.env.AIBOX_E2E_ADMIN_USERNAME || context.admin_username;
+  const adminPassword = process.env.AIBOX_E2E_ADMIN_PASSWORD;
+  if (!adminUsername || !adminPassword) {
+    throw new Error("Admin browser credentials must be supplied through AIBOX_E2E_ADMIN_USERNAME and AIBOX_E2E_ADMIN_PASSWORD.");
+  }
   const browser = await chromium.launch({ headless: true });
   const results = [];
 
@@ -121,7 +126,7 @@ async function run() {
   });
 
   await capture("admin-console", "Admin console rendered runtime, accounts, storage, and analytics panels.", async page => {
-    await login(page, context.admin_username, context.admin_password);
+    await login(page, adminUsername, adminPassword);
     await page.locator("#portalSection").waitFor();
     await page.locator("#adminToggleBtn").click();
     await page.locator("#adminSection").waitFor();

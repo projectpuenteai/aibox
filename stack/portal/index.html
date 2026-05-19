@@ -1230,6 +1230,14 @@
       }
       .loading-continue:hover { background: #eaf2fb; }
     </style>
+    <script>
+      (function() {
+        try {
+          var t = localStorage.getItem("puente-theme");
+          if (t === "dark") document.documentElement.setAttribute("data-theme", "dark");
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="loading-overlay">
@@ -1564,7 +1572,7 @@
           usernameLabel: "Username",
           usernamePlaceholder: "Type your username",
           passwordStep: "2. Create a password",
-          passwordBody: "Choose a password you can remember. It must be at least 4 characters.",
+          passwordBody: "Choose a password you can remember. It must be at least 8 characters.",
           passwordLabel: "Password",
           passwordPlaceholder: "Type your password",
           rememberStep: "3. Remember your password",
@@ -1579,7 +1587,7 @@
           createAccountButton: "Create My Account",
           loginButton: "Log In",
           guestButton: "Continue as Guest",
-          passwordTooShort: "Password must be at least 4 characters.",
+          passwordTooShort: "Password must be at least 8 characters.",
           passwordMismatch: "The two passwords must match.",
           usernameRequired: "Please enter a username.",
           passwordRequired: "Please enter a password.",
@@ -1680,7 +1688,7 @@
           usernameLabel: "Nombre de usuario",
           usernamePlaceholder: "Escribe tu nombre de usuario",
           passwordStep: "2. Crea una contraseña",
-          passwordBody: "Elige una contraseña que puedas recordar. Debe tener al menos 4 caracteres.",
+          passwordBody: "Elige una contraseña que puedas recordar. Debe tener al menos 8 caracteres.",
           passwordLabel: "Contraseña",
           passwordPlaceholder: "Escribe tu contraseña",
           rememberStep: "3. Recuerda tu contraseña",
@@ -1695,7 +1703,7 @@
           createAccountButton: "Crear Mi Cuenta",
           loginButton: "Iniciar Sesión",
           guestButton: "Continuar como Invitado",
-          passwordTooShort: "La contraseña debe tener al menos 4 caracteres.",
+          passwordTooShort: "La contraseña debe tener al menos 8 caracteres.",
           passwordMismatch: "Las dos contraseñas deben coincidir.",
           usernameRequired: "Por favor escribe un nombre de usuario.",
           passwordRequired: "Por favor escribe una contraseña.",
@@ -2840,7 +2848,7 @@
         if (!password) {
           ui.passwordInlineError.textContent = t.passwordRequired;
           valid = false;
-        } else if (password.length < 4) {
+        } else if (password.length < 8) {
           ui.passwordInlineError.textContent = t.passwordTooShort;
           valid = false;
         }
@@ -2948,7 +2956,7 @@
       async function loadAiStatus() {
         const t = getCopy();
         try {
-          const response = await fetch(AI_ADMIN_STATUS_API, { method: "GET" });
+          const response = await fetch(AI_ADMIN_STATUS_API, { method: "GET", credentials: "same-origin" });
           if (!response.ok) throw new Error("status failed");
           state.aiStatus = await response.json();
         } catch {
@@ -2991,7 +2999,8 @@
             const response = await fetch(AI_ADMIN_API, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ enabled })
+              body: JSON.stringify({ enabled }),
+              credentials: "same-origin"
             });
             if (!response.ok) throw new Error("toggle failed");
             await loadAiStatus();
@@ -2999,7 +3008,8 @@
           }
           const response = await fetch(`${AI_ADMIN_RUNTIME_API}/${action}`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" }
+            headers: { "Content-Type": "application/json" },
+            credentials: "same-origin"
           });
           if (!response.ok) throw new Error("runtime failed");
           await loadAiStatus();
@@ -3036,7 +3046,7 @@
         const t = getCopy();
         const view = getAccountUi(uid);
         if (action === "reset") {
-          if ((view.resetPassword || "").length < 4) {
+          if ((view.resetPassword || "").length < 8) {
             alert(t.passwordTooShort);
             return;
           }
@@ -3123,6 +3133,7 @@
         const t = getCopy();
         if (!validateSignupForm()) return;
         ui.signupError.textContent = "";
+        ui.createAccountBtn.disabled = true;
         try {
           await api("/auth/signup", "POST", {
             username: ui.signupUser.value,
@@ -3139,6 +3150,8 @@
           await refreshSession();
         } catch (error) {
           ui.signupError.textContent = error instanceof Error ? error.message : t.signupFailed;
+        } finally {
+          ui.createAccountBtn.disabled = false;
         }
       });
 
@@ -3146,6 +3159,7 @@
         event.preventDefault();
         const t = getCopy();
         ui.loginError.textContent = "";
+        ui.loginSubmitBtn.disabled = true;
         try {
           await api("/auth/login", "POST", { username: ui.loginUser.value, password: ui.loginPass.value });
           ui.loginUser.value = "";
@@ -3153,6 +3167,8 @@
           await refreshSession();
         } catch (error) {
           ui.loginError.textContent = error instanceof Error ? error.message : t.loginFailed;
+        } finally {
+          ui.loginSubmitBtn.disabled = false;
         }
       });
 

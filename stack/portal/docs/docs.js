@@ -3,7 +3,7 @@ const STORAGE_KEYS = {
   language: "puente-language",
   theme: "puente-theme"
 };
-const md = typeof window.markdownit === "function" ? window.markdownit({ html: true, linkify: true, breaks: true }) : null;
+const md = typeof window.markdownit === "function" ? window.markdownit({ html: false, linkify: true, breaks: true }) : null;
 
 const copy = {
   en: {
@@ -91,7 +91,8 @@ const copy = {
     failedInitDocs: "Failed to initialize docs",
     pasteCooldown: "Please wait 5 seconds between pastes.",
     pasteDuplicate: "You've pasted this content too many times.",
-    pasteTooLong: "{count} / 7500 characters — paste is too long."
+    pasteTooLong: "{count} / 7500 characters — paste is too long.",
+    editorUnavailableReload: "Editor failed to initialize — reload the page to continue editing. Your saved work is safe."
   },
   es: {
     appTitle: "Project Puente Docs",
@@ -178,7 +179,8 @@ const copy = {
     failedInitDocs: "No se pudo iniciar Docs",
     pasteCooldown: "Por favor espera 5 segundos entre pegadas.",
     pasteDuplicate: "Has pegado este contenido demasiadas veces.",
-    pasteTooLong: "{count} / 7500 caracteres — el texto pegado es demasiado largo."
+    pasteTooLong: "{count} / 7500 caracteres — el texto pegado es demasiado largo.",
+    editorUnavailableReload: "El editor no se pudo iniciar — recarga la pagina para seguir editando. Tu trabajo guardado esta a salvo."
   },
 };
 
@@ -226,6 +228,8 @@ const ui = {
   statusText: document.getElementById("statusText"),
   warningText: document.getElementById("warningText")
 };
+
+const dompurifyAvailable = !!(window.DOMPurify && typeof window.DOMPurify.sanitize === "function");
 
 const state = {
   language: "en",
@@ -404,7 +408,10 @@ function sanitizeHtml(html) {
       ALLOWED_ATTR: ["checked", "class", "data-type", "face", "href", "rel", "size", "style", "target", "type"]
     });
   }
-  return html;
+  // DOMPurify unavailable — strip all tags rather than pass raw HTML
+  const tmp = document.createElement("div");
+  tmp.textContent = html;
+  return tmp.innerHTML;
 }
 
 function storedContentToHtml(content) {
@@ -620,7 +627,7 @@ function renderEditor() {
     ui.editorTitleInput.value = doc.title || t.untitledDocument;
   }
 
-  const readOnly = !!doc.is_deleted;
+  const readOnly = !!doc.is_deleted || !dompurifyAvailable;
   ui.editorView.classList.toggle("readonly", readOnly);
   ui.editorTitleInput.disabled = readOnly;
   ui.editorSurface.setAttribute("contenteditable", readOnly ? "false" : "true");
@@ -653,6 +660,9 @@ function renderAll() {
 }
 
 function markDirty() {
+  if (!dompurifyAvailable) {
+    return;
+  }
   const doc = getCurrentDoc();
   if (!doc || doc.is_deleted) {
     return;
@@ -666,6 +676,9 @@ function markDirty() {
 }
 
 async function saveCurrentDocument() {
+  if (!dompurifyAvailable) {
+    return true;
+  }
   const t = getCopy();
   const doc = getCurrentDoc();
   if (!doc || doc.is_deleted || state.saving) {
@@ -1268,7 +1281,11 @@ async function init() {
     await loadDocs();
     renderStaticText();
     renderAll();
-    setStatus(getCopy().ready, "ok");
+    if (!dompurifyAvailable) {
+      setStatus(getCopy().editorUnavailableReload, "err");
+    } else {
+      setStatus(getCopy().ready, "ok");
+    }
   } catch (error) {
     if (error.status === 401) {
       window.location.href = "/";

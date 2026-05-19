@@ -67,7 +67,7 @@ def _ensure_user(username: str, language: str) -> requests.Session:
         json={"username": username, "password": TEST_PASS, "preferred_language": language},
         timeout=10,
     )
-    if r.status_code not in (200, 409):
+    if r.status_code not in (200, 409, 429):
         raise RuntimeError(f"signup({username}) failed: {r.status_code} {r.text}")
     r = s.post(
         f"{BASE}/v1/app/auth/login",

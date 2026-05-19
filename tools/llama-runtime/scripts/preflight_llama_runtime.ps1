@@ -1,7 +1,8 @@
 ﻿# This script validates Docker access, image availability, GPU support, and model-file presence before the stack starts.
 param(
   [string]$ComposeFile = "",
-  [switch]$SkipGpuProbe
+  [switch]$SkipGpuProbe,
+  [switch]$OnlineImageCheck
 )
 
 $ErrorActionPreference = "Stop"
@@ -88,6 +89,101 @@ function Fail {
   exit 1
 }
 
+function Test-RequiredSetting {
+  param(
+    [string]$Name,
+    [hashtable]$PrimaryMap,
+    [hashtable]$SecondaryMap
+  )
+
+  $setting = Resolve-Setting -Name $Name -PrimaryMap $PrimaryMap -SecondaryMap $SecondaryMap -DefaultValue ""
+  if ([string]::IsNullOrWhiteSpace([string]$setting.Value)) {
+    Fail "missing_required_env" "$Name is required. Set it in stack/.env before startup."
+  }
+  return $setting
+}
+
+function Test-RequiredFile {
+  param(
+    [string]$Code,
+    [string]$Path,
+    [string]$Description
+  )
+
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    Fail $Code "$Description not found: $Path"
+  }
+  Write-Host "[info] Found $Description`: $Path"
+}
+
+function Test-RequiredDirectory {
+  param(
+    [string]$Code,
+    [string]$Path,
+    [string]$Description,
+    [switch]$RequireContent
+  )
+
+  if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+    Fail $Code "$Description directory not found: $Path"
+  }
+
+  if ($RequireContent) {
+    $first = Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $first) {
+      Fail $Code "$Description directory is empty: $Path"
+    }
+  }
+
+  Write-Host "[info] Found $Description`: $Path"
+}
+
+function Test-DockerVolumeDirectory {
+  param(
+    [string]$VolumeName,
+    [string]$Description,
+    [string]$RequiredFile
+  )
+
+  $inspect = Invoke-Docker -Args @("volume", "inspect", $VolumeName)
+  if ($inspect.ExitCode -ne 0) {
+    Fail "volume_missing" "$Description Docker volume '$VolumeName' was not found. Populate it before startup or switch compose back to a bind mount."
+  }
+
+  if (-not (Test-LocalDockerImage -ImageRef $script:VolumeProbeImage)) {
+    Fail "volume_probe_image_missing" "Volume probe image '$script:VolumeProbeImage' is not present locally. Pull/start the stack once while online, then retry preflight."
+  }
+  $probeScript = "test -d /data && test -n `"$(find /data -mindepth 1 -maxdepth 1 -print -quit)`""
+  if (-not [string]::IsNullOrWhiteSpace($RequiredFile)) {
+    $probeScript = "$probeScript && test -f /data/$RequiredFile"
+  }
+  $probe = Invoke-Docker -Args @("run", "--rm", "-v", "${VolumeName}:/data:ro", $script:VolumeProbeImage, "sh", "-c", $probeScript)
+  if ($probe.ExitCode -ne 0) {
+    $requiredText = if ($RequiredFile) { " containing $RequiredFile" } else { "" }
+    Fail "volume_empty" "$Description Docker volume '$VolumeName' is missing expected content$requiredText."
+  }
+  Write-Host "[info] Found $Description Docker volume: $VolumeName"
+}
+
+function Test-LocalDockerImage {
+  param([string]$ImageRef)
+
+  $inspect = Invoke-Docker -Args @("image", "inspect", $ImageRef)
+  if ($inspect.ExitCode -eq 0) {
+    return $true
+  }
+
+  if ($ImageRef -match "@sha256:([a-fA-F0-9]{64})$") {
+    $digest = $Matches[1].ToLowerInvariant()
+    $all = Invoke-Docker -Args @("image", "ls", "--digests", "--no-trunc", "--format", "{{.Repository}}:{{.Tag}} {{.Digest}}")
+    if ($all.ExitCode -eq 0 -and $all.Output.ToLowerInvariant().Contains("sha256:$digest")) {
+      return $true
+    }
+  }
+
+  return $false
+}
+
 function Classify-DockerAccessError {
   param([string]$Output)
 
@@ -139,9 +235,29 @@ $repoEnvPath = Join-Path $aiboxDir ".env"
 $stackEnv = Get-DotEnvMap -Path $stackEnvPath
 $repoEnv = Get-DotEnvMap -Path $repoEnvPath
 
+$requiredSettings = @(
+  "APP_ENCRYPTION_MASTER_KEY",
+  "ADMIN_USERNAME",
+  "ADMIN_DEFAULT_PASSWORD",
+  "SESSION_TOKEN_PEPPER",
+  "DNS_ADMIN_PASSWORD"
+)
+
+foreach ($requiredName in $requiredSettings) {
+  $null = Test-RequiredSetting -Name $requiredName -PrimaryMap $stackEnv -SecondaryMap $repoEnv
+}
+Write-Host "[info] Required stack secrets are configured."
+
 $llamaImage = Resolve-Setting -Name "LLAMA_IMAGE" -PrimaryMap $stackEnv -SecondaryMap $repoEnv -DefaultValue "ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:5c9266b4f92f1ab0d26dd0f2ede2e65d3853cad99ff86ba219db8fe6d464b995"
 $modelFile = Resolve-Setting -Name "LLAMA_MODEL_FILE" -PrimaryMap $stackEnv -SecondaryMap $repoEnv -DefaultValue "qwen2.5-7b-instruct-q4_0-00001-of-00002.gguf"
 $imageMode = Resolve-Setting -Name "LLAMA_IMAGE_MODE" -PrimaryMap $stackEnv -SecondaryMap $repoEnv -DefaultValue "prebuilt"
+$volumeProbeImage = Resolve-Setting -Name "VOLUME_PROBE_IMAGE" -PrimaryMap $stackEnv -SecondaryMap $repoEnv -DefaultValue "caddy:2@sha256:ec18ee54aab3315c22e25f3b2babda73ff8007d39b13b3bd1bfffa2f0444c7d9"
+$script:VolumeProbeImage = $volumeProbeImage.Value
+$embedModel = Resolve-Setting -Name "EMBED_MODEL" -PrimaryMap $stackEnv -SecondaryMap $repoEnv -DefaultValue "/models/embed-m3"
+$rerankModel = Resolve-Setting -Name "RERANK_MODEL" -PrimaryMap $stackEnv -SecondaryMap $repoEnv -DefaultValue "/models/rerank"
+$retrievalEnabled = Resolve-Setting -Name "RETRIEVAL_ENABLED_DEFAULT" -PrimaryMap $stackEnv -SecondaryMap $repoEnv -DefaultValue "1"
+$chromaCollection = Resolve-Setting -Name "CHROMA_COLLECTION" -PrimaryMap $stackEnv -SecondaryMap $repoEnv -DefaultValue "simplewiki_chunks"
+$chromaCollectionEs = Resolve-Setting -Name "CHROMA_COLLECTION_ES" -PrimaryMap $stackEnv -SecondaryMap $repoEnv -DefaultValue "simplewiki_chunks"
 
 $mode = $imageMode.Value.ToLowerInvariant()
 if ($mode -notin @("prebuilt", "local", "auto")) {
@@ -159,7 +275,10 @@ if ($mode -eq "auto") {
 Write-Host "[info] Compose file: $ComposeFile"
 Write-Host "[info] LLAMA_IMAGE = $($llamaImage.Value) [$($llamaImage.Source)]"
 Write-Host "[info] LLAMA_IMAGE_MODE = $mode [$($imageMode.Source)]"
+Write-Host "[info] VOLUME_PROBE_IMAGE = $script:VolumeProbeImage [$($volumeProbeImage.Source)]"
 Write-Host "[info] LLAMA_MODEL_FILE = $($modelFile.Value) [$($modelFile.Source)]"
+Write-Host "[info] CHROMA_COLLECTION = $($chromaCollection.Value) [$($chromaCollection.Source)]"
+Write-Host "[info] CHROMA_COLLECTION_ES = $($chromaCollectionEs.Value) [$($chromaCollectionEs.Source)]"
 
 $dockerInfo = Invoke-Docker -Args @("info")
 if ($dockerInfo.Output -match "Error loading config file: .*Access is denied") {
@@ -185,21 +304,27 @@ if ($mode -eq "local") {
   }
   Write-Host "[info] Local image present: $($llamaImage.Value)"
 } else {
-  $manifest = Invoke-Docker -Args @("manifest", "inspect", $llamaImage.Value)
-  if ($manifest.ExitCode -ne 0) {
-    $code = Classify-RegistryError -Output $manifest.Output
-    if ($code -eq "registry_auth") {
-      Fail $code "Registry auth denied for '$($llamaImage.Value)'. Run docker login or use a public valid image."
+  if (Test-LocalDockerImage -ImageRef $llamaImage.Value) {
+    Write-Host "[info] Prebuilt image present locally: $($llamaImage.Value)"
+  } elseif ($OnlineImageCheck) {
+    $manifest = Invoke-Docker -Args @("manifest", "inspect", $llamaImage.Value)
+    if ($manifest.ExitCode -ne 0) {
+      $code = Classify-RegistryError -Output $manifest.Output
+      if ($code -eq "registry_auth") {
+        Fail $code "Registry auth denied for '$($llamaImage.Value)'. Run docker login or use a public valid image."
+      }
+      if ($code -eq "image_not_found") {
+        Fail $code "Image/tag not found: '$($llamaImage.Value)'."
+      }
+      if ($code -eq "registry_network") {
+        Fail $code "Registry network failure while checking '$($llamaImage.Value)'."
+      }
+      Fail $code "Unable to verify pullability for '$($llamaImage.Value)': $($manifest.Output)"
     }
-    if ($code -eq "image_not_found") {
-      Fail $code "Image/tag not found: '$($llamaImage.Value)'."
-    }
-    if ($code -eq "registry_network") {
-      Fail $code "Registry network failure while checking '$($llamaImage.Value)'."
-    }
-    Fail $code "Unable to verify pullability for '$($llamaImage.Value)': $($manifest.Output)"
+    Write-Host "[info] Prebuilt image pullability verified online: $($llamaImage.Value)"
+  } else {
+    Fail "image_missing" "Image '$($llamaImage.Value)' is not present locally. Pull it while online, or rerun with -OnlineImageCheck to verify registry availability."
   }
-  Write-Host "[info] Prebuilt image pullability verified: $($llamaImage.Value)"
 }
 
 if (-not $SkipGpuProbe) {
@@ -235,6 +360,39 @@ if (-not (Test-Path $modelPath)) {
     $available = (Get-ChildItem -Path $modelRoot -Filter *.gguf -File | Select-Object -ExpandProperty Name) -join ", "
   }
   Fail "model_missing" "Model file not found: $modelPath. Available: $available"
+}
+
+$embedRel = ([string]$embedModel.Value).TrimStart("/").Replace("/", "\")
+$rerankRel = ([string]$rerankModel.Value).TrimStart("/").Replace("/", "\")
+Test-RequiredDirectory -Code "embed_model_missing" -Path (Join-Path $aiboxDir $embedRel) -Description "embedding model" -RequireContent
+Test-RequiredDirectory -Code "rerank_model_missing" -Path (Join-Path $aiboxDir $rerankRel) -Description "rerank model" -RequireContent
+
+$kiwixDir = Join-Path $aiboxDir "kiwix"
+Test-RequiredFile -Code "kiwix_en_missing" -Path (Join-Path $kiwixDir "wikipedia_en_all_mini_2026-03.zim") -Description "English Kiwix ZIM"
+Test-RequiredFile -Code "kiwix_es_missing" -Path (Join-Path $kiwixDir "wikipedia_es_all_maxi_2026-02.zim") -Description "Spanish Kiwix ZIM"
+
+$kolibriDir = Join-Path $aiboxDir "kolibri-data"
+Test-RequiredDirectory -Code "kolibri_data_missing" -Path $kolibriDir -Description "Kolibri data"
+
+$backendDataDir = Join-Path $aiboxDir "backend-data"
+$appdataDir = Join-Path $backendDataDir "appdata"
+Test-RequiredDirectory -Code "appdata_missing" -Path $appdataDir -Description "appdata mount"
+
+$retrievalOn = ([string]$retrievalEnabled.Value).Trim().ToLowerInvariant() -in @("1", "true", "yes", "on")
+if ($retrievalOn) {
+  $chromaDir = Join-Path $backendDataDir "chroma_db"
+  $chromaEsDir = Join-Path $backendDataDir "chroma_db_es"
+  Test-RequiredDirectory -Code "chroma_en_missing" -Path $chromaDir -Description "English Chroma index" -RequireContent
+  $chromaDb = Join-Path $chromaDir "chroma.sqlite3"
+  Test-RequiredFile -Code "chroma_en_sqlite_missing" -Path $chromaDb -Description "English Chroma SQLite catalog"
+  Test-DockerVolumeDirectory -VolumeName "chroma_db_es_native" -Description "Spanish Chroma index" -RequiredFile "chroma.sqlite3"
+  if (Test-Path -LiteralPath $chromaEsDir -PathType Container) {
+    Write-Host "[info] Found Spanish Chroma bind-mount source for repopulation: $chromaEsDir"
+  } else {
+    Write-Host "[warn] Spanish Chroma bind-mount source is absent: $chromaEsDir. Runtime uses chroma_db_es_native." -ForegroundColor Yellow
+  }
+} else {
+  Write-Host "[warn] Retrieval is disabled by RETRIEVAL_ENABLED_DEFAULT; Chroma index validation skipped." -ForegroundColor Yellow
 }
 
 Write-Host "[ok] Preflight passed." -ForegroundColor Green

@@ -14,11 +14,36 @@
     }
   }
 
-  # ---- Reverse proxy routes ----
-  handle_path /ai/api/* {
-    reverse_proxy ai-control:8081
+  # ---- Security response headers ----
+  header {
+    X-Content-Type-Options nosniff
+    X-Frame-Options SAMEORIGIN
+    Referrer-Policy strict-origin-when-cross-origin
+    Permissions-Policy "geolocation=(), microphone=(), camera=()"
+    -Server
+    Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'; object-src 'none'"
   }
 
+  # ---- Reverse proxy routes ----
+  # ai-control can take 30–90s to come up while it loads embedding/rerank
+  # models. The proxy passes try_duration so requests queue briefly during
+  # warmup instead of hard-erroring; lb_try_interval keeps reconnects cheap.
+  handle_path /ai/api/* {
+    reverse_proxy ai-control:8081 {
+      lb_try_duration 8s
+      lb_try_interval 500ms
+      fail_duration 5s
+      max_fails 3
+      transport http {
+        dial_timeout 3s
+        response_header_timeout 60s
+      }
+    }
+  }
+
+  # Open WebUI is an opt-in debug surface. The chat service only runs when
+  # Compose is started with --profile debug-openwebui, and Open WebUI auth is
+  # enabled by default.
   handle_path /chat/* {
     reverse_proxy chat:8080
   }
@@ -78,5 +103,25 @@
 
   # ---- Portal homepage fallback ----
   root * /srv/portal
-  file_server
+
+  # ---- Cache-Control for static portal assets ----
+  # Layered ADDITIVELY on top of the security `header { … }` block above.
+  # Matchers are explicit so individual rules are easy to override later.
+  #
+  # /assets/*  — fingerprinted/long-lived vendor JS, logos, fonts → 24h immutable
+  # *.js / *.css under per-app dirs (ai/, wiki-app/, learn-app/, docs/) → 1h
+  # *.html (index.html, connect.html, ai/index.html, …)             → no-cache
+  #   so deploys are picked up immediately on next visit.
+  @portal_assets path /assets/*
+  header @portal_assets Cache-Control "public, max-age=86400, immutable"
+
+  @portal_js_css path *.js *.css
+  header @portal_js_css Cache-Control "public, max-age=3600"
+
+  @portal_html path *.html /
+  header @portal_html Cache-Control "no-cache"
+
+  file_server {
+    precompressed zstd gzip br
+  }
 }

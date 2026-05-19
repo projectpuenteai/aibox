@@ -14,6 +14,9 @@ This repository intentionally does not store local model weights, Chroma databas
 - `tools/benchmarks/`: latency and chat runtime profiling
 - `tools/tests/`: comprehensive RAG test suite
 - `tools/llama-runtime/`: PowerShell preflight and startup scripts
+- `docs/operator-safe-commands.md`: safe, risky, and prohibited field commands
+- `docs/maintenance-workflow.md`: dependency update and vulnerability review process
+- `docs/legacy-root-stack-archive.md`: status of the archived legacy root stack
 
 ## What Is Not In This Repo
 
@@ -104,6 +107,10 @@ Run the preflight first. It verifies Docker reachability, GPU runtime visibility
 powershell -ExecutionPolicy Bypass -File .\tools\llama-runtime\scripts\preflight_llama_runtime.ps1
 ```
 
+Preflight is offline-first: it accepts required images already present in the
+local Docker cache. On an online maintenance machine, add `-OnlineImageCheck` to
+verify registry availability too.
+
 Then start the stack:
 
 ```powershell
@@ -134,8 +141,11 @@ host's LAN or hotspot address instead, for example `http://192.168.1.50/` or
 - Kiwix: `http://<host-ip>/wiki/`
 - Kolibri: `http://<host-ip>/kolibri/`
 - Learn alias: `http://<host-ip>/learn/`
-- Open WebUI: `http://<host-ip>/chat/`
 - DNS Admin: `http://<host-ip>:5380/`
+
+Open WebUI is disabled in the default field stack because it has a separate
+authentication and audit surface. For trusted debugging only, start with
+`--profile debug-openwebui` and use `http://<host-ip>/chat/`.
 
 ## Offline Local Access
 

@@ -8,12 +8,12 @@
 # because offline deployment cannot re-pull images.
 #
 # Usage:
-#   cleanup_docker_storage.ps1                   # Always cleans safe items
-#   cleanup_docker_storage.ps1 -ThresholdGB 20   # Only cleans when free space < 20 GB
-#   cleanup_docker_storage.ps1 -DryRun           # Report what would be removed, do nothing
+#   cleanup_docker_storage.ps1                   # Dry-run only
+#   cleanup_docker_storage.ps1 -Apply            # Always cleans safe items
+#   cleanup_docker_storage.ps1 -Apply -ThresholdGB 20
 param(
   [double]$ThresholdGB = 0,   # 0 = always clean; >0 = only clean when free space < ThresholdGB
-  [switch]$DryRun,
+  [switch]$Apply,
   [switch]$Quiet
 )
 
@@ -45,7 +45,15 @@ function Get-FreeDiskGB {
 function Invoke-DockerPrune {
   param([string[]]$Args, [string]$Label)
 
-  if ($DryRun) {
+  $joined = " $($Args -join ' ') "
+  $forbidden = @(" volume ", "--volumes", " image prune -a ", " system prune ")
+  foreach ($pattern in $forbidden) {
+    if ($joined -like "*$pattern*") {
+      throw "Refusing unsafe Docker cleanup command: docker $($Args -join ' ')"
+    }
+  }
+
+  if (-not $Apply) {
     Write-Status "  [dry-run] would run: docker $($Args -join ' ')" "Yellow"
     return
   }
@@ -88,9 +96,17 @@ if ($ThresholdGB -gt 0 -and $null -ne $freeGB -and $freeGB -ge $ThresholdGB) {
 }
 
 if ($ThresholdGB -gt 0) {
-  Write-Status "[warn] Free disk space ($freeGB GB) is below threshold ($ThresholdGB GB). Cleaning Docker storage..." "Yellow"
+  if ($Apply) {
+    Write-Status "[warn] Free disk space ($freeGB GB) is below threshold ($ThresholdGB GB). Cleaning Docker storage..." "Yellow"
+  } else {
+    Write-Status "[warn] Free disk space ($freeGB GB) is below threshold ($ThresholdGB GB). Dry-run only; pass -Apply to prune." "Yellow"
+  }
 } else {
-  Write-Status "[info] Running routine Docker storage cleanup..."
+  if ($Apply) {
+    Write-Status "[info] Running routine Docker storage cleanup..."
+  } else {
+    Write-Status "[info] Running routine Docker storage cleanup dry-run. Pass -Apply to prune."
+  }
 }
 
 # ── Safe pruning operations ───────────────────────────────────────────────────
@@ -113,7 +129,7 @@ Invoke-DockerPrune -Args @("network", "prune", "--force") -Label "networks"
 
 # ── Report result ─────────────────────────────────────────────────────────────
 
-if (-not $DryRun) {
+if ($Apply) {
   $freeAfter = Get-FreeDiskGB
   if ($null -ne $freeAfter) {
     Write-Status "[ok] Cleanup complete. Free disk space: $freeAfter GB" "Green"

@@ -8,4 +8,3 @@ chromadb==1.5.5
 sentence-transformers==5.2.2
 transformers==4.46.3
 tokenizers==0.20.3
-posthog<4

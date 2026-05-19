@@ -706,7 +706,51 @@ $info = [ordered]@{
   generated_at = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssK")
 }
 
-$json = $info | ConvertTo-Json -Depth 6 -Compress:$false
+$publicInfo = [ordered]@{
+  recommended_method = $info.recommended_method
+  primary_url = $info.primary_url
+  preferred = $info.preferred
+  hotspot = [ordered]@{
+    status = $info.hotspot.status
+    backend = $info.hotspot.backend
+    support = $info.hotspot.support
+    ethernet_policy = $info.hotspot.ethernet_policy
+    wifi_band = $info.hotspot.wifi_band
+    readiness = $info.hotspot.readiness
+    ssid = $info.hotspot.ssid
+    password = $info.hotspot.password
+    host_ip = $info.hotspot.host_ip
+    dns_server = $info.hotspot.dns_server
+    validation = [ordered]@{
+      http_ready = $info.hotspot.validation.http_ready
+      dns_ready = $info.hotspot.validation.dns_ready
+      hostname_ready = $info.hotspot.validation.hostname_ready
+      hostname_target_ip = $info.hotspot.validation.hostname_target_ip
+    }
+  }
+  lan = [ordered]@{
+    ips = @($info.lan.ips)
+    primary_ip = $info.lan.primary_ip
+  }
+  hostnames = [ordered]@{
+    candidates = @($info.hostnames.candidates)
+  }
+  http = [ordered]@{
+    port = $info.http.port
+    listening = $info.http.listening
+    firewall_allowed = $info.http.firewall_allowed
+    loopback_reachable = $info.http.loopback_reachable
+    primary_reachable = $info.http.primary_reachable
+  }
+  diagnostics = [ordered]@{
+    warnings = @($info.diagnostics.warnings)
+    notes = @($info.diagnostics.notes)
+    steps = @($info.diagnostics.steps)
+  }
+  generated_at = $info.generated_at
+}
+
+$json = $publicInfo | ConvertTo-Json -Depth 6 -Compress:$false
 
 if (-not (Test-Path $portalDir)) {
   if (-not $Quiet) {

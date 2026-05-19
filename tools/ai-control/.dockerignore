@@ -22,6 +22,7 @@ test_*.py
 *.tmp
 
 # Local tooling
+venv/
 .venv/
 .venv-rag/
 *.sh

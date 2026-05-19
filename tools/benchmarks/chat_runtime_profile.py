@@ -396,7 +396,9 @@ def main() -> None:
     parser.add_argument("--gpu-sample-interval", type=float, default=0.2)
     parser.add_argument(
         "--output",
-        default=str(Path(__file__).resolve().parent / "chat_runtime_profile.json"),
+        default=str(
+            Path(__file__).resolve().parent / "results" / "chat_runtime_profile.json"
+        ),
     )
     args = parser.parse_args()
 

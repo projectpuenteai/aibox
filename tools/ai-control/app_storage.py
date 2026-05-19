@@ -23,11 +23,15 @@ import tempfile
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
+import urllib.error
+import urllib.request
+from urllib.request import Request as UrllibRequest
 
 import httpx
 from argon2 import PasswordHasher
@@ -36,6 +40,10 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
+
+from storage_migrations import ensure_column as migration_ensure_column
+from storage_migrations import run_migrations
+from storage_migrations import table_columns as migration_table_columns
 
 logger = logging.getLogger("aibox.ai_control.storage")
 
@@ -92,6 +100,8 @@ class ResetPasswordPayload(BaseModel):
 
 class RolePayload(BaseModel):
     role: str
+    reason: Optional[str] = None
+    confirm: Optional[str] = None
 
 
 class UnlockPayload(BaseModel):
@@ -150,6 +160,12 @@ class AnalyticsEventPayload(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 
+class CleanupPayload(BaseModel):
+    dry_run: Optional[bool] = True
+    reason: Optional[str] = "admin"
+    required_bytes: Optional[int] = 0
+
+
 class StorageRuntime:
     """Own the app's storage, auth, retrieval, and chat helper logic.
 
@@ -170,17 +186,37 @@ class StorageRuntime:
         self.chroma_collection = os.getenv("CHROMA_COLLECTION", "simplewiki_chunks").strip() or "simplewiki_chunks"
         self.chroma_persist_dir_es = Path(os.getenv("CHROMA_PERSIST_DIR_ES", str(self.data_root / "chroma_db_es")))
         self.chroma_collection_es = os.getenv("CHROMA_COLLECTION_ES", "simplewiki_chunks").strip() or "simplewiki_chunks"
+        # Citation link verification — probe the Kiwix container for each cited
+        # article before exposing the link to the user, so dead links (article
+        # in chroma but pruned from the ZIM) are suppressed instead of 404ing.
+        self.wiki_link_verify_enabled = _coerce_bool(os.getenv("WIKI_LINK_VERIFY_ENABLED", "1"), default=True)
+        self.kiwix_base_en = (os.getenv("KIWIX_BASE_EN", "http://kiwix-en:8080") or "http://kiwix-en:8080").rstrip("/")
+        self.kiwix_base_es = (os.getenv("KIWIX_BASE_ES", "http://kiwix-es:8080") or "http://kiwix-es:8080").rstrip("/")
+        self.kiwix_book_en = (os.getenv("KIWIX_BOOK_EN", "wikipedia_en_all_mini_2026-03") or "wikipedia_en_all_mini_2026-03").strip()
+        self.kiwix_book_es = (os.getenv("KIWIX_BOOK_ES", "wikipedia_es_all_maxi_2026-02") or "wikipedia_es_all_maxi_2026-02").strip()
+        self.kiwix_probe_timeout = max(0.5, float(os.getenv("WIKI_LINK_VERIFY_TIMEOUT", "2.0")))
+        self.kiwix_probe_cache_max = max(100, int(os.getenv("WIKI_LINK_VERIFY_CACHE_MAX", "5000")))
+        self._wiki_exists_cache: "OrderedDict[Tuple[str, str], bool]" = OrderedDict()
+        self._wiki_exists_lock = threading.Lock()
         self.load_es_index_at_startup = _coerce_bool(os.getenv("LOAD_ES_INDEX_AT_STARTUP", "0"), default=False)
         self.warmup_en_at_startup = _coerce_bool(os.getenv("WARMUP_EN_AT_STARTUP", "1"), default=True)
+        # Spanish-only mode: never open the English Chroma client and route every
+        # retrieve_wiki_chunks() call to the Spanish collection regardless of the
+        # caller's user_language. bge-m3 is multilingual, so English queries still
+        # retrieve relevant Spanish content.
+        self.rag_spanish_only = _coerce_bool(os.getenv("RAG_SPANISH_ONLY", "0"), default=False)
         self.embed_model = os.getenv("EMBED_MODEL", "/models/embed").strip() or "/models/embed"
         self.retrieval_device = os.getenv("RETRIEVAL_DEVICE", "cpu").strip() or "cpu"
         self.retrieval_enabled_default = _coerce_bool(os.getenv("RETRIEVAL_ENABLED_DEFAULT", "1"), default=True)
         self.retrieval_top_k = max(1, int(os.getenv("RETRIEVAL_TOP_K", "8")))
         self.retrieval_candidate_k = max(self.retrieval_top_k, int(os.getenv("RETRIEVAL_CANDIDATE_K", "30")))
         self.retrieval_timeout_seconds = max(0.0, float(os.getenv("RETRIEVAL_TIMEOUT_SECONDS", "10.0")))
-        self.retrieval_max_context_chars = max(400, int(os.getenv("RETRIEVAL_MAX_CONTEXT_CHARS", "18000")))
+        self.retrieval_max_context_chars = max(400, int(os.getenv("RETRIEVAL_MAX_CONTEXT_CHARS", "8000")))
         self.retrieval_query_max_chars = max(120, int(os.getenv("RETRIEVAL_QUERY_MAX_CHARS", "400")))
         self.retrieval_preview_chars = max(240, int(os.getenv("RETRIEVAL_DEBUG_PREVIEW_CHARS", "800")))
+        self.diagnostics_max_bytes = max(4096, int(os.getenv("ADMIN_DIAGNOSTICS_MAX_BYTES", "120000")))
+        self.diagnostics_max_string_chars = max(200, int(os.getenv("ADMIN_DIAGNOSTICS_MAX_STRING_CHARS", "4000")))
+        self.diagnostics_max_list_items = max(5, int(os.getenv("ADMIN_DIAGNOSTICS_MAX_LIST_ITEMS", "50")))
         self.rerank_model = os.getenv("RERANK_MODEL", "/models/rerank").strip() or "/models/rerank"
         self.rerank_device = os.getenv("RERANK_DEVICE", "cpu").strip() or "cpu"
         self.rerank_score_threshold = min(1.0, max(0.0, float(os.getenv("RERANK_SCORE_THRESHOLD", "0.16"))))
@@ -259,11 +295,37 @@ class StorageRuntime:
             self.cookie_secure = (self.app_env == "production")
         samesite_raw = (os.getenv("SESSION_COOKIE_SAMESITE", "lax") or "lax").strip().lower()
         self.cookie_samesite = samesite_raw if samesite_raw in ("lax", "strict", "none") else "lax"
+        # RFC 6265bis: samesite=none requires secure=true; silently upgrade secure if needed
+        if self.cookie_samesite == "none" and not self.cookie_secure:
+            logger.warning("SESSION_COOKIE_SAMESITE=none requires secure cookies; forcing secure=True")
+            self.cookie_secure = True
 
         # Trust X-Forwarded-For only when explicitly enabled (e.g. behind Caddy+TLS).
         self.trust_proxy_headers = (os.getenv("TRUST_PROXY_HEADERS", "false") or "false").strip().lower() in ("1", "true", "yes", "on")
+        # When running behind a reverse proxy (Caddy in the AIBox stack), every
+        # connection arrives from the proxy IP unless we trust forwarded headers.
+        # That collapses every rate-limit bucket onto a single key. Warn loudly
+        # if we look like we're behind a proxy but the flag is off.
+        if not self.trust_proxy_headers:
+            in_container = os.path.exists("/.dockerenv") or os.getenv("RUNTIME_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes", "on")
+            if in_container:
+                logger.warning(
+                    "TRUST_PROXY_HEADERS=false while running inside a container — "
+                    "if Caddy or any reverse proxy fronts ai-control, all rate-limit "
+                    "buckets will collapse onto the proxy IP. Set TRUST_PROXY_HEADERS=true "
+                    "in stack/.env when ai-control runs behind Caddy."
+                )
 
         self.token_pepper = os.getenv("SESSION_TOKEN_PEPPER", "")
+        # Production must have a strong pepper (>= 32 chars / 128 bits of entropy
+        # at minimum). secrets.token_hex(16) produces 32 chars, which is the
+        # generator we document in README.md; reject anything shorter.
+        if self.token_pepper and self.app_env == "production" and len(self.token_pepper) < 32:
+            raise RuntimeError(
+                f"SESSION_TOKEN_PEPPER is too short ({len(self.token_pepper)} chars); "
+                "production requires >= 32 chars. Generate one with: "
+                "python -c \"import secrets; print(secrets.token_hex(32))\""
+            )
         if not self.token_pepper:
             if self.app_env == "production":
                 raise RuntimeError("SESSION_TOKEN_PEPPER must be set for production. Add it to stack/.env")
@@ -299,8 +361,12 @@ class StorageRuntime:
         self.session_days = int(os.getenv("SESSION_DAYS", "7"))
 
         # Signup controls
-        self.allow_public_signup = (os.getenv("ALLOW_PUBLIC_SIGNUP", "true") or "true").strip().lower() in ("1", "true", "yes", "on")
+        public_signup_default = "false" if self.app_env == "production" else "true"
+        self.allow_public_signup = (os.getenv("ALLOW_PUBLIC_SIGNUP", public_signup_default) or public_signup_default).strip().lower() in ("1", "true", "yes", "on")
         self.signup_max_per_hour_per_ip = max(1, int(os.getenv("SIGNUP_MAX_PER_HOUR_PER_IP", "5")))
+        self.user_password_min_length = max(4, int(os.getenv("USER_PASSWORD_MIN_LENGTH", "8")))
+        self.guest_password_min_length = max(4, int(os.getenv("GUEST_PASSWORD_MIN_LENGTH", "4")))
+        self.admin_password_min_length = max(8, int(os.getenv("ADMIN_PASSWORD_MIN_LENGTH", "8")))
 
         self.admin_username = os.getenv("ADMIN_USERNAME", "")
         self.admin_password = os.getenv("ADMIN_DEFAULT_PASSWORD", "")
@@ -311,8 +377,15 @@ class StorageRuntime:
                     "Add them to stack/.env or docker-compose environment."
                 )
             self.admin_username = self.admin_username or "admin"
-            self.admin_password = self.admin_password or "changeme"
-            logger.warning("Using development-only admin credentials. Set ADMIN_USERNAME and ADMIN_DEFAULT_PASSWORD for production.")
+            if not self.admin_password:
+                self.admin_password = secrets.token_urlsafe(16)
+                logger.warning(
+                    "ADMIN_DEFAULT_PASSWORD not set. Generated random admin password: %s  "
+                    "(Set ADMIN_USERNAME and ADMIN_DEFAULT_PASSWORD in stack/.env for production.)",
+                    self.admin_password,
+                )
+            else:
+                logger.warning("Using development admin credentials. Set ADMIN_USERNAME and ADMIN_DEFAULT_PASSWORD for production.")
 
         self.chat_retention_days = int(os.getenv("CHAT_RETENTION_DAYS", "90"))
         self.doc_retention_days = int(os.getenv("DOC_RETENTION_DAYS", "180"))
@@ -343,6 +416,9 @@ class StorageRuntime:
         self.ai_block_hits = int(os.getenv("AI_BLOCK_HITS", "3"))
         self.ai_prompt_cooldown_seconds = int(os.getenv("AI_PROMPT_COOLDOWN_SECONDS", "10"))
         self.ai_send_block_seconds = int(os.getenv("AI_SEND_BLOCK_SECONDS", "300"))
+        self.ai_requests_per_min = max(1, int(os.getenv("AI_REQUESTS_PER_MIN", "12")))
+        self.ai_requests_per_hour = max(self.ai_requests_per_min, int(os.getenv("AI_REQUESTS_PER_HOUR", "120")))
+        self.ai_ip_requests_per_min = max(1, int(os.getenv("AI_IP_REQUESTS_PER_MIN", "30")))
         self.max_docs = int(os.getenv("MAX_DOCS_PER_USER", "150"))
         self.max_concurrent_generations = int(os.getenv("MAX_CONCURRENT_GENERATIONS_PER_USER", "2"))
         self.heavy_prompt_chars = int(os.getenv("HEAVY_PROMPT_CHARS", "5000"))
@@ -361,6 +437,19 @@ class StorageRuntime:
         self.login_attempts_retention_days = int(os.getenv("LOGIN_ATTEMPTS_RETENTION_DAYS", "7"))
         self.session_retention_days = int(os.getenv("SESSION_RETENTION_DAYS", "30"))
         self.vacuum_interval_hours = int(os.getenv("VACUUM_INTERVAL_HOURS", "24"))
+        cleanup_marker_default = self.app_env == "production"
+        self.cleanup_require_backup_marker = _coerce_bool(os.getenv("CLEANUP_REQUIRE_BACKUP_MARKER", None), default=cleanup_marker_default)
+        self.cleanup_backup_marker_path = Path(os.getenv("CLEANUP_BACKUP_MARKER_PATH", str(self.data_root / "backups" / "latest_verified_backup.json")))
+        self.cleanup_backup_marker_max_hours = max(1, int(os.getenv("CLEANUP_BACKUP_MARKER_MAX_HOURS", "72")))
+        self.cleanup_manifest_dir = Path(os.getenv("CLEANUP_MANIFEST_DIR", str(self.data_root / "cleanup-manifests")))
+        self.orphan_quarantine_root = Path(os.getenv("ORPHAN_USER_QUARANTINE_ROOT", str(self.data_root / "orphan-user-quarantine")))
+        self.orphan_quarantine_days = max(1, int(os.getenv("ORPHAN_USER_QUARANTINE_DAYS", "30")))
+        # Confine both cleanup-manifest and orphan-quarantine destinations to
+        # data_root. A misconfigured env var could otherwise write to (or move
+        # users' data into) anywhere the process can reach. We resolve symlinks
+        # before the containment check so a reparse point cannot point outside.
+        self._validate_within_data_root(self.cleanup_manifest_dir, "CLEANUP_MANIFEST_DIR")
+        self._validate_within_data_root(self.orphan_quarantine_root, "ORPHAN_USER_QUARANTINE_ROOT")
         self._last_vacuum_ts = 0
 
         key_b64 = (os.getenv("APP_ENCRYPTION_MASTER_KEY", "") or "").strip()
@@ -402,12 +491,15 @@ class StorageRuntime:
         self._embed_dimension: Optional[int] = None
         self._collection_dimension: Optional[int] = None
         self._chroma_count: int = 0
+        self._index_manifest: Optional[Dict[str, Any]] = None
+        self._index_manifest_es: Optional[Dict[str, Any]] = None
         self._startup_rag_status: Dict[str, Any] = {
             "app_env": self.app_env,
             "startup_rag_ok": None,
             "startup_rag_error": None,
             "startup_rag_checked_at": None,
             "startup_rag_test_query": "What was the War of 1812?",
+            "startup_rag_test_expected_terms": ["war", "1812"],
             "startup_rag_test_matches": [],
             "startup_reranker_ok": None,
             "startup_reranker_error": None,
@@ -419,6 +511,9 @@ class StorageRuntime:
             "chroma_count": 0,
             "embed_dimension": None,
             "collection_dimension": None,
+            "index_manifest": None,
+            "index_manifest_path": None,
+            "index_manifest_error": None,
             "rerank_model_path": str(self.rerank_model),
             "rerank_available": False,
             "require_rag_startup": True,
@@ -452,6 +547,38 @@ class StorageRuntime:
         if req.client:
             return str(req.client.host)
         return "unknown"
+
+    def _same_site_host(self, req: Request) -> str:
+        return str(req.headers.get("host") or req.url.netloc or "").strip().lower()
+
+    def _origin_host(self, value: str) -> str:
+        try:
+            parsed = urlsplit(value)
+        except Exception:
+            return ""
+        if parsed.scheme.lower() not in ("http", "https"):
+            return ""
+        return str(parsed.netloc or "").strip().lower()
+
+    def validate_same_origin_write(self, req: Request) -> None:
+        """Reject browser-originated cross-site writes for cookie-authenticated routes."""
+        expected_host = self._same_site_host(req)
+        if not expected_host:
+            raise HTTPException(403, "Invalid request origin")
+
+        fetch_site = str(req.headers.get("sec-fetch-site") or "").strip().lower()
+        if fetch_site in ("cross-site", "same-site"):
+            raise HTTPException(403, "Cross-site write blocked")
+
+        origin = str(req.headers.get("origin") or "").strip()
+        if origin:
+            if origin.lower() == "null" or self._origin_host(origin) != expected_host:
+                raise HTTPException(403, "Invalid request origin")
+            return
+
+        referer = str(req.headers.get("referer") or "").strip()
+        if referer and self._origin_host(referer) != expected_host:
+            raise HTTPException(403, "Invalid request origin")
 
     def persist_and_raise(self, c: sqlite3.Connection, status_code: int, detail: str) -> None:
         """Commit enforcement-side effects before raising an HTTP error.
@@ -516,6 +643,127 @@ class StorageRuntime:
         shutil.rmtree(target)
         return True
 
+    def path_size(self, path: Path) -> int:
+        """Best-effort recursive size helper used before deletion/quarantine."""
+        try:
+            if path.is_file():
+                return int(path.stat().st_size)
+            if path.is_dir():
+                return int(sum(f.stat().st_size for f in path.rglob("*") if f.is_file()))
+        except Exception:
+            return 0
+        return 0
+
+    def cleanup_backup_marker_is_fresh(self) -> bool:
+        """Return true when a recent verified-backup marker exists."""
+        try:
+            marker = self.cleanup_backup_marker_path
+            if not marker.exists():
+                return False
+            # utf-8-sig strips a UTF-8 BOM if present. PowerShell 5.1's default
+            # Set-Content -Encoding UTF8 emits one, which json.loads otherwise
+            # rejects with "Unexpected UTF-8 BOM".
+            raw = json.loads(marker.read_text(encoding="utf-8-sig"))
+            if not isinstance(raw, dict) or raw.get("verified") is not True:
+                return False
+            value = raw.get("verified_at") or raw.get("created_at")
+            dt = self.parse_iso(str(value or ""))
+            if dt is None:
+                return False
+            age = datetime.now(timezone.utc) - dt
+            return age <= timedelta(hours=self.cleanup_backup_marker_max_hours)
+        except Exception:
+            return False
+
+    def write_cleanup_manifest(self, manifest: Dict[str, Any]) -> Optional[str]:
+        """Persist a cleanup manifest for audit/recovery visibility."""
+        try:
+            self.cleanup_manifest_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            suffix = "dry-run" if manifest.get("dry_run") else "applied"
+            path = self.cleanup_manifest_dir / f"cleanup-{stamp}-{suffix}-{self.uid()[:8]}.json"
+            path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            try:
+                os.chmod(path, 0o600)
+            except Exception:
+                pass
+            return str(path)
+        except Exception:
+            logger.warning("failed to write cleanup manifest", exc_info=True)
+            return None
+
+    def quarantine_orphan_user_dir(self, path: Path) -> Tuple[int, str]:
+        """Move an orphaned user directory out of active storage instead of deleting it."""
+        root = self.users_root.resolve()
+        entry = path.resolve()
+        try:
+            entry.relative_to(root)
+        except Exception as exc:
+            raise RuntimeError(f"Refusing to quarantine path outside users root: {entry}") from exc
+        size = self.path_size(entry)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        dest_root = self.orphan_quarantine_root / stamp
+        dest_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        dest = dest_root / entry.name
+        shutil.move(str(entry), str(dest))
+        manifest = {
+            "quarantined_at": self.now_iso(),
+            "source": str(entry),
+            "destination": str(dest),
+            "size_bytes": size,
+            "purge_after_days": self.orphan_quarantine_days,
+        }
+        (dest_root / f"{entry.name}.manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return size, str(dest)
+
+    def _validate_within_data_root(self, candidate: Path, env_var_name: str) -> None:
+        """Refuse to use a configured path that escapes self.data_root.
+
+        Run during __init__ so misconfiguration fails loudly at boot instead
+        of writing manifests / quarantined user data outside the data tree.
+        Resolves symlinks/reparse points to defeat link-based escapes.
+        """
+        try:
+            root_resolved = self.data_root.resolve(strict=False)
+        except Exception:
+            root_resolved = self.data_root
+        try:
+            target = candidate.resolve(strict=False)
+        except Exception:
+            raise RuntimeError(
+                f"{env_var_name}={candidate} could not be resolved; refusing to start."
+            )
+        # Avoid is_relative_to so this works on Py 3.9 too.
+        try:
+            target.relative_to(root_resolved)
+        except ValueError:
+            raise RuntimeError(
+                f"{env_var_name}={candidate} resolves to {target} which is outside "
+                f"APP_DATA_ROOT={root_resolved}. Refusing to start."
+            )
+        # If the candidate exists, also reject if any path component is a
+        # symlink that points outside root_resolved.
+        if candidate.exists():
+            try:
+                for parent in [candidate, *candidate.parents]:
+                    if parent.is_symlink():
+                        resolved = parent.resolve(strict=False)
+                        try:
+                            resolved.relative_to(root_resolved)
+                        except ValueError:
+                            raise RuntimeError(
+                                f"{env_var_name}={candidate} traverses symlink {parent} → {resolved} "
+                                f"which is outside APP_DATA_ROOT={root_resolved}."
+                            )
+                    if parent == root_resolved:
+                        break
+            except RuntimeError:
+                raise
+            except Exception:
+                # OS error walking parents — be conservative, accept; the
+                # resolve() containment check above already covered the path.
+                pass
+
     def ensure_dirs(self) -> None:
         for p in (self.data_root, self.users_root, self.tmp_root, self.db_path.parent):
             p.mkdir(parents=True, exist_ok=True)
@@ -523,7 +771,7 @@ class StorageRuntime:
     def ensure_user_dirs(self, user_id: str) -> None:
         root = self.users_root / user_id
         for p in (root / "docs", root / "chats", root / "trash" / "docs", root / "trash" / "chats"):
-            p.mkdir(parents=True, exist_ok=True)
+            p.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     def is_development_mode(self) -> bool:
         return self.app_env in {"dev", "development", "local", "test"}
@@ -536,6 +784,87 @@ class StorageRuntime:
         self._startup_rag_status["app_env"] = self.app_env
         self._startup_rag_status["require_rag_startup"] = self._rag_required_at_startup()
         self._startup_rag_status["ready"] = bool(self._startup_rag_status.get("startup_rag_ok"))
+
+    def _index_manifest_path(self, persist_dir: Path) -> Path:
+        return Path(persist_dir) / "index_manifest.json"
+
+    # Schema versions we know how to read. Anything ≤ this is accepted; newer
+    # manifests fail closed because we can't reason about fields we don't know.
+    _MANIFEST_SCHEMA_MAX = 1
+    # Required top-level keys for a manifest to be usable at runtime. Missing
+    # keys means the builder didn't finish or wrote an older/incompatible
+    # format — reject rather than silently drift.
+    _MANIFEST_REQUIRED_KEYS = ("schema_version", "embedding_model", "chroma")
+
+    def _validate_index_manifest(self, raw: Dict[str, Any]) -> Optional[str]:
+        try:
+            schema = int(raw.get("schema_version") or 0)
+        except (TypeError, ValueError):
+            return "manifest_schema_invalid"
+        if schema <= 0:
+            return "manifest_schema_missing"
+        if schema > self._MANIFEST_SCHEMA_MAX:
+            return f"manifest_schema_unsupported (schema_version={schema}, max_known={self._MANIFEST_SCHEMA_MAX})"
+        for key in self._MANIFEST_REQUIRED_KEYS:
+            if key not in raw:
+                return f"manifest_missing_required_key:{key}"
+        model = raw.get("embedding_model") if isinstance(raw.get("embedding_model"), dict) else None
+        if not model or not (model.get("name") or model.get("path")):
+            return "manifest_missing_embedding_model"
+        chroma = raw.get("chroma") if isinstance(raw.get("chroma"), dict) else None
+        if not chroma or not chroma.get("collection_name"):
+            return "manifest_missing_chroma_collection"
+        return None
+
+    def _load_index_manifest(self, persist_dir: Path) -> Tuple[Optional[Dict[str, Any]], Optional[str], Optional[str]]:
+        path = self._index_manifest_path(persist_dir)
+        if not path.exists():
+            return None, str(path), "manifest_missing"
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            return None, str(path), f"{type(exc).__name__}: {exc}"
+        if not isinstance(raw, dict):
+            return None, str(path), "manifest_not_object"
+        schema_error = self._validate_index_manifest(raw)
+        if schema_error:
+            logger.error("index manifest schema validation failed for %s: %s", path, schema_error)
+            return None, str(path), schema_error
+        return raw, str(path), None
+
+    def _manifest_summary(self, manifest: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not isinstance(manifest, dict):
+            return None
+        source = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
+        model = manifest.get("embedding_model") if isinstance(manifest.get("embedding_model"), dict) else {}
+        chroma = manifest.get("chroma") if isinstance(manifest.get("chroma"), dict) else {}
+        build = manifest.get("build") if isinstance(manifest.get("build"), dict) else {}
+        return {
+            "schema_version": manifest.get("schema_version"),
+            "tool_version": manifest.get("tool_version"),
+            "built_at": manifest.get("built_at"),
+            "source_file": source.get("chunks_file_name") or source.get("chunks_file"),
+            "source_sha256": source.get("chunks_file_sha256"),
+            "embedding_model": model.get("name") or model.get("path"),
+            "embedding_dimension": model.get("dimension"),
+            "collection_name": chroma.get("collection_name"),
+            "chunk_count": chroma.get("chunk_count") or build.get("embedded_chunks"),
+            "skipped_chunks": build.get("skipped_chunks"),
+        }
+
+    def _validate_smoke_matches(self, matches: List[Dict[str, Any]], expected_terms: List[str], label: str) -> None:
+        if not matches:
+            raise RuntimeError(f"startup retrieval test ({label}) returned no matches")
+        haystack = " ".join(
+            " ".join(
+                str(match.get(key) or "")
+                for key in ("title", "section_title", "section_path", "preview", "source_document")
+            )
+            for match in matches
+        ).lower()
+        missing = [term for term in expected_terms if term.lower() not in haystack]
+        if missing:
+            raise RuntimeError(f"startup retrieval test ({label}) missing expected terms: {', '.join(missing)}")
 
     # -----------------------------
     # Retrieval and diagnostics state
@@ -591,12 +920,16 @@ class StorageRuntime:
             "chroma_persist_dir": rag_status.get("chroma_persist_dir"),
             "chroma_collection": rag_status.get("chroma_collection"),
             "chroma_count": rag_status.get("chroma_count"),
+            "index_manifest": self._clone_data(rag_status.get("index_manifest")),
+            "index_manifest_path": rag_status.get("index_manifest_path"),
+            "index_manifest_error": rag_status.get("index_manifest_error"),
             "embed_dimension": embed_dimension,
             "collection_dimension": collection_dimension,
             "startup_rag_ok": rag_status.get("startup_rag_ok"),
             "startup_rag_error": rag_status.get("startup_rag_error"),
             "startup_rag_checked_at": rag_status.get("startup_rag_checked_at"),
             "startup_rag_test_query": rag_status.get("startup_rag_test_query"),
+            "startup_rag_test_expected_terms": rag_status.get("startup_rag_test_expected_terms"),
             "startup_rag_test_matches": rag_status.get("startup_rag_test_matches"),
             "startup_reranker_ok": rag_status.get("startup_reranker_ok"),
             "startup_reranker_error": rag_status.get("startup_reranker_error"),
@@ -851,6 +1184,98 @@ class StorageRuntime:
             "runtime_warning_text": summary.get("runtime_warning_text"),
             "stop_reason": summary.get("finish_reason"),
         }
+
+    def _bound_diagnostics_value(self, value: Any, depth: int = 0) -> Any:
+        if depth > 8:
+            return {"truncated": True, "reason": "max_depth"}
+        if isinstance(value, str):
+            if len(value) > self.diagnostics_max_string_chars:
+                return {
+                    "truncated": True,
+                    "original_chars": len(value),
+                    "preview": value[: self.diagnostics_max_string_chars].rstrip(),
+                }
+            return value
+        if isinstance(value, list):
+            bounded = [self._bound_diagnostics_value(item, depth + 1) for item in value[: self.diagnostics_max_list_items]]
+            if len(value) > self.diagnostics_max_list_items:
+                bounded.append({"truncated": True, "omitted_items": len(value) - self.diagnostics_max_list_items})
+            return bounded
+        if isinstance(value, dict):
+            return {str(key): self._bound_diagnostics_value(item, depth + 1) for key, item in value.items()}
+        return value
+
+    def _bound_diagnostics_payload(self, diagnostics: Dict[str, Any]) -> Dict[str, Any]:
+        bounded = self._bound_diagnostics_value(diagnostics)
+        if not isinstance(bounded, dict):
+            return {"truncated": True, "payload": bounded}
+        raw = json.dumps(bounded, ensure_ascii=False, default=str)
+        if len(raw.encode("utf-8")) <= self.diagnostics_max_bytes:
+            bounded.setdefault("limits", {})
+            bounded["limits"].update({
+                "truncated": False,
+                "max_bytes": self.diagnostics_max_bytes,
+                "actual_bytes": len(raw.encode("utf-8")),
+            })
+            return bounded
+        compact = {
+            "request_id": diagnostics.get("request_id"),
+            "chat_id": diagnostics.get("chat_id"),
+            "user_id": diagnostics.get("user_id"),
+            "status_level": diagnostics.get("status_level"),
+            "general": self._bound_diagnostics_value(diagnostics.get("general") or {}),
+            "timing": self._bound_diagnostics_value(diagnostics.get("timing") or {}),
+            "rag": {
+                "overview": self._bound_diagnostics_value(((diagnostics.get("rag") or {}).get("overview") or {})),
+                "chunks": {
+                    "retrieval_query": (((diagnostics.get("rag") or {}).get("chunks") or {}).get("retrieval_query")),
+                    "chunk_statistics": self._bound_diagnostics_value((((diagnostics.get("rag") or {}).get("chunks") or {}).get("chunk_statistics") or {})),
+                },
+            },
+            "errors_warnings": self._bound_diagnostics_value(diagnostics.get("errors_warnings") or {}),
+            "limits": {
+                "truncated": True,
+                "reason": "max_bytes",
+                "max_bytes": self.diagnostics_max_bytes,
+                "pre_truncate_bytes": len(raw.encode("utf-8")),
+            },
+        }
+        return self._bound_diagnostics_value(compact)
+
+    def build_user_retrieval_warnings(self, summary: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Return a small, non-admin-safe list of soft warnings about retrieval/rerank.
+
+        These let the chat UI render hints like "results may be lower quality"
+        when the rerank path falls through to a cosine-only ranking or the
+        retrieval times out. They are intentionally coarse — internal error
+        strings stay on the admin diagnostics channel.
+        """
+        out: List[Dict[str, Any]] = []
+        rerank_error = summary.get("rerank_error")
+        rerank_enabled = bool(summary.get("rerank_enabled"))
+        if rerank_error and not rerank_enabled:
+            err_str = str(rerank_error)
+            kind = "rerank_unavailable"
+            if "cross_lingual_fallback" in err_str:
+                kind = "rerank_cross_lingual_fallback"
+            elif "heuristic fallback" in err_str:
+                kind = "rerank_heuristic_fallback"
+            out.append({"kind": kind, "detail": "Results ranked without the cross-encoder reranker; quality may be lower."})
+        elif rerank_error and rerank_enabled:
+            # Soft case: cross-lingual fallback after the reranker ran but scored poorly.
+            out.append({"kind": "rerank_cross_lingual_fallback", "detail": "Fell back to distance-based ranking for this query."})
+        if summary.get("retrieval_timed_out"):
+            out.append({"kind": "retrieval_timeout", "detail": "Retrieval took too long and was skipped for this turn."})
+        retrieval_error = summary.get("retrieval_error")
+        if retrieval_error and not summary.get("retrieval_timed_out") and retrieval_error not in ("no_relevant_chunks", "missing_user_query", "skipped_non_encyclopedic_query"):
+            out.append({"kind": "retrieval_error", "detail": "Encyclopedia lookup failed; answer is from the model only."})
+        trunc = int(summary.get("rag_chunk_truncation_count") or 0)
+        if trunc > 0:
+            out.append({"kind": "chunks_truncated", "detail": f"{trunc} retrieved passage(s) were truncated to fit the context budget.", "count": trunc})
+        if summary.get("no_context_answer_mode") and not summary.get("retrieval_timed_out") and not retrieval_error:
+            out.append({"kind": "no_context", "detail": "No relevant encyclopedia passages were found; answer is from the model only."})
+        return out
+
     def build_admin_diagnostics(self, summary: Dict[str, Any]) -> Dict[str, Any]:
         warnings = self._flatten_warning_messages(summary.get("warnings") or [])
         final_messages = self._clone_data(summary.get("final_conversation") or summary.get("base_messages") or [])
@@ -959,6 +1384,9 @@ class StorageRuntime:
                     "vector_db_path": summary.get("chroma_persist_dir"),
                     "collection_loaded": bool(summary.get("collection_loaded")),
                     "collection_document_count": summary.get("chroma_count"),
+                    "index_manifest": self._clone_data(summary.get("index_manifest")),
+                    "index_manifest_path": summary.get("index_manifest_path"),
+                    "index_manifest_error": summary.get("index_manifest_error"),
                     "embedding_model_path": summary.get("embed_model_path"),
                     "embedding_dimension": summary.get("embed_dimension"),
                     "query_embedding_dimension": summary.get("embed_dimension"),
@@ -1043,7 +1471,7 @@ class StorageRuntime:
             },
             "warnings": warnings,
         }
-        return diagnostics
+        return self._bound_diagnostics_payload(diagnostics)
 
     def build_admin_metrics(self, summary: Dict[str, Any]) -> Dict[str, Any]:
         diagnostics = self.build_admin_diagnostics(summary)
@@ -1059,10 +1487,11 @@ class StorageRuntime:
             "chunks_after_rerank", "chunks_after_budget_trim", "rerank_model_path", "rerank_enabled",
             "rerank_available", "rerank_ms", "rerank_error", "embed_model_path", "embed_model_exists",
             "chroma_persist_dir", "chroma_collection", "chroma_count", "embed_dimension", "collection_dimension",
+            "index_manifest", "index_manifest_path", "index_manifest_error",
             "dimensions_match", "retrieval_path_loaded", "collection_loaded", "rag_index_language", "rag_collection_path", "rag_fallback_triggered",
             "no_context_answer_mode", "final_context_estimated_tokens", "rag_chunk_truncation_count",
             "startup_rag_ok", "startup_rag_error", "startup_rag_checked_at", "startup_rag_test_query",
-            "startup_rag_test_matches", "startup_reranker_ok", "startup_reranker_error", "retrieved_chunks",
+            "startup_rag_test_expected_terms", "startup_rag_test_matches", "startup_reranker_ok", "startup_reranker_error", "retrieved_chunks",
             "citations", "primary_citation",
             "retrieval_candidates", "raw_user_message", "normalized_user_message", "request_error",
             "failed_stage", "stage_trace", "status_level"
@@ -1131,6 +1560,7 @@ class StorageRuntime:
             embed_dimension = int(len(test_vec[0]))
             collection_metadata = getattr(collection, "metadata", None) or {}
             collection_dimension = self._collection_dimension_from_metadata(collection_metadata)
+            manifest, manifest_path, manifest_error = self._load_index_manifest(self.chroma_persist_dir)
             count = int(collection.count())
             if count <= 0:
                 raise RuntimeError(f"collection {self.chroma_collection} is empty")
@@ -1138,9 +1568,22 @@ class StorageRuntime:
                 raise RuntimeError(
                     f"embedding dimension mismatch: embedder={embed_dimension} collection={collection_dimension}"
                 )
+            manifest_summary = self._manifest_summary(manifest)
+            if manifest_summary:
+                manifest_dim = manifest_summary.get("embedding_dimension")
+                if manifest_dim is not None and int(manifest_dim) != embed_dimension:
+                    raise RuntimeError(
+                        f"manifest embedding dimension mismatch: manifest={manifest_dim} embedder={embed_dimension}"
+                    )
+                manifest_count = manifest_summary.get("chunk_count")
+                if manifest_count is not None and int(manifest_count) != count:
+                    raise RuntimeError(
+                        f"manifest chunk count mismatch: manifest={manifest_count} collection={count}"
+                    )
             self._embed_dimension = embed_dimension
             self._collection_dimension = collection_dimension
             self._chroma_count = count
+            self._index_manifest = manifest_summary
             # Spanish collection is loaded lazily on first Spanish-user request (see _ensure_wiki_retriever_es)
             self._update_rag_status(
                 embed_model_path=str(self.embed_model),
@@ -1151,6 +1594,9 @@ class StorageRuntime:
                 chroma_count=count,
                 embed_dimension=embed_dimension,
                 collection_dimension=collection_dimension,
+                index_manifest=manifest_summary,
+                index_manifest_path=manifest_path,
+                index_manifest_error=manifest_error,
                 rerank_model_path=str(self.rerank_model),
                 rerank_available=rerank_available,
             )
@@ -1180,6 +1626,7 @@ class StorageRuntime:
         """Run the startup retrieval smoke test required for production readiness."""
         checked_at = self.now_iso()
         smoke_query = "What was the War of 1812?"
+        expected_terms = ["war", "1812"]
         try:
             runtime = self._load_retriever_runtime()
             rerank_error = self.ensure_reranker()
@@ -1188,8 +1635,7 @@ class StorageRuntime:
             runtime["rerank_available"] = True
             smoke = self._run_startup_retrieval_test(smoke_query, runtime)
             matches = smoke["matches"]
-            if not matches:
-                raise RuntimeError("startup retrieval test returned no matches")
+            self._validate_smoke_matches(matches, expected_terms, "en")
             if not smoke["rerank_enabled"]:
                 raise RuntimeError(f"startup rerank test did not enable reranker: {smoke['rerank_error'] or 'unknown'}")
             self._update_rag_status(
@@ -1197,6 +1643,7 @@ class StorageRuntime:
                 startup_rag_error=None,
                 startup_rag_checked_at=checked_at,
                 startup_rag_test_query=smoke_query,
+                startup_rag_test_expected_terms=expected_terms,
                 startup_rag_test_matches=matches,
                 startup_reranker_ok=True,
                 startup_reranker_error=None,
@@ -1228,6 +1675,7 @@ class StorageRuntime:
                 startup_rag_error=error,
                 startup_rag_checked_at=checked_at,
                 startup_rag_test_query=smoke_query,
+                startup_rag_test_expected_terms=expected_terms,
                 startup_rag_test_matches=[],
                 startup_reranker_ok=False,
                 startup_reranker_error=error,
@@ -1239,6 +1687,9 @@ class StorageRuntime:
                 chroma_count=int(self._chroma_count or 0),
                 embed_dimension=self._embed_dimension,
                 collection_dimension=self._collection_dimension,
+                index_manifest=self._index_manifest,
+                index_manifest_path=str(self._index_manifest_path(self.chroma_persist_dir)),
+                index_manifest_error=None if self._index_manifest else "manifest_unavailable",
                 rerank_model_path=str(self.rerank_model),
                 rerank_available=bool(self._reranker is not None),
             )
@@ -1255,10 +1706,14 @@ class StorageRuntime:
         ensure_wiki_retriever()."""
         checked_at = self.now_iso()
         smoke_query = "¿Quién fue Simón Bolívar?"
+        expected_terms = ["bolívar"]
         try:
             self._ensure_wiki_retriever_es()
             if self._wiki_collection_es is None:
                 raise RuntimeError("Spanish ChromaDB not loaded (still warming or path missing)")
+            spanish_count = int(self._wiki_collection_es.count())
+            manifest, manifest_path, manifest_error = self._load_index_manifest(self.chroma_persist_dir_es)
+            manifest_summary = self._manifest_summary(manifest)
             # Load embedder without touching the English chroma client (it
             # stays cold until the first English request).
             if self._embedder is None:
@@ -1276,6 +1731,21 @@ class StorageRuntime:
                                 self.embed_model,
                                 device=self.retrieval_device,
                             )
+            try:
+                test_vec = self._embedder.encode(["startup_dim_check"], normalize_embeddings=True)
+            except Exception as exc:
+                raise RuntimeError(f"retrieval embedder failed test encode: {exc}") from exc
+            if not len(test_vec) or not len(test_vec[0]):
+                raise RuntimeError("retrieval embedder returned an empty vector")
+            embed_dimension = int(len(test_vec[0]))
+            collection_metadata = getattr(self._wiki_collection_es, "metadata", None) or {}
+            collection_dimension = self._collection_dimension_from_metadata(collection_metadata)
+            if collection_dimension is not None and collection_dimension != embed_dimension:
+                raise RuntimeError(
+                    f"embedding dimension mismatch (es): embedder={embed_dimension} collection={collection_dimension}"
+                )
+            self._embed_dimension = embed_dimension
+            self._collection_dimension = collection_dimension
             rerank_error = self.ensure_reranker()
             if rerank_error is not None or self._reranker is None:
                 raise RuntimeError(f"reranker unavailable: {rerank_error or 'failed_to_initialize'}")
@@ -1286,8 +1756,7 @@ class StorageRuntime:
             )
             ranked, rerank_enabled, rerank_ms, rerank_error = self.rerank_wiki_chunks(smoke_query, candidates)
             matches = self._serialize_debug_chunks(ranked[:3])
-            if not matches:
-                raise RuntimeError("startup retrieval test (es) returned no matches")
+            self._validate_smoke_matches(matches, expected_terms, "es")
             if not rerank_enabled:
                 raise RuntimeError(f"startup rerank test (es) did not enable reranker: {rerank_error or 'unknown'}")
             self._update_rag_status(
@@ -1295,9 +1764,21 @@ class StorageRuntime:
                 startup_rag_error=None,
                 startup_rag_checked_at=checked_at,
                 startup_rag_test_query=smoke_query,
+                startup_rag_test_expected_terms=expected_terms,
                 startup_rag_test_matches=matches,
                 startup_reranker_ok=True,
                 startup_reranker_error=None,
+                embed_model_path=str(self.embed_model),
+                embed_model_exists=Path(self.embed_model).exists(),
+                embed_dimension=self._embed_dimension,
+                collection_dimension=self._collection_dimension,
+                chroma_persist_dir=str(self.chroma_persist_dir_es),
+                chroma_persist_exists=self.chroma_persist_dir_es.exists(),
+                chroma_collection=self.chroma_collection_es,
+                chroma_count=spanish_count,
+                index_manifest=manifest_summary,
+                index_manifest_path=manifest_path,
+                index_manifest_error=manifest_error,
                 rerank_model_path=str(self.rerank_model),
                 rerank_available=True,
             )
@@ -1312,6 +1793,7 @@ class StorageRuntime:
                 startup_rag_error=error,
                 startup_rag_checked_at=checked_at,
                 startup_rag_test_query=smoke_query,
+                startup_rag_test_expected_terms=expected_terms,
                 startup_rag_test_matches=[],
                 startup_reranker_ok=False,
                 startup_reranker_error=error,
@@ -1323,6 +1805,9 @@ class StorageRuntime:
                 chroma_count=0,
                 embed_dimension=self._embed_dimension,
                 collection_dimension=self._collection_dimension,
+                index_manifest=self._index_manifest_es,
+                index_manifest_path=str(self._index_manifest_path(self.chroma_persist_dir_es)),
+                index_manifest_error=None if self._index_manifest_es else "manifest_unavailable",
                 rerank_model_path=str(self.rerank_model),
                 rerank_available=bool(self._reranker is not None),
             )
@@ -1363,9 +1848,44 @@ class StorageRuntime:
             idx += 1
 
     def ensure_wiki_retriever(self) -> None:
+        if self.rag_spanish_only:
+            # Spanish-only mode: only the embedder is needed for query-time
+            # encoding; the English Chroma client stays closed for the life
+            # of the process. retrieve_wiki_chunks() routes everything to the
+            # Spanish collection.
+            self._ensure_embedder_only()
+            return
         if self._embedder is not None and self._wiki_collection is not None:
             return
         self._load_retriever_runtime()
+
+    def _ensure_embedder_only(self) -> None:
+        """Load the bge-m3 embedder without touching the English Chroma
+        client. Used in Spanish-only mode so we never pay the cost of opening
+        the English index. Safe to call repeatedly (idempotent under lock)."""
+        if self._embedder is not None:
+            return
+        embed_model_exists = Path(self.embed_model).exists()
+        if not embed_model_exists:
+            raise FileNotFoundError(f"Path {self.embed_model} not found")
+        try:
+            from sentence_transformers import SentenceTransformer
+        except Exception as exc:
+            raise RuntimeError(f"retrieval dependencies unavailable: {type(exc).__name__}: {exc}") from exc
+        with self._retriever_init_lock:
+            if self._embedder is not None:
+                return
+            try:
+                self._embedder = SentenceTransformer(
+                    self.embed_model,
+                    device=self.retrieval_device,
+                    local_files_only=True,
+                )
+            except TypeError:
+                self._embedder = SentenceTransformer(
+                    self.embed_model,
+                    device=self.retrieval_device,
+                )
 
     def _kick_off_wiki_retriever_es_load(self) -> None:
         """Start a background load of the Spanish ChromaDB if not already loaded
@@ -1411,8 +1931,24 @@ class StorageRuntime:
                         settings=Settings(anonymized_telemetry=False),
                     )
                 collection = self._chroma_client_es.get_collection(self.chroma_collection_es)
-                count = collection.count()
+                count = int(collection.count())
+                manifest, manifest_path, manifest_error = self._load_index_manifest(self.chroma_persist_dir_es)
+                manifest_summary = self._manifest_summary(manifest)
+                if manifest_summary:
+                    manifest_count = manifest_summary.get("chunk_count")
+                    if manifest_count is not None and int(manifest_count) != count:
+                        raise RuntimeError(
+                            f"Spanish manifest chunk count mismatch: manifest={manifest_count} collection={count}"
+                        )
+                self._index_manifest_es = manifest_summary
                 self._wiki_collection_es = collection
+                if self._startup_rag_status.get("chroma_persist_dir") == str(self.chroma_persist_dir_es):
+                    self._update_rag_status(
+                        chroma_count=count,
+                        index_manifest=manifest_summary,
+                        index_manifest_path=manifest_path,
+                        index_manifest_error=manifest_error,
+                    )
                 logger.info("Spanish ChromaDB loaded: %s (%d chunks) in %.1fs", self.chroma_collection_es, count, time.perf_counter() - t0)
         except Exception as exc:
             self._chroma_client_es = None
@@ -1465,6 +2001,72 @@ class StorageRuntime:
             return f"{forwarded_proto}://{forwarded_host}".rstrip("/")
         return str(req.base_url).rstrip("/")
 
+    def _kiwix_article_exists(self, language: str, page_title: str) -> bool:
+        """Probe the appropriate Kiwix container to confirm an article is in the ZIM.
+
+        Returns True if the link is safe to expose to the user, False otherwise.
+        Failures (timeout, DNS, 5xx) fail-OPEN — we'd rather show a working link
+        with the slim chance of one occasional 404 than suppress every citation
+        when Kiwix is briefly slow.
+
+        Kiwix URL scheme (kiwix-serve with --urlRootLocation=/wiki/{lang}):
+            /wiki/{lang}/content/{book}/A/{slug}
+        302 if the article exists (redirects to the canonical /{slug} URL),
+        404 if not. Slug = title with spaces → '_', URL-escaped.
+        """
+        if not self.wiki_link_verify_enabled:
+            return True
+        title = (page_title or "").strip()
+        if not title:
+            return False
+        lang = "es" if str(language or "").strip().lower() == "es" else "en"
+        cache_key = (lang, title.lower())
+        with self._wiki_exists_lock:
+            cached = self._wiki_exists_cache.get(cache_key)
+            if cached is not None:
+                # touch for LRU
+                self._wiki_exists_cache.move_to_end(cache_key)
+                return cached
+        base = self.kiwix_base_es if lang == "es" else self.kiwix_base_en
+        book = self.kiwix_book_es if lang == "es" else self.kiwix_book_en
+        if not base or not book:
+            return True  # not configured — fail open
+        slug = quote(title.replace(" ", "_"), safe="_-:.()")
+        url = f"{base}/wiki/{lang}/content/{book}/A/{slug}"
+        exists: Optional[bool] = None
+        try:
+            req = UrllibRequest(url, method="HEAD")
+            # No-follow opener so a 302 is treated as "article exists" without
+            # paying for the second hop. urllib follows redirects by default.
+            class _NoRedirect(urllib.request.HTTPRedirectHandler):
+                def http_error_302(self, request, fp, code, msg, headers):
+                    err = urllib.error.HTTPError(request.full_url, code, msg, headers, fp)
+                    err.fp = fp
+                    raise err
+                http_error_301 = http_error_303 = http_error_307 = http_error_300 = http_error_302
+            opener = urllib.request.build_opener(_NoRedirect)
+            try:
+                with opener.open(req, timeout=self.kiwix_probe_timeout) as resp:
+                    exists = 200 <= resp.status < 400
+            except urllib.error.HTTPError as e:
+                # 302 == article exists (redirect to canonical content URL).
+                # 404 == article not in this ZIM. Everything else: fail open.
+                if 300 <= e.code < 400:
+                    exists = True
+                elif e.code == 404:
+                    exists = False
+                else:
+                    exists = True
+        except Exception:
+            # Network error / DNS / timeout — fail open. Don't poison the cache.
+            return True
+        with self._wiki_exists_lock:
+            self._wiki_exists_cache[cache_key] = bool(exists)
+            self._wiki_exists_cache.move_to_end(cache_key)
+            while len(self._wiki_exists_cache) > self.kiwix_probe_cache_max:
+                self._wiki_exists_cache.popitem(last=False)
+        return bool(exists)
+
     def _build_wiki_citation(self, title: Any, base_url: Optional[str], wiki_language: Optional[str] = None) -> Optional[Dict[str, str]]:
         page_title = self._compact_text(title, 240)
         if not page_title:
@@ -1472,9 +2074,14 @@ class StorageRuntime:
         root = str(base_url or "").rstrip("/")
         language = normalize_language_preference(wiki_language, default="en")
         encoded_title = quote(page_title, safe="")
+        wiki_url = f"{root}/wiki/{language}/viewer#wiki/{encoded_title}" if root else f"/wiki/{language}/viewer#wiki/{encoded_title}"
+        verified = self._kiwix_article_exists(language, page_title)
+        # If the article isn't in the ZIM, blank wiki_url. The portal frontend
+        # filters out citations with empty wiki_url, so dead links never reach
+        # the student. Preserve page_title so the citation is still countable.
         return {
             "page_title": page_title,
-            "wiki_url": f"{root}/wiki/{language}/viewer#wiki/{encoded_title}" if root else f"/wiki/{language}/viewer#wiki/{encoded_title}",
+            "wiki_url": wiki_url if verified else "",
             "label": f"Wikipedia: {page_title}",
         }
 
@@ -1548,6 +2155,7 @@ class StorageRuntime:
             "source_document": meta.get("title") or None,
             "source_metadata": self._clone_data(meta),
             "preview": self._compact_text(body, self.retrieval_preview_chars),
+            "rag_index_language": chunk.get("rag_index_language"),
         }
 
     def _serialize_debug_chunks(self, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1637,7 +2245,7 @@ class StorageRuntime:
         compact = self._compact_text(text, self.retrieval_query_max_chars)
         lowered = compact.lower()
         if not lowered:
-            logger.info("skip_retrieval: empty query")
+            logger.debug("skip_retrieval: empty query")
             return True
 
         # Skip pure greetings (English and Spanish)
@@ -1650,13 +2258,13 @@ class StorageRuntime:
         }
         stripped = re.sub(r"[^\w\s]", "", lowered).strip()
         if stripped in _GREETING_PHRASES:
-            logger.info("skip_retrieval: greeting detected: %r", stripped)
+            logger.debug("skip_retrieval: greeting detected")
             return True
 
         # Skip pure math expressions (e.g. "2+2", "5*3+1")
         math_stripped = re.sub(r"\s", "", lowered)
         if re.fullmatch(r"[\d+\-*/^().=<>%]+", math_stripped) and len(math_stripped) >= 2:
-            logger.info("skip_retrieval: pure math expression: %r", compact)
+            logger.debug("skip_retrieval: pure math expression")
             return True
 
         # Skip "what is 2+2" style math queries (supports Spanish math words)
@@ -1668,7 +2276,7 @@ class StorageRuntime:
         math_query_norm = re.sub(r"\bentre\b|\bdividido\b", "/", math_query_norm)
         math_query_stripped = re.sub(r"\s", "", math_query_norm)
         if math_query != lowered and re.fullmatch(r"[\d+\-*/^().=<>%]+", math_query_stripped) and len(math_query_stripped) >= 2:
-            logger.info("skip_retrieval: math query: %r", compact)
+            logger.debug("skip_retrieval: math query")
             return True
 
         # Skip very short messages with no question indicators
@@ -1678,7 +2286,7 @@ class StorageRuntime:
                            "que", "quien", "donde", "cuando", "por", "como", "cual"}
         longest_word = max((len(w) for w in words), default=0)
         if len(words) < 3 and "?" not in compact and not (words & _QUESTION_WORDS) and longest_word < 5:
-            logger.info("skip_retrieval: short non-question: %r", compact)
+            logger.debug("skip_retrieval: short non-question")
             return True
 
         # Skip personal/subjective queries (existing logic)
@@ -1719,9 +2327,9 @@ class StorageRuntime:
             return False
         has_topic_nouns = bool(re.search(r"[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})*", compact))
         if has_topic_nouns:
-            logger.info("skip_retrieval: personal query but topic nouns detected, proceeding with retrieval")
+            logger.debug("skip_retrieval: personal query but topic nouns detected, proceeding with retrieval")
             return False
-        logger.info("skip_retrieval: personal/subjective query with no topic nouns, skipping")
+        logger.debug("skip_retrieval: personal/subjective query with no topic nouns, skipping")
         return True
 
     def build_retrieval_query(self, messages: List[Dict[str, str]]) -> str:
@@ -1770,16 +2378,39 @@ class StorageRuntime:
             return []
         self.ensure_wiki_retriever()
         assert self._embedder is not None
-        assert self._wiki_collection is not None
-        # Spanish collection: only used when already loaded. The 12 GB HNSW on a
-        # WSL2 9P-bind-mount serializes filesystem I/O with active queries, so
-        # an in-request lazy-load stalls the entire chat. The load is opt-in via
-        # LOAD_ES_INDEX_AT_STARTUP and runs in the background-startup thread.
-        # When the Spanish index is not loaded, fall back to the English index
-        # (bge-m3 is multilingual, so cross-lingual retrieval works).
-        use_es = (str(user_language or "en").strip().lower() == "es" and self._wiki_collection_es is not None)
-        active_collection = self._wiki_collection_es if use_es else self._wiki_collection
-        rag_index_language = "es" if use_es else "en"
+        if self.rag_spanish_only:
+            # Spanish-only mode: ignore user_language and always query the
+            # Spanish collection. The startup gate (LOAD_ES_INDEX_AT_STARTUP=1
+            # + readiness_ok blocking on validate_startup_rag_es) means the
+            # Spanish collection is already loaded by the time any chat
+            # request reaches this code path. The defensive kickoff below
+            # covers manual invocations from scripts that bypass the gate.
+            if self._wiki_collection_es is None:
+                logger.warning(
+                    "spanish-only mode but Spanish ChromaDB not loaded; kicking off background load"
+                )
+                self._kick_off_wiki_retriever_es_load()
+                wait_started = time.perf_counter()
+                while self._wiki_collection_es is None and (time.perf_counter() - wait_started) < 60:
+                    time.sleep(0.5)
+                if self._wiki_collection_es is None:
+                    raise RuntimeError(
+                        "Spanish ChromaDB not loaded after 60s; cannot retrieve in spanish-only mode"
+                    )
+            active_collection = self._wiki_collection_es
+            rag_index_language = "es"
+        else:
+            assert self._wiki_collection is not None
+            # Spanish collection: only used when already loaded. The 12 GB HNSW
+            # on a WSL2 9P-bind-mount serializes filesystem I/O with active
+            # queries, so an in-request lazy-load stalls the entire chat. The
+            # load is opt-in via LOAD_ES_INDEX_AT_STARTUP and runs in the
+            # background-startup thread. When the Spanish index is not loaded,
+            # fall back to the English index (bge-m3 is multilingual, so
+            # cross-lingual retrieval works).
+            use_es = (str(user_language or "en").strip().lower() == "es" and self._wiki_collection_es is not None)
+            active_collection = self._wiki_collection_es if use_es else self._wiki_collection
+            rag_index_language = "es" if use_es else "en"
         n_results = max(1, int(limit or self.retrieval_candidate_k))
         with self._retriever_run_lock:
             q_emb = self._embedder.encode([q], normalize_embeddings=True).tolist()
@@ -1837,10 +2468,24 @@ class StorageRuntime:
         r"|(?:override\s+(?:your|all|previous))"
     )
 
+    # Compiled separately so the fast-path probe can run before the per-line
+    # scan. Most Wikipedia chunks contain none of these keyword stems, so we
+    # can skip the regex scan entirely after a single substring check.
+    _INJECTION_FAST_KEYWORDS = (
+        "ignore", "system:", "assistant:", "user:", "role:",
+        "do not follow", "disregard", "override",
+    )
+
     def _sanitize_retrieved_chunk(self, text: str) -> Tuple[str, bool]:
         """Strip injection-like lines from retrieved chunk content."""
         if not text:
             return text, False
+        # Fast-path: if no suspicious keyword appears in the body at all, the
+        # full per-line regex scan is guaranteed to find nothing. This is the
+        # common case for encyclopedia text and saves O(N_lines) regex calls.
+        lowered = text.lower()
+        if not any(kw in lowered for kw in self._INJECTION_FAST_KEYWORDS):
+            return text.strip(), False
         flagged = False
         clean_lines = []
         for line in text.split("\n"):
@@ -1850,19 +2495,60 @@ class StorageRuntime:
             clean_lines.append(line)
         return "\n".join(clean_lines).strip(), flagged
 
+    _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+    _WHITESPACE_RUN = re.compile(r"\s+")
+
+    def _safe_chunk_title(self, value: Any, max_len: int = 200) -> str:
+        """Sanitize a title-like field before injecting into the prompt heading.
+
+        Strips control chars, collapses whitespace, drops injection markers,
+        and caps length. Used for chunk title and section_title.
+        """
+        if not value:
+            return ""
+        text = self._CONTROL_CHARS.sub(" ", str(value))
+        text = self._WHITESPACE_RUN.sub(" ", text).strip()
+        if not text:
+            return ""
+        cleaned, _ = self._sanitize_retrieved_chunk(text)
+        cleaned = self._WHITESPACE_RUN.sub(" ", cleaned).strip()
+        if len(cleaned) > max_len:
+            cleaned = cleaned[:max_len].rstrip()
+        return cleaned
+
     _SPANISH_INDICATORS = re.compile(
         r"\b(?:el|la|los|las|del|una|unos|unas|es|fue|son|para|por|con|como|pero|sobre|entre|desde|hasta|donde|cuando|porque|puede|tiene|hace|esta|este|estos|estas|ese|esos|esas|aquel)\b",
         re.IGNORECASE,
     )
 
     def _detect_query_language(self, text: str) -> str:
-        """Return 'es' if text looks Spanish, 'en' otherwise."""
+        """Return 'es' if text looks Spanish, 'en' otherwise.
+
+        Cached on the instance via a small dict keyed by the 500-char prefix
+        used for detection. Queries within a single chat are highly repetitive
+        (the rerank pipeline calls this with every candidate's pair string)
+        so a tiny cache eliminates a meaningful chunk of regex CPU.
+        """
         sample = (text or "")[:500]
+        cache = getattr(self, "_lang_detect_cache", None)
+        if cache is None:
+            cache = {}
+            self._lang_detect_cache = cache  # type: ignore[attr-defined]
+        cached = cache.get(sample)
+        if cached is not None:
+            return cached
         words = re.findall(r"\w+", sample, re.UNICODE)
         if not words:
-            return "en"
-        matches = len(self._SPANISH_INDICATORS.findall(sample))
-        return "es" if matches / len(words) > 0.06 else "en"
+            result = "en"
+        else:
+            matches = len(self._SPANISH_INDICATORS.findall(sample))
+            result = "es" if matches / len(words) > 0.06 else "en"
+        # Cap the cache; LRU isn't worth the import here, but unbounded growth
+        # would matter on a long-running install. 4096 short strings is < 1 MB.
+        if len(cache) >= 4096:
+            cache.pop(next(iter(cache)))
+        cache[sample] = result
+        return result
 
     def _heuristic_rerank_score(self, query: str, chunk: Dict[str, Any], query_language: str = "en") -> float:
         query_terms = set(self._informative_terms(query))
@@ -1896,7 +2582,9 @@ class StorageRuntime:
         start_t = time.perf_counter()
         scores: Optional[List[float]] = None
         if rerank_error is None and self._reranker is not None:
-            logger.info("reranker active, scoring %d chunks (query_lang=%s)", len(ranked), query_language)
+            # Hot path — keep at DEBUG so 50-req/s load doesn't flood the log.
+            # Failure paths below stay at WARNING/INFO.
+            logger.debug("reranker active, scoring %d chunks (query_lang=%s)", len(ranked), query_language)
             pairs = []
             for chunk in ranked:
                 meta = chunk.get("meta") or {}
@@ -1904,14 +2592,23 @@ class StorageRuntime:
                 body = self._compact_text(chunk.get("doc", ""), 1200)
                 pairs.append([query, f"{title}\n{body}".strip()])
             try:
-                raw_scores = self._reranker.predict(pairs)
+                # Batch the cross-encoder forward pass so peak VRAM stays
+                # bounded even when retrieval_candidate_k is bumped up. A
+                # batch of 16 is conservative for bge-reranker on either CPU
+                # or an 8 GB GPU; raise via RERANK_BATCH_SIZE when memory
+                # headroom allows.
+                rerank_batch = max(1, int(os.getenv("RERANK_BATCH_SIZE", "16")))
+                raw_scores: List[float] = []
+                for i in range(0, len(pairs), rerank_batch):
+                    chunk_scores = self._reranker.predict(pairs[i:i + rerank_batch])
+                    raw_scores.extend(list(chunk_scores))
                 scores = [self._sigmoid_score(score) for score in raw_scores]
                 rerank_enabled = True
             except Exception as exc:
                 rerank_error = f"{type(exc).__name__}: {exc}"
                 logger.warning("reranker predict failed: %s", rerank_error)
         else:
-            logger.info("reranker disabled: error=%s, loaded=%s", rerank_error, self._reranker is not None)
+            logger.debug("reranker disabled: error=%s, loaded=%s", rerank_error, self._reranker is not None)
         if scores is None:
             rerank_error = f"{rerank_error or 'reranker_unavailable'} (heuristic fallback)"
             scores = [self._heuristic_rerank_score(query, chunk, query_language) for chunk in ranked]
@@ -1954,6 +2651,8 @@ class StorageRuntime:
         candidates = self.retrieve_wiki_chunks(query, limit=self.retrieval_candidate_k, user_language=user_language)
         rag_index_language = candidates[0].get("rag_index_language", "en") if candidates else "en"
         rag_collection_path = str(self.chroma_persist_dir_es if rag_index_language == "es" else self.chroma_persist_dir)
+        rag_manifest = self._index_manifest_es if rag_index_language == "es" else self._index_manifest
+        rag_manifest_path = str(self._index_manifest_path(self.chroma_persist_dir_es if rag_index_language == "es" else self.chroma_persist_dir))
         ranked, rerank_enabled, rerank_ms, rerank_error = self.rerank_wiki_chunks(query, candidates)
         eligible: List[Dict[str, Any]] = []
         for chunk in ranked:
@@ -1989,6 +2688,9 @@ class StorageRuntime:
             "reason": None if selected_chunks else ("no_candidates" if not candidates else "no_relevant_chunks"),
             "rag_index_language": rag_index_language,
             "rag_collection_path": rag_collection_path,
+            "index_manifest": self._clone_data(rag_manifest),
+            "index_manifest_path": rag_manifest_path,
+            "index_manifest_error": None if rag_manifest else "manifest_unavailable",
         }
     def build_wiki_context_payload(self, chunks: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
         parts: List[str] = []
@@ -1998,9 +2700,9 @@ class StorageRuntime:
         truncated_count = 0
         for i, chunk in enumerate(chunks, 1):
             meta = chunk.get("meta") or {}
-            title = str(meta.get("title") or "").strip()
-            section_title = str(meta.get("section_title") or "").strip()
-            section_path = str(meta.get("section_path") or "").strip()
+            title = self._safe_chunk_title(meta.get("title"))
+            section_title = self._safe_chunk_title(meta.get("section_title"))
+            section_path = self._safe_chunk_title(meta.get("section_path"))
             body = str(chunk.get("doc") or "").strip()
             if not body:
                 continue
@@ -2123,15 +2825,18 @@ class StorageRuntime:
         try:
             env = json.loads(blob.decode("utf-8"))
         except Exception:
-            raise HTTPException(500, "Corrupted encrypted file")
+            logger.warning("decrypt_blob: envelope parse failed", exc_info=True)
+            raise HTTPException(500, "Internal storage error")
         if not isinstance(env, dict) or env.get("v") != self.enc_version or env.get("alg") != "AES-256-GCM":
-            raise HTTPException(500, "Unsupported encrypted file format")
+            logger.warning("decrypt_blob: unsupported envelope format v=%r alg=%r", env.get("v") if isinstance(env, dict) else "?", env.get("alg") if isinstance(env, dict) else "?")
+            raise HTTPException(500, "Internal storage error")
         try:
             nonce = base64.b64decode(str(env.get("nonce", "")), validate=True)
             cipher = base64.b64decode(str(env.get("ciphertext", "")), validate=True)
             return self._aes.decrypt(nonce, cipher, None)
         except Exception:
-            raise HTTPException(500, "Failed to decrypt file")
+            logger.warning("decrypt_blob: AES-GCM decryption failed", exc_info=True)
+            raise HTTPException(500, "Internal storage error")
 
     def write_json_atomic(self, path: Path, payload: Dict[str, Any]) -> int:
         plain = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -2159,15 +2864,29 @@ class StorageRuntime:
             pass
         return int(size)
 
+    # 5-second cache of disk usage. ensure_capacity and storage_warning both
+    # call disk() on the hot path; disk_usage is a syscall that on Windows
+    # serializes briefly with concurrent FS activity. A 5 s staleness window
+    # is fine for a metric that changes by KBs per second.
+    _DISK_CACHE_TTL_S = 5.0
+
     def disk(self) -> Dict[str, Any]:
+        now = time.monotonic()
+        cached = getattr(self, "_disk_cache", None)
+        cached_ts = getattr(self, "_disk_cache_ts", 0.0)
+        if cached is not None and (now - cached_ts) < self._DISK_CACHE_TTL_S:
+            return cached
         usage = shutil.disk_usage(str(self.data_root))
         pct = (usage.used / max(usage.total, 1)) * 100.0
-        return {
+        snap = {
             "total_bytes": int(usage.total),
             "used_bytes": int(usage.used),
             "free_bytes": int(usage.free),
             "used_percent": round(pct, 4),
         }
+        self._disk_cache = snap  # type: ignore[attr-defined]
+        self._disk_cache_ts = now  # type: ignore[attr-defined]
+        return snap
 
     def pressure(self, snap: Dict[str, Any]) -> str:
         if snap["used_percent"] >= self.emer_pct or snap["free_bytes"] <= self.emer_free:
@@ -2190,7 +2909,19 @@ class StorageRuntime:
         c.row_factory = sqlite3.Row
         c.execute("PRAGMA foreign_keys=ON")
         c.execute("PRAGMA journal_mode=WAL")
-        c.execute("PRAGMA synchronous=FULL")
+        # synchronous=NORMAL is the WAL-recommended setting: it still flushes
+        # the WAL at every commit (so a power loss can lose at most the last
+        # committed transaction, never corrupt the DB) but skips the extra
+        # fsync of the WAL header that FULL adds. Under contention this is
+        # the difference between 20–100 ms of lock thrash per request and
+        # near-zero overhead. WAL journaling provides the durability we care
+        # about; FULL is over-cautious for a non-financial app.
+        c.execute("PRAGMA synchronous=NORMAL")
+        # tiny in-memory temp store, modest mmap window for hot-page reads —
+        # both help cleanup queries and analytics rollups stop hitting disk.
+        c.execute("PRAGMA temp_store=MEMORY")
+        c.execute("PRAGMA mmap_size=134217728")  # 128 MB
+        c.execute("PRAGMA cache_size=-65536")    # ≈ 64 MB page cache per conn
         return c
 
     @contextmanager
@@ -2210,11 +2941,10 @@ class StorageRuntime:
             c.close()
 
     def table_columns(self, c: sqlite3.Connection, table: str) -> List[str]:
-        return [str(row["name"]) for row in c.execute(f"PRAGMA table_info({table})").fetchall()]
+        return migration_table_columns(c, table)
 
     def ensure_column(self, c: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
-        if column not in self.table_columns(c, table):
-            c.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+        migration_ensure_column(c, table, column, ddl)
 
     def migrate_chat_schema(self, c: sqlite3.Connection) -> None:
         c.execute(
@@ -2262,6 +2992,7 @@ class StorageRuntime:
             return None
         return str(self.get_chat_folder_row(c, user_id, value)["id"])
     def init_db(self) -> None:
+        self.ensure_dirs()
         try:
             check_conn = self.db()
             try:
@@ -2275,48 +3006,8 @@ class StorageRuntime:
             logger.critical("SQLite integrity check error: %s", exc)
             raise RuntimeError(f"Database corrupted or unreadable: {exc}") from exc
         with self.tx() as c:
-            c.executescript(
-                """
-CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,username TEXT UNIQUE NOT NULL,username_norm TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,role TEXT NOT NULL,created_at TEXT NOT NULL,last_login_at TEXT,last_active_at TEXT,storage_bytes_used INTEGER NOT NULL DEFAULT 0,is_deleted INTEGER NOT NULL DEFAULT 0,deleted_at TEXT,locked_until TEXT,lock_reason TEXT,preferred_language TEXT NOT NULL DEFAULT 'en',preferred_theme TEXT NOT NULL DEFAULT 'light');
-CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,user_id TEXT NOT NULL,token_hash TEXT UNIQUE NOT NULL,created_at TEXT NOT NULL,expires_at TEXT NOT NULL,last_accessed_at TEXT,ip TEXT,user_agent TEXT,revoked_at TEXT,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
-CREATE INDEX IF NOT EXISTS ix_sessions_token ON sessions(token_hash);
-CREATE TABLE IF NOT EXISTS login_attempts(username_norm TEXT NOT NULL,ip TEXT NOT NULL,fail_count INTEGER NOT NULL DEFAULT 0,first_attempt_ts INTEGER NOT NULL,last_attempt_ts INTEGER NOT NULL,lockout_until_ts INTEGER,PRIMARY KEY(username_norm,ip));
-CREATE TABLE IF NOT EXISTS chats(id TEXT PRIMARY KEY,user_id TEXT NOT NULL,title TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,last_accessed_at TEXT,token_count_estimate INTEGER NOT NULL DEFAULT 0,file_path TEXT NOT NULL,size_bytes INTEGER NOT NULL DEFAULT 0,is_deleted INTEGER NOT NULL DEFAULT 0,deleted_at TEXT,deleted_by_user INTEGER NOT NULL DEFAULT 0,is_guest_owned INTEGER NOT NULL DEFAULT 0,is_saved INTEGER NOT NULL DEFAULT 0,folder_id TEXT,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
-CREATE TABLE IF NOT EXISTS chat_folders(id TEXT PRIMARY KEY,user_id TEXT NOT NULL,name TEXT NOT NULL,name_norm TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
-CREATE UNIQUE INDEX IF NOT EXISTS ux_chat_folders_user_name_norm ON chat_folders(user_id,name_norm);
-CREATE INDEX IF NOT EXISTS ix_chat_folders_user_updated ON chat_folders(user_id,updated_at);
-CREATE TABLE IF NOT EXISTS documents(id TEXT PRIMARY KEY,user_id TEXT NOT NULL,title TEXT NOT NULL,type TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,last_accessed_at TEXT,size_bytes INTEGER NOT NULL DEFAULT 0,file_path TEXT NOT NULL,is_starred INTEGER NOT NULL DEFAULT 0,is_deleted INTEGER NOT NULL DEFAULT 0,deleted_at TEXT,deleted_by_user INTEGER NOT NULL DEFAULT 0,is_guest_owned INTEGER NOT NULL DEFAULT 0,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
-CREATE TABLE IF NOT EXISTS user_restrictions(user_id TEXT PRIMARY KEY,docs_write_blocked_until TEXT,docs_block_reason TEXT,ai_prompt_cooldown_until TEXT,ai_send_blocked_until TEXT,manual_locked_until TEXT,manual_lock_reason TEXT,manual_locked_by TEXT,manual_lock_permanent INTEGER NOT NULL DEFAULT 0,updated_at TEXT,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
-CREATE TABLE IF NOT EXISTS rate_events(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id TEXT NOT NULL,event_type TEXT NOT NULL,bytes INTEGER NOT NULL DEFAULT 0,created_ts INTEGER NOT NULL,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
-CREATE INDEX IF NOT EXISTS ix_rate_events_user_type_ts ON rate_events(user_id,event_type,created_ts);
-CREATE TABLE IF NOT EXISTS ip_rate_events(id INTEGER PRIMARY KEY AUTOINCREMENT,key TEXT NOT NULL,event_type TEXT NOT NULL,created_ts INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS ix_ip_rate_events_key_type_ts ON ip_rate_events(key,event_type,created_ts);
-CREATE TABLE IF NOT EXISTS security_events(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id TEXT,username TEXT,ip TEXT,endpoint TEXT,event_type TEXT NOT NULL,severity TEXT NOT NULL,detail TEXT,observed REAL,threshold REAL,action TEXT,created_at TEXT NOT NULL,created_ts INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS cleanup_events(id INTEGER PRIMARY KEY AUTOINCREMENT,reason TEXT NOT NULL,level TEXT NOT NULL,bytes_reclaimed INTEGER NOT NULL,items_deleted INTEGER NOT NULL,used_percent REAL NOT NULL,free_bytes INTEGER NOT NULL,details TEXT,created_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS usage_events(id INTEGER PRIMARY KEY AUTOINCREMENT,event_type TEXT NOT NULL,surface TEXT NOT NULL,day_bucket TEXT NOT NULL,created_at TEXT NOT NULL,created_ts INTEGER NOT NULL,user_id TEXT,username TEXT,user_role TEXT,preferred_language TEXT,session_id TEXT,value INTEGER NOT NULL DEFAULT 1,metadata_json TEXT NOT NULL DEFAULT '{}');
-CREATE INDEX IF NOT EXISTS ix_usage_events_day_event_surface ON usage_events(day_bucket,event_type,surface);
-CREATE INDEX IF NOT EXISTS ix_usage_events_user_day ON usage_events(user_id,day_bucket);
-CREATE TABLE IF NOT EXISTS analytics_daily_rollups(day_bucket TEXT NOT NULL,metric_key TEXT NOT NULL,surface TEXT NOT NULL DEFAULT '',user_role TEXT NOT NULL DEFAULT '',preferred_language TEXT NOT NULL DEFAULT '',value INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(day_bucket,metric_key,surface,user_role,preferred_language));
-CREATE TABLE IF NOT EXISTS analytics_daily_active_users(day_bucket TEXT NOT NULL,user_id TEXT NOT NULL,user_role TEXT NOT NULL DEFAULT '',preferred_language TEXT NOT NULL DEFAULT '',PRIMARY KEY(day_bucket,user_id));
-CREATE INDEX IF NOT EXISTS ix_analytics_active_users_day ON analytics_daily_active_users(day_bucket,user_role,preferred_language);
-CREATE TABLE IF NOT EXISTS analytics_exports(id TEXT PRIMARY KEY,format TEXT NOT NULL,date_from TEXT NOT NULL,date_to TEXT NOT NULL,created_at TEXT NOT NULL,created_by_user_id TEXT,status TEXT NOT NULL,file_path TEXT,metadata_json TEXT NOT NULL DEFAULT '{}');
-                """
-            )
-            self.ensure_column(c, "users", "preferred_language", "preferred_language TEXT NOT NULL DEFAULT 'en'")
-            self.ensure_column(c, "users", "preferred_theme", "preferred_theme TEXT NOT NULL DEFAULT 'light'")
-            self.ensure_column(c, "users", "guest_logout_at", "guest_logout_at TEXT")
-            c.execute("UPDATE users SET preferred_language='en' WHERE preferred_language IS NULL OR TRIM(preferred_language)='' OR LOWER(TRIM(preferred_language)) NOT IN ('en','es')")
-            c.execute("UPDATE users SET preferred_theme='light' WHERE preferred_theme IS NULL OR TRIM(preferred_theme)='' OR LOWER(TRIM(preferred_theme)) NOT IN ('light','dark')")
-            self.migrate_chat_schema(c)
+            run_migrations(c, self.now_iso())
             c.execute("INSERT OR IGNORE INTO user_restrictions(user_id,updated_at) SELECT id, ? FROM users", (self.now_iso(),))
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS active_generations(
-                    request_id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    started_at TEXT NOT NULL
-                )
-            """)
-            c.execute("CREATE INDEX IF NOT EXISTS ix_active_gen_user ON active_generations(user_id)")
 
     def analytics_day_bucket(self, iso_value: Optional[str] = None) -> str:
         try:
@@ -2619,6 +3310,15 @@ CREATE TABLE IF NOT EXISTS analytics_exports(id TEXT PRIMARY KEY,format TEXT NOT
         cool_until = (datetime.now(timezone.utc) + timedelta(seconds=self.ai_prompt_cooldown_seconds)).isoformat()
         c.execute("UPDATE user_restrictions SET ai_prompt_cooldown_until=?, updated_at=? WHERE user_id=?", (cool_until, self.now_iso(), user["id"]))
 
+    # ── Rate-limit window semantics ──────────────────────────────────────
+    # These counters implement a SLIDING (non-tumbling) window: each query
+    # asks "how many events of type X did user U record in the last `sec`
+    # seconds *from now*". That means the limit refills continuously as old
+    # events age out — there is no fixed minute boundary at :00. The benefit
+    # is no thundering-herd at boundaries; the cost is that a busy user can't
+    # see a "next-reset" clock because there isn't one. If a strict bucket is
+    # ever required (e.g. for a contractual quota), replace with a token
+    # bucket persisted per user (capacity = th, refill = th/sec).
     def rate_count(self, c: sqlite3.Connection, uid_: str, typ: str, sec: int = 60) -> int:
         r = c.execute("SELECT COUNT(*) c FROM rate_events WHERE user_id=? AND event_type=? AND created_ts>=?", (uid_, typ, self.now_ts() - sec)).fetchone()
         return int(r["c"] if r else 0)
@@ -2659,6 +3359,8 @@ CREATE TABLE IF NOT EXISTS analytics_exports(id TEXT PRIMARY KEY,format TEXT NOT
 
     def req_user(self, c: sqlite3.Connection, req: Request, admin: bool = False, write: bool = False) -> sqlite3.Row:
         """Resolve the current session cookie into a validated user row."""
+        if write:
+            self.validate_same_origin_write(req)
         tok = req.cookies.get(self.cookie)
         if not tok:
             raise HTTPException(401, "Not authenticated")
@@ -2734,7 +3436,16 @@ CREATE TABLE IF NOT EXISTS analytics_exports(id TEXT PRIMARY KEY,format TEXT NOT
         if required <= 0:
             return
         if self.needs_cleanup(required):
-            self.run_cleanup(reason, required, c=c)
+            try:
+                self.run_cleanup(reason, required, c=c)
+            except RuntimeError as exc:
+                # run_cleanup can refuse to run (e.g. CLEANUP_REQUIRE_BACKUP_MARKER=1
+                # in production and no fresh backup marker). Failing closed here
+                # bricks every write path because needs_cleanup() trips at 85%
+                # host-disk usage. Fall through to the actual capacity check
+                # below — if there is real space, the write proceeds; if not,
+                # the 507 path returns a clean error.
+                logger.warning("ensure_capacity: cleanup unavailable, continuing without reclaim: %s", exc)
         snap = self.disk()
         if snap["free_bytes"] < required + self.emer_free:
             raise HTTPException(507, "Insufficient storage")
@@ -2751,57 +3462,107 @@ CREATE TABLE IF NOT EXISTS analytics_exports(id TEXT PRIMARY KEY,format TEXT NOT
         c.execute("DELETE FROM chats WHERE id=?", (row["id"],))
         return b, 1
 
-    def run_cleanup(self, reason: str = "manual", required: int = 0, c: Optional[sqlite3.Connection] = None) -> Dict[str, Any]:
+    def run_cleanup(self, reason: str = "manual", required: int = 0, c: Optional[sqlite3.Connection] = None, dry_run: bool = False) -> Dict[str, Any]:
         if not self._cleanup_lock.acquire(blocking=False):
             return {"running": True}
         reclaimed, deleted = 0, 0
+        manifest: Dict[str, Any] = {
+            "started_at": self.now_iso(),
+            "reason": reason,
+            "required_bytes": int(required),
+            "dry_run": bool(dry_run),
+            "backup_marker_required": bool(self.cleanup_require_backup_marker),
+            "backup_marker_path": str(self.cleanup_backup_marker_path),
+            "backup_marker_fresh": self.cleanup_backup_marker_is_fresh(),
+            "candidates": {},
+            "quarantined_orphans": [],
+            "errors": [],
+        }
 
         def cleanup_pass(conn: sqlite3.Connection) -> None:
             nonlocal reclaimed, deleted
             now = datetime.now(timezone.utc)
             tcut = (now - timedelta(days=self.trash_retention_days)).isoformat()
-            for r in conn.execute("SELECT * FROM documents WHERE is_deleted=1 AND deleted_at IS NOT NULL AND deleted_at<=? ORDER BY deleted_at ASC", (tcut,)).fetchall():
-                b, n = self.hard_del_doc(conn, r); reclaimed += b; deleted += n
-            for r in conn.execute("SELECT * FROM chats WHERE is_deleted=1 AND deleted_at IS NOT NULL AND deleted_at<=? ORDER BY deleted_at ASC", (tcut,)).fetchall():
-                b, n = self.hard_del_chat(conn, r); reclaimed += b; deleted += n
+            trash_docs = conn.execute("SELECT * FROM documents WHERE is_deleted=1 AND deleted_at IS NOT NULL AND deleted_at<=? ORDER BY deleted_at ASC", (tcut,)).fetchall()
+            manifest["candidates"]["expired_trash_docs"] = len(trash_docs)
+            for r in trash_docs:
+                if dry_run:
+                    reclaimed += self.path_size(self.safe_path(r["file_path"], r["user_id"])); deleted += 1
+                else:
+                    b, n = self.hard_del_doc(conn, r); reclaimed += b; deleted += n
+            trash_chats = conn.execute("SELECT * FROM chats WHERE is_deleted=1 AND deleted_at IS NOT NULL AND deleted_at<=? ORDER BY deleted_at ASC", (tcut,)).fetchall()
+            manifest["candidates"]["expired_trash_chats"] = len(trash_chats)
+            for r in trash_chats:
+                if dry_run:
+                    reclaimed += self.path_size(self.safe_path(r["file_path"], r["user_id"])); deleted += 1
+                else:
+                    b, n = self.hard_del_chat(conn, r); reclaimed += b; deleted += n
             gcut = (now - timedelta(days=self.guest_retention_days)).isoformat()
             logout_cut = (now - timedelta(minutes=self.guest_logout_delete_minutes)).isoformat()
             guests = conn.execute(
                 "SELECT * FROM users WHERE role='guest' AND is_deleted=0 AND (COALESCE(last_active_at,created_at)<=? OR (guest_logout_at IS NOT NULL AND guest_logout_at<=?))",
                 (gcut, logout_cut),
             ).fetchall()
+            manifest["candidates"]["expired_guest_users"] = len(guests)
             for g in guests:
-                for r in conn.execute("SELECT * FROM documents WHERE user_id=?", (g["id"],)).fetchall(): b, n = self.hard_del_doc(conn, r); reclaimed += b; deleted += n
-                for r in conn.execute("SELECT * FROM chats WHERE user_id=?", (g["id"],)).fetchall(): b, n = self.hard_del_chat(conn, r); reclaimed += b; deleted += n
-                conn.execute("DELETE FROM sessions WHERE user_id=?", (g["id"],)); conn.execute("DELETE FROM users WHERE id=?", (g["id"],))
+                for r in conn.execute("SELECT * FROM documents WHERE user_id=?", (g["id"],)).fetchall():
+                    if dry_run:
+                        reclaimed += self.path_size(self.safe_path(r["file_path"], r["user_id"])); deleted += 1
+                    else:
+                        b, n = self.hard_del_doc(conn, r); reclaimed += b; deleted += n
+                for r in conn.execute("SELECT * FROM chats WHERE user_id=?", (g["id"],)).fetchall():
+                    if dry_run:
+                        reclaimed += self.path_size(self.safe_path(r["file_path"], r["user_id"])); deleted += 1
+                    else:
+                        b, n = self.hard_del_chat(conn, r); reclaimed += b; deleted += n
+                if not dry_run:
+                    conn.execute("DELETE FROM sessions WHERE user_id=?", (g["id"],)); conn.execute("DELETE FROM users WHERE id=?", (g["id"],))
 
             def still() -> bool:
                 s = self.disk(); return self.pressure(s) in ("cleanup", "emergency") or (required > 0 and s["free_bytes"] < required + self.clean_free)
 
             if still():
                 ccut = (now - timedelta(days=self.chat_retention_days)).isoformat()
-                for r in conn.execute("SELECT * FROM chats WHERE is_deleted=0 AND is_saved=0 AND COALESCE(last_accessed_at,updated_at,created_at)<=? ORDER BY COALESCE(last_accessed_at,updated_at,created_at) ASC", (ccut,)).fetchall():
+                old_chats = conn.execute("SELECT * FROM chats WHERE is_deleted=0 AND is_saved=0 AND COALESCE(last_accessed_at,updated_at,created_at)<=? ORDER BY COALESCE(last_accessed_at,updated_at,created_at) ASC", (ccut,)).fetchall()
+                manifest["candidates"]["old_unsaved_chats"] = len(old_chats)
+                for r in old_chats:
                     if not still(): break
-                    b, n = self.hard_del_chat(conn, r); reclaimed += b; deleted += n
+                    if dry_run:
+                        reclaimed += self.path_size(self.safe_path(r["file_path"], r["user_id"])); deleted += 1
+                    else:
+                        b, n = self.hard_del_chat(conn, r); reclaimed += b; deleted += n
             if still():
                 dcut = (now - timedelta(days=self.doc_retention_days)).isoformat()
-                for r in conn.execute("SELECT * FROM documents WHERE is_deleted=0 AND is_starred=0 AND COALESCE(last_accessed_at,updated_at,created_at)<=? ORDER BY COALESCE(last_accessed_at,updated_at,created_at) ASC", (dcut,)).fetchall():
+                old_docs = conn.execute("SELECT * FROM documents WHERE is_deleted=0 AND is_starred=0 AND COALESCE(last_accessed_at,updated_at,created_at)<=? ORDER BY COALESCE(last_accessed_at,updated_at,created_at) ASC", (dcut,)).fetchall()
+                manifest["candidates"]["old_unstarred_docs"] = len(old_docs)
+                for r in old_docs:
                     if not still(): break
-                    b, n = self.hard_del_doc(conn, r); reclaimed += b; deleted += n
+                    if dry_run:
+                        reclaimed += self.path_size(self.safe_path(r["file_path"], r["user_id"])); deleted += 1
+                    else:
+                        b, n = self.hard_del_doc(conn, r); reclaimed += b; deleted += n
             # --- TTL cleanup for unbounded tables ---
             rate_cut_ts = int((now - timedelta(days=self.rate_events_retention_days)).timestamp())
-            conn.execute("DELETE FROM rate_events WHERE created_ts < ?", (rate_cut_ts,))
-            conn.execute("DELETE FROM ip_rate_events WHERE created_ts < ?", (rate_cut_ts,))
+            manifest["candidates"]["old_rate_events"] = int(conn.execute("SELECT COUNT(*) c FROM rate_events WHERE created_ts < ?", (rate_cut_ts,)).fetchone()["c"])
+            manifest["candidates"]["old_ip_rate_events"] = int(conn.execute("SELECT COUNT(*) c FROM ip_rate_events WHERE created_ts < ?", (rate_cut_ts,)).fetchone()["c"])
             sec_cut = (now - timedelta(days=self.security_events_retention_days)).isoformat()
-            conn.execute("DELETE FROM security_events WHERE created_at < ?", (sec_cut,))
+            manifest["candidates"]["old_security_events"] = int(conn.execute("SELECT COUNT(*) c FROM security_events WHERE created_at < ?", (sec_cut,)).fetchone()["c"])
             usage_cut_ts = int((now - timedelta(days=self.usage_events_retention_days)).timestamp())
-            conn.execute("DELETE FROM usage_events WHERE created_ts < ?", (usage_cut_ts,))
+            manifest["candidates"]["old_usage_events"] = int(conn.execute("SELECT COUNT(*) c FROM usage_events WHERE created_ts < ?", (usage_cut_ts,)).fetchone()["c"])
             cleanup_cut = (now - timedelta(days=self.cleanup_events_retention_days)).isoformat()
-            conn.execute("DELETE FROM cleanup_events WHERE created_at < ?", (cleanup_cut,))
+            manifest["candidates"]["old_cleanup_events"] = int(conn.execute("SELECT COUNT(*) c FROM cleanup_events WHERE created_at < ?", (cleanup_cut,)).fetchone()["c"])
             login_cut_ts = int((now - timedelta(days=self.login_attempts_retention_days)).timestamp())
-            conn.execute("DELETE FROM login_attempts WHERE last_attempt_ts < ?", (login_cut_ts,))
+            manifest["candidates"]["old_login_attempts"] = int(conn.execute("SELECT COUNT(*) c FROM login_attempts WHERE last_attempt_ts < ?", (login_cut_ts,)).fetchone()["c"])
             session_cut = (now - timedelta(days=self.session_retention_days)).isoformat()
-            conn.execute("DELETE FROM sessions WHERE expires_at < ? AND (revoked_at IS NOT NULL OR expires_at < ?)", (session_cut, session_cut))
+            manifest["candidates"]["old_sessions"] = int(conn.execute("SELECT COUNT(*) c FROM sessions WHERE expires_at < ? AND (revoked_at IS NOT NULL OR expires_at < ?)", (session_cut, session_cut)).fetchone()["c"])
+            if not dry_run:
+                conn.execute("DELETE FROM rate_events WHERE created_ts < ?", (rate_cut_ts,))
+                conn.execute("DELETE FROM ip_rate_events WHERE created_ts < ?", (rate_cut_ts,))
+                conn.execute("DELETE FROM security_events WHERE created_at < ?", (sec_cut,))
+                conn.execute("DELETE FROM usage_events WHERE created_ts < ?", (usage_cut_ts,))
+                conn.execute("DELETE FROM cleanup_events WHERE created_at < ?", (cleanup_cut,))
+                conn.execute("DELETE FROM login_attempts WHERE last_attempt_ts < ?", (login_cut_ts,))
+                conn.execute("DELETE FROM sessions WHERE expires_at < ? AND (revoked_at IS NOT NULL OR expires_at < ?)", (session_cut, session_cut))
 
             # --- Orphan user directory cleanup ---
             try:
@@ -2810,30 +3571,56 @@ CREATE TABLE IF NOT EXISTS analytics_exports(id TEXT PRIMARY KEY,format TEXT NOT
                     for entry in self.users_root.iterdir():
                         if entry.is_dir() and entry.name not in known_uids:
                             try:
-                                size = sum(f.stat().st_size for f in entry.rglob("*") if f.is_file())
-                                shutil.rmtree(entry)
-                                reclaimed += size; deleted += 1
-                            except Exception:
-                                pass
+                                size = self.path_size(entry)
+                                if dry_run:
+                                    reclaimed += size; deleted += 1
+                                else:
+                                    _, dest = self.quarantine_orphan_user_dir(entry)
+                                    manifest["quarantined_orphans"].append({"source": str(entry), "destination": dest, "size_bytes": size})
+                                    deleted += 1
+                            except Exception as exc:
+                                manifest["errors"].append({"stage": "orphan_quarantine", "path": str(entry), "error": f"{type(exc).__name__}: {exc}"})
             except Exception:
-                pass
+                logger.warning("orphan user directory scan failed", exc_info=True)
 
-            for u in conn.execute("SELECT id FROM users").fetchall(): self.recalc_storage(conn, u["id"])
+            if not dry_run:
+                for u in conn.execute("SELECT id FROM users").fetchall(): self.recalc_storage(conn, u["id"])
             snap_inner = self.disk()
-            conn.execute("INSERT INTO cleanup_events(reason,level,bytes_reclaimed,items_deleted,used_percent,free_bytes,details,created_at) VALUES(?,?,?,?,?,?,?,?)", (reason, self.pressure(snap_inner), int(reclaimed), int(deleted), float(snap_inner["used_percent"]), int(snap_inner["free_bytes"]), "", self.now_iso()))
+            if not dry_run:
+                conn.execute("INSERT INTO cleanup_events(reason,level,bytes_reclaimed,items_deleted,used_percent,free_bytes,details,created_at) VALUES(?,?,?,?,?,?,?,?)", (reason, self.pressure(snap_inner), int(reclaimed), int(deleted), float(snap_inner["used_percent"]), int(snap_inner["free_bytes"]), json.dumps({"manifest_path": manifest.get("manifest_path"), "candidates": manifest.get("candidates")}, ensure_ascii=False), self.now_iso()))
 
         try:
+            if self.cleanup_require_backup_marker and not dry_run and not manifest["backup_marker_fresh"]:
+                manifest["blocked"] = True
+                manifest["finished_at"] = self.now_iso()
+                manifest["manifest_path"] = self.write_cleanup_manifest(manifest)
+                raise RuntimeError(
+                    f"Cleanup requires a verified backup marker newer than {self.cleanup_backup_marker_max_hours}h at {self.cleanup_backup_marker_path}"
+                )
             if self.tmp_root.exists():
                 for p in sorted([x for x in self.tmp_root.rglob("*") if x.is_file()], key=lambda q: q.stat().st_mtime):
-                    reclaimed += self.remove_file(p)
+                    if dry_run:
+                        reclaimed += self.path_size(p)
+                    else:
+                        reclaimed += self.remove_file(p)
                     deleted += 1
             if c is not None:
                 cleanup_pass(c)
             else:
                 with self.tx() as conn:
                     cleanup_pass(conn)
+            # Bound the WAL file: PASSIVE never blocks readers/writers.
+            if not dry_run:
+                try:
+                    wc = self.db()
+                    try:
+                        wc.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                    finally:
+                        wc.close()
+                except Exception:
+                    logger.warning("wal_checkpoint failed", exc_info=True)
             # Periodic VACUUM to reclaim disk space from deleted rows
-            if self.now_ts() - self._last_vacuum_ts >= self.vacuum_interval_hours * 3600:
+            if not dry_run and self.now_ts() - self._last_vacuum_ts >= self.vacuum_interval_hours * 3600:
                 try:
                     vc = self.db()
                     try:
@@ -2844,23 +3631,38 @@ CREATE TABLE IF NOT EXISTS analytics_exports(id TEXT PRIMARY KEY,format TEXT NOT
                 except Exception:
                     logger.warning("VACUUM failed", exc_info=True)
             snap = self.disk()
-            return {"running": False, "reclaimed": int(reclaimed), "deleted_items": int(deleted), "used_percent": snap["used_percent"], "free_bytes": snap["free_bytes"], "level": self.pressure(snap)}
+            manifest["finished_at"] = self.now_iso()
+            manifest["estimated_reclaimed_bytes" if dry_run else "reclaimed_bytes"] = int(reclaimed)
+            manifest["candidate_items" if dry_run else "deleted_items"] = int(deleted)
+            manifest["disk_after"] = {"used_percent": snap["used_percent"], "free_bytes": snap["free_bytes"], "level": self.pressure(snap)}
+            manifest["manifest_path"] = self.write_cleanup_manifest(manifest)
+            return {"running": False, "dry_run": bool(dry_run), "reclaimed": int(reclaimed), "deleted_items": int(deleted), "used_percent": snap["used_percent"], "free_bytes": snap["free_bytes"], "level": self.pressure(snap), "manifest_path": manifest.get("manifest_path")}
         finally:
             self._cleanup_lock.release()
 
     def cleanup_loop(self):
         while True:
             try: self.run_cleanup("background")
-            except Exception: pass
+            except Exception: logger.exception("background cleanup loop error")
             time.sleep(max(60, self.cleanup_loop_seconds))
 
     def seed_admin(self) -> None:
         with self.tx() as c:
             r = c.execute("SELECT * FROM users WHERE username_norm=?", (self.nuser(self.admin_username),)).fetchone()
             if r is not None:
+                promoted = False
                 if r["role"] != "admin":
                     c.execute("UPDATE users SET role='admin' WHERE id=?", (r["id"],))
+                    promoted = True
                 self.ensure_restrictions_row(c, r["id"])
+                if promoted:
+                    self._record_security_event(
+                        c,
+                        et="admin_promoted",
+                        sev="warning",
+                        detail=f"existing user {self.admin_username!r} promoted to admin during seed_admin",
+                        username=self.admin_username,
+                    )
                 return
             uid_ = self.uid()
             self.ensure_user_dirs(uid_)
@@ -2869,6 +3671,37 @@ CREATE TABLE IF NOT EXISTS analytics_exports(id TEXT PRIMARY KEY,format TEXT NOT
                 (uid_, self.admin_username, self.nuser(self.admin_username), self._ph.hash(self.admin_password), self.now_iso(), "en", "light"),
             )
             self.ensure_restrictions_row(c, uid_)
+            self._record_security_event(
+                c,
+                et="admin_seeded",
+                sev="warning",
+                detail=f"initial admin user {self.admin_username!r} created",
+                username=self.admin_username,
+            )
+
+    def _record_security_event(
+        self,
+        c: sqlite3.Connection,
+        *,
+        et: str,
+        sev: str,
+        detail: str,
+        username: str = "",
+    ) -> None:
+        """Best-effort write to security_events without depending on a Request.
+
+        Used by paths (seed_admin, etc.) that don't have an HTTP request scope.
+        """
+        try:
+            now_iso = self.now_iso()
+            now_ts = int(time.time())
+            c.execute(
+                "INSERT INTO security_events(user_id,username,ip,endpoint,event_type,severity,detail,observed,threshold,action,created_at,created_ts) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (None, username or None, None, None, et, sev, detail, None, None, None, now_iso, now_ts),
+            )
+        except Exception:
+            logger.exception("Failed to record security event %s", et)
 
     def doc_limits(self, c: sqlite3.Connection, user: sqlite3.Row, req: Request, bytes_write: int, create: bool) -> List[Dict[str, Any]]:
         warnings: List[Dict[str, Any]] = []
@@ -2969,7 +3802,7 @@ CREATE TABLE IF NOT EXISTS analytics_exports(id TEXT PRIMARY KEY,format TEXT NOT
             with self.tx() as c:
                 c.execute("DELETE FROM active_generations WHERE request_id=?", (request_id,))
         except Exception:
-            pass
+            logger.warning("Failed to remove active generation %s", request_id, exc_info=True)
 
     def check_prompt_length(self, c: sqlite3.Connection, user: sqlite3.Row,
                              ip_: str, endpoint: str, user_msg: str) -> None:
@@ -2997,6 +3830,43 @@ CREATE TABLE IF NOT EXISTS analytics_exports(id TEXT PRIMARY KEY,format TEXT NOT
             heavy_count = float(self.rate_count(c, user["id"], "chat_heavy_prompt", self.ai_offense_window))
             self.check_limit(c, user, ip_, endpoint, "chat_heavy_prompts_per_window",
                 heavy_count, float(self.heavy_prompt_hits), [], scope="ai")
+
+    def check_ai_request_rate(self, c: sqlite3.Connection, user: sqlite3.Row, ip_: str, endpoint: str) -> None:
+        if user["role"] == "admin":
+            return
+        lang = str(user["preferred_language"] or "en").lower()
+        msg = "Demasiadas solicitudes de IA; por favor espera un momento" if lang == "es" else "Too many AI requests; please wait a moment"
+        per_min = self.rate_count(c, user["id"], "ai_request", 60)
+        per_hour = self.rate_count(c, user["id"], "ai_request", 3600)
+        ip_key = ip_ or "unknown"
+        ip_per_min = self.ip_rate_count(c, ip_key, "ai_request", 60)
+        observed = per_min
+        threshold = self.ai_requests_per_min
+        metric = "ai_requests_per_min"
+        if per_hour >= self.ai_requests_per_hour:
+            observed = per_hour
+            threshold = self.ai_requests_per_hour
+            metric = "ai_requests_per_hour"
+        if ip_per_min >= self.ai_ip_requests_per_min:
+            observed = ip_per_min
+            threshold = self.ai_ip_requests_per_min
+            metric = "ai_ip_requests_per_min"
+        if observed >= threshold:
+            self.log_event(
+                c,
+                user=user,
+                ip_=ip_,
+                endpoint=endpoint,
+                et="ai_request_rate_blocked",
+                sev="warning",
+                detail=f"{metric} exceeded",
+                obs=float(observed),
+                th=float(threshold),
+                act="rate_block",
+            )
+            self.persist_and_raise(c, 429, msg)
+        self.rate_add(c, user["id"], "ai_request", 0)
+        self.ip_rate_add(c, ip_key, "ai_request")
 
 
 # -----------------------------
@@ -3040,7 +3910,7 @@ def mount_app_storage(app, llama_base_url: str):
                 try:
                     rt.validate_startup_rag_es()
                 except Exception:
-                    pass
+                    logger.warning("startup RAG (es) validation exception", exc_info=True)
                 if rt._startup_rag_status.get("startup_rag_ok"):
                     logger.info("startup RAG validation (es) succeeded on attempt %d", attempt)
                     break
@@ -3049,6 +3919,10 @@ def mount_app_storage(app, llama_base_url: str):
                     attempt, retry_seconds,
                 )
                 time.sleep(retry_seconds)
+            try:
+                rt.run_warmup_queries()
+            except Exception:
+                logger.exception("warmup queries failed after Spanish RAG became ready")
             return
         attempt = 0
         while True:
@@ -3056,7 +3930,7 @@ def mount_app_storage(app, llama_base_url: str):
             try:
                 rt.validate_startup_rag()
             except Exception:
-                pass  # error already recorded via _update_rag_status
+                logger.warning("startup RAG validation exception", exc_info=True)  # status recorded via _update_rag_status
             if rt._startup_rag_status.get("startup_rag_ok"):
                 logger.info("startup RAG validation succeeded on attempt %d", attempt)
                 break
@@ -3073,6 +3947,16 @@ def mount_app_storage(app, llama_base_url: str):
     threading.Thread(target=_background_startup, daemon=True, name="app-storage-init").start()
     threading.Thread(target=rt.cleanup_loop, daemon=True, name="app-storage-cleanup").start()
     threading.Thread(target=rt.keep_warm_loop, daemon=True, name="app-storage-keep-warm").start()
+
+    @app.middleware("http")
+    async def same_origin_write_guard(req: Request, call_next):
+        method = str(req.method or "").upper()
+        if method in ("POST", "PUT", "PATCH", "DELETE") and req.url.path.startswith("/v1/") and req.cookies.get(rt.cookie):
+            try:
+                rt.validate_same_origin_write(req)
+            except HTTPException as exc:
+                return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        return await call_next(req)
 
     @app.get("/wiki")
     @app.get("/wiki/")
@@ -3102,7 +3986,10 @@ def mount_app_storage(app, llama_base_url: str):
             raise HTTPException(403, "Public signup is disabled")
         if len(username) < 3: raise HTTPException(400, "Username must be at least 3 characters")
         if len(username) > 50: raise HTTPException(400, "Username must be at most 50 characters")
-        if len(pw) < 4: raise HTTPException(400, "Password must be at least 4 characters")
+        if not re.fullmatch(r"[A-Za-z0-9_.@-]{3,50}", username):
+            raise HTTPException(400, "Username may only contain letters, digits, and the characters . _ @ -")
+        min_password_len = rt.guest_password_min_length if role == "guest" else rt.user_password_min_length
+        if len(pw) < min_password_len: raise HTTPException(400, f"Password must be at least {min_password_len} characters")
         if len(pw) > 128: raise HTTPException(400, "Password must be at most 128 characters")
         if role not in ("user", "guest"): role = "user"
         # Per-IP signup rate limit. Stored in the FK-free ip_rate_events table
@@ -3253,7 +4140,7 @@ ORDER BY u.username COLLATE NOCASE
 
     @app.post("/v1/app/admin/users/{uid_}/reset-password")
     def app_admin_reset(uid_: str, p: ResetPasswordPayload, req: Request):
-        if len(p.password or "") < 4: raise HTTPException(400, "Password must be at least 4 characters")
+        if len(p.password or "") < rt.admin_password_min_length: raise HTTPException(400, f"Password must be at least {rt.admin_password_min_length} characters")
         if len(p.password or "") > 128: raise HTTPException(400, "Password must be at most 128 characters")
         with rt.tx() as c:
             admin = rt.req_user(c, req, admin=True, write=True)
@@ -3274,10 +4161,21 @@ ORDER BY u.username COLLATE NOCASE
             old_role = target["role"]
             if old_role == role:
                 return {"ok": True, "role": role, "unchanged": True}
+            reason = str(p.reason or "").strip()
+            if role == "admin" and old_role != "admin":
+                if p.confirm != "PROMOTE_ADMIN" or len(reason) < 8:
+                    raise HTTPException(400, "Promoting a user to admin requires confirm='PROMOTE_ADMIN' and a reason")
+            if old_role == "admin" and role != "admin":
+                admin_count = int(c.execute("SELECT COUNT(*) c FROM users WHERE role='admin' AND is_deleted=0").fetchone()["c"])
+                if admin_count <= 1:
+                    raise HTTPException(409, "Cannot demote the last admin account")
+                if len(reason) < 8:
+                    raise HTTPException(400, "Demoting an admin requires a reason")
             c.execute("UPDATE users SET role=? WHERE id=?", (role, uid_))
             rt.ensure_restrictions_row(c, uid_)
             sev = "warning" if role == "admin" or old_role == "admin" else "info"
-            rt.log_event(c, user=admin, ip_=rt.ip(req), endpoint=req.url.path, et="admin_role_change", sev=sev, detail=f"{admin['username']} changed role of {target['username']}: {old_role} -> {role}", act="role_change")
+            reason_suffix = f" reason={reason[:120]!r}" if reason else ""
+            rt.log_event(c, user=admin, ip_=rt.ip(req), endpoint=req.url.path, et="admin_role_change", sev=sev, detail=f"{admin['username']} changed role of {target['username']}: {old_role} -> {role}.{reason_suffix}", act="role_change")
         return {"ok": True, "role": role}
 
     @app.post("/v1/app/admin/users/{uid_}/lock")
@@ -3370,6 +4268,19 @@ LIMIT ?
                 (top_files,),
             ).fetchall()
             return {"ok": True, "top_users": [dict(r) for r in users], "largest_documents": [dict(r) for r in docs], "largest_chats": [dict(r) for r in chats]}
+
+    @app.post("/v1/app/admin/storage-cleanup")
+    def app_admin_storage_cleanup(p: CleanupPayload, req: Request):
+        reason = str(p.reason or "admin").strip()[:80] or "admin"
+        required = max(0, int(p.required_bytes or 0))
+        dry_run = bool(True if p.dry_run is None else p.dry_run)
+        with rt.tx() as c:
+            rt.req_user(c, req, admin=True, write=not dry_run)
+        try:
+            result = rt.run_cleanup(reason=f"admin:{reason}", required=required, dry_run=dry_run)
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc))
+        return {"ok": True, "cleanup": result}
 
     @app.get("/v1/app/admin/security-events")
     def app_admin_events(req: Request, limit: int = 200):
@@ -3593,7 +4504,7 @@ LIMIT ?
             retrieval_meta["no_context_answer_mode"] = True
             conversation = rt.inject_wiki_context(conversation, "", response_language=response_language)
             return conversation, retrieval_meta
-        logger.info("retrieval query: %s", query)
+        logger.debug("retrieval query len=%d", len(query))
         if not query:
             retrieval_meta["retrieval_skipped_reason"] = "missing_user_query"
             retrieval_meta["retrieval_error"] = "missing_user_query"
@@ -3632,6 +4543,9 @@ LIMIT ?
             retrieval_meta["rag_chunk_truncation_count"] = int(payload.get("chunk_truncation_count") or 0)
             retrieval_meta["rag_index_language"] = payload.get("rag_index_language", "en")
             retrieval_meta["rag_collection_path"] = payload.get("rag_collection_path")
+            retrieval_meta["index_manifest"] = payload.get("index_manifest")
+            retrieval_meta["index_manifest_path"] = payload.get("index_manifest_path")
+            retrieval_meta["index_manifest_error"] = payload.get("index_manifest_error")
             if summary is not None and request_start_t is not None:
                 rt._trace_diagnostics(summary, request_start_t, "retrieval_completed", candidate_count=retrieval_meta["retrieval_candidate_count"], selected_count=retrieval_meta["retrieval_count"])
                 rt._trace_diagnostics(summary, request_start_t, "rerank_completed", rerank_ms=retrieval_meta["rerank_ms"], rerank_enabled=retrieval_meta["rerank_enabled"])
@@ -3727,7 +4641,12 @@ LIMIT ?
         prompt_tokens_est = sum(rt.estimate_tokens(str(m.get("content", ""))) for m in conversation)
         usage: Dict[str, Any] = {}
         first_stream_chunk_ms: Optional[int] = None
-        async with httpx.AsyncClient(timeout=180) as client:
+        # Granular timeouts: a fast dial + an unhurried read window. The old
+        # flat 180 s applied to every phase, which let a stuck connect block
+        # for three minutes. read=180 s preserves the existing tolerance for
+        # very long completions; connect=5 s and pool=10 s surface upstream
+        # outages immediately instead of hanging the request.
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=5.0, read=180.0, write=10.0, pool=10.0)) as client:
             initial_request_logged = False
             while True:
                 req_body = {"model": model, "messages": conversation, "stream": True}
@@ -4273,6 +5192,7 @@ LIMIT ?
             summary_base["user_id"] = str(u["id"])
             summary_base["response_language"] = response_language
             rt.ensure_ai_send_access(c, u)
+            rt.check_ai_request_rate(c, u, rt.ip(req), req.url.path)
             rt.check_prompt_length(c, u, rt.ip(req), req.url.path, user_msg)
             rt.check_concurrent_generations(c, u, rt.ip(req), req.url.path, request_id)
             rt.arm_ai_cooldown_if_needed(c, u)
@@ -4409,6 +5329,7 @@ LIMIT ?
                     return
                 except Exception as e:
                     detail = f'llama proxy error: {type(e).__name__}: {e}'
+                    logger.error("chat completion unexpected error request_id=%s: %s", request_id, detail, exc_info=True)
                     summary["failed_stage"] = summary.get("current_stage") or "generation"
                     summary["request_error"] = detail
                     summary["request_finished_at"] = rt.now_iso()
@@ -4429,7 +5350,7 @@ LIMIT ?
                         yield f"event: error\ndata: {json.dumps({'detail': detail, 'metrics': metrics, 'diagnostics': diagnostics}, ensure_ascii=False)}\n\n"
                         yield f"event: done\ndata: {json.dumps({'chat_id': chat_id, 'request_id': request_id, 'metrics': metrics, 'diagnostics': diagnostics}, ensure_ascii=False)}\n\n"
                     else:
-                        yield f"event: error\ndata: {json.dumps({'detail': detail}, ensure_ascii=False)}\n\n"
+                        yield f"event: error\ndata: {json.dumps({'detail': 'AI service temporarily unavailable'}, ensure_ascii=False)}\n\n"
                         yield "event: done\ndata: {}\n\n"
                     rt.remove_active_generation(request_id)
                     return
@@ -4439,6 +5360,9 @@ LIMIT ?
                 if sw: warns_local.append(sw)
                 summary["warnings"] = warns_local
                 summary["request_finished_at"] = summary.get("request_finished_at") or rt.now_iso()
+                retrieval_warnings = rt.build_user_retrieval_warnings(summary)
+                if retrieval_warnings:
+                    yield f"event: retrieval_warning\ndata: {json.dumps({'warnings': retrieval_warnings}, ensure_ascii=False)}\n\n"
                 metrics = None
                 diagnostics = None
                 if user_role == "admin":
@@ -4450,6 +5374,7 @@ LIMIT ?
                     "request_id": request_id,
                     "citations": summary.get("citations") or [],
                     "warnings": warns_local,
+                    "retrieval_warnings": retrieval_warnings,
                     "finish_reason": summary.get("finish_reason"),
                     "continuation_count": summary.get("continuation_count", 0),
                     "continuation_limit_hit": summary.get("continuation_limit_hit", False),
@@ -4500,6 +5425,7 @@ LIMIT ?
                 raise
             except Exception as e:
                 detail = f"llama proxy error: {type(e).__name__}: {e}"
+                logger.error("chat completion unexpected error request_id=%s: %s", request_id, detail, exc_info=True)
                 summary["failed_stage"] = summary.get("current_stage") or "generation"
                 summary["request_error"] = detail
                 summary["request_finished_at"] = rt.now_iso()
@@ -4520,7 +5446,7 @@ LIMIT ?
                         "admin_metrics": rt.build_admin_metrics(summary),
                         "admin_diagnostics": rt.build_admin_diagnostics(summary),
                     }, status_code=502)
-                raise HTTPException(502, detail)
+                raise HTTPException(502, "AI service temporarily unavailable")
             ai_text = "".join(ai_parts)
 
             warns.extend(await persist_ai(ai_text, summary))
@@ -4530,6 +5456,7 @@ LIMIT ?
             summary["request_finished_at"] = summary.get("request_finished_at") or rt.now_iso()
             citations = summary.get("citations") or []
 
+            retrieval_warnings = rt.build_user_retrieval_warnings(summary)
             out: Dict[str, Any] = {
                 "id": rt.uid(),
                 "object": "chat.completion",
@@ -4538,6 +5465,7 @@ LIMIT ?
                 "choices": [{"index": 0, "message": {"role": "assistant", "content": ai_text, "citations": citations}, "finish_reason": summary.get("finish_reason", "stop")}],
                 "citations": citations,
                 "warnings": warns,
+                "retrieval_warnings": retrieval_warnings,
             }
             if user_role == "admin":
                 out["admin_metrics"] = rt.build_admin_metrics(summary)
@@ -4547,25 +5475,3 @@ LIMIT ?
             rt.remove_active_generation(request_id)
 
     return rt
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -44,6 +44,8 @@ async function run() {
   const args = parseArgs(process.argv);
   const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\//, "")), "..", "..", "..");
   const env = await readEnvFile(path.join(repoRoot, "stack", ".env"));
+  const adminUsername = process.env.AIBOX_E2E_ADMIN_USERNAME || env.ADMIN_USERNAME;
+  const adminPassword = process.env.AIBOX_E2E_ADMIN_PASSWORD || env.ADMIN_DEFAULT_PASSWORD;
   const timestamp = stampUtc();
   const resultDir = path.resolve(args["result-dir"] || path.join(repoRoot, "tools", "tests", "results", "puente-e2e", timestamp));
   await ensureDir(resultDir);
@@ -104,24 +106,28 @@ async function run() {
     return data;
   }
 
-  await record("runtime-health", "Public runtime health/status endpoints respond", async () => {
+  await record("runtime-health", "Public runtime health/ready/live endpoints respond", async () => {
     for (const route of ["/ai/api/health", "/ai/api/ready"]) {
       const res = await anon.json(route);
       expectStatus(res.response.status, [200, 503]);
     }
     const live = await anon.json("/ai/api/live");
     expectStatus(live.response.status, 200);
-    const status = await anon.json("/ai/api/status");
-    expectStatus(status.response.status, 200);
-    return { runtime_state: status.data?.llama_state || null, status_reason: status.data?.status_reason || null };
+    return { health_probed: true };
   });
 
   await record("admin-login", "Admin login works", async () => {
-    await login(admin, env.ADMIN_USERNAME, env.ADMIN_DEFAULT_PASSWORD);
+    await login(admin, adminUsername, adminPassword);
     const me = await authMe(admin);
     if (me?.user?.role !== "admin") throw new Error("Admin session did not resolve to admin");
     noteIds.adminId = me.user.id;
     return { admin_user: me.user.username };
+  });
+
+  await record("runtime-status-admin", "Admin status endpoint returns full payload", async () => {
+    const status = await admin.json("/ai/api/v1/admin/status");
+    expectStatus(status.response.status, 200);
+    return { runtime_state: status.data?.llama_state || null, status_reason: status.data?.status_reason || null };
   });
 
   await record("runtime-anon-mutate", "Anonymous runtime mutation is rejected", async () => {
@@ -481,8 +487,7 @@ async function run() {
     bugs,
     summary: summarizeChecks(checks),
     test_accounts: {
-      admin_username: env.ADMIN_USERNAME,
-      admin_password: env.ADMIN_DEFAULT_PASSWORD,
+      admin_username: adminUsername,
       normal: { username: accounts.normal.username, password: accounts.normal.password },
       guest: { username: accounts.guest.username, password: accounts.guest.password },
     },
