@@ -1,0 +1,669 @@
+================================================================================
+PROJECT PUENTE AI — LONG-TERM HEALTH CHECKS: IMPLEMENTATION BREAKDOWN
+================================================================================
+Purpose: Define every check, harness, and piece of infrastructure required to
+prove that the AIBox stack will continue to operate reliably for years of
+field deployment in Latin American schools — offline, on a single laptop,
+under sustained student load, with no IT staff available to triage problems.
+
+This file is the master spec. Each section below describes:
+  (a) WHAT the check measures
+  (b) WHY it matters for a multi-year offline deployment
+  (c) WHAT must be built before the check produces trustworthy numbers
+  (d) PASS/FAIL criteria where they can be stated up-front
+  (e) ARTIFACTS the check should emit (logs, plots, CSVs, dashboards)
+
+Organize implementation under aibox/checks/ with this proposed layout:
+  aibox/checks/
+    harness/           shared runner, result store, reporting
+    stress/            load + soak tests
+    growth/            storage + index size projections
+    integrity/         data correctness + corruption detection
+    perf/              latency/throughput regression
+    hardware/          GPU/CPU/disk/thermal telemetry
+    network/           hotspot + Caddy + DNS
+    security/          authn/authz, rate limits, crypto
+    recovery/          crash, power loss, OOM, disk-full
+    quality/           retrieval + generation quality drift
+    reports/           generated HTML/Markdown summaries
+    baselines/         pinned golden numbers per release
+    fixtures/          synthetic users, queries, docs
+
+
+================================================================================
+0. SHARED HARNESS (BUILD THIS FIRST — EVERYTHING ELSE DEPENDS ON IT)
+================================================================================
+
+0.1  Result store
+     - SQLite database at aibox/checks/results.db
+     - Schema: runs(id, started_at, ended_at, git_sha, host, notes)
+               metrics(run_id, suite, name, value, unit, tags_json)
+               artifacts(run_id, path, kind, sha256)
+     - Every check writes here; nothing prints "PASS/FAIL" in isolation.
+
+0.2  Run orchestrator
+     - Python CLI: `python -m checks.harness.run <suite> [--quick|--full|--soak]`
+     - Reads YAML configs from aibox/checks/<suite>/config.yaml
+     - Captures: git sha, env (.env hash, not contents), docker image digests,
+       GPU driver version, Windows build, free disk, free RAM, free VRAM.
+     - Writes a run row, streams metrics, uploads artifacts to results.db.
+
+0.3  Baseline + regression engine
+     - aibox/checks/baselines/<release>.yaml pins thresholds per metric.
+     - Reporter flags a metric as REGRESSION if it crosses N sigma OR a
+       percentage delta vs the pinned baseline (configurable per metric).
+     - Required: a way to "promote" a run to baseline after human review.
+
+0.4  Reporting
+     - HTML report generator: aibox/checks/reports/<timestamp>/index.html
+     - Includes Plotly charts (offline, vendored — no CDN, this is an
+       offline-first project).
+     - One-page Markdown summary suitable for pasting into release notes.
+
+0.5  Fixtures
+     - Synthetic user generator (deterministic, seeded): N students with
+       realistic name/email/password distributions, pre-encrypted.
+     - Query corpus: ~500 Spanish + ~500 English questions sampled from
+       real Wikipedia article titles and Kolibri lesson objectives. Stored
+       as JSONL with category tags (factual, multi-hop, ambiguous, OOD).
+     - Document corpus for upload tests: synthetic PDFs/TXTs at fixed sizes
+       (1KB, 100KB, 1MB, 10MB, 50MB) with known content hashes.
+
+0.6  Safety rails
+     - Every destructive test runs against a copy of backend-data/ and
+       chroma_db_*/ — never against the live volumes. Build a snapshot
+       helper that hardlinks/copies and a teardown helper that restores.
+     - Soak tests must be killable cleanly (signal handlers, container
+       labels for `docker kill --signal`).
+
+
+================================================================================
+1. STRESS / LOAD TESTING
+================================================================================
+
+1.1  Concurrent chat load (the headline test)
+     WHAT: Simulate N students hammering /ai/api/chat simultaneously over a
+           sustained window. Measure p50/p95/p99 first-token latency,
+           full-response latency, error rate, dropped connections.
+     WHY:  A classroom may have 30+ concurrent users on one laptop. We need
+           to know the cliff before we hit it in a real school.
+     BUILD:
+       - Locust or k6 driver targeting the Caddy front door (not the
+         FastAPI port directly — we want the full proxy path).
+       - Auth setup phase that creates users via the real signup endpoint,
+         not by writing to SQLite (so the test exercises Argon2 + storage
+         encryption under load).
+       - Realistic think-time distribution between turns (log-normal,
+         median 12s, p95 45s).
+       - Mix of pure-LLM and RAG-heavy prompts (configurable ratio).
+       - GPU + system telemetry capture in parallel (see section 6).
+     PASS:
+       - p95 first-token < 4s at 10 concurrent users
+       - p95 first-token < 10s at 25 concurrent users
+       - Zero 5xx, zero socket hangups, zero llama-container restarts
+         over a 30-minute run at design load.
+       - Memory and VRAM usage flat (no upward slope) over the run.
+
+1.2  Soak test (24h, 72h, 7-day)
+     WHAT: Lower QPS than the burst test, but run for days. The point is to
+           find slow leaks, not throughput ceilings.
+     WHY:  In a school the laptop runs 8h/day for months. We need to prove
+           nothing creeps upward over real time-spans.
+     BUILD:
+       - Same driver as 1.1 but with rate-limited mode (e.g. 1 req/5s).
+       - Telemetry sampler that records process RSS, FD count, GPU VRAM,
+         SQLite WAL size, chroma_db_*/ on-disk size every 60s.
+       - Automatic kill switch if disk free < 5GB or VRAM > 95% sustained.
+     PASS:
+       - ai-control RSS grows by < 5% over 24h after first hour warmup.
+       - llama.cpp VRAM stable to within ±50MB after first hour.
+       - No new file handles leaked (lsof / handle.exe diff).
+
+1.3  Spike test
+     WHAT: 0 -> 30 concurrent users in 5 seconds, hold 60s, ramp down.
+     WHY:  Bell rings, every kid asks a question at once.
+     BUILD:
+       - Same driver, ramp-from-zero scenario.
+       - Recovery measurement: how long until p95 latency returns to
+         baseline after the spike ends.
+     PASS: Service degrades gracefully (queues, not 5xx). Recovery < 30s.
+
+1.4  RAG-pipeline-only stress
+     WHAT: Bypass the LLM; hit embedding + ChromaDB + reranker only.
+     WHY:  Isolate which stage is the bottleneck. The cross-encoder
+           reranker is the prime suspect on an 8GB GPU.
+     BUILD:
+       - Internal benchmark endpoint OR a direct Python harness that
+         re-uses ai-control's retrieval module.
+       - Per-stage timing breakdown emitted as structured metrics.
+
+1.5  Cold-start / container-restart cost
+     WHAT: How long from `docker compose up` to first successful /ai/api/chat?
+           Repeat 50x and report the distribution.
+     WHY:  Power loss is common. Recovery time = student waiting time.
+     BUILD:
+       - Script that brings the stack down, waits, brings it up, polls
+         health endpoints, measures time-to-first-token. Captures GPU
+         init time separately from model-load time.
+
+
+================================================================================
+2. STORAGE / FILE-SIZE GROWTH
+================================================================================
+
+2.1  Disk-growth projection
+     WHAT: For each writable path (backend-data/, kolibri-data/, logs/,
+           chroma_db_*/, llama cache, Docker volumes), measure size daily
+           and fit a linear + log-linear model.
+     WHY:  Student laptops have 256-512GB SSDs. We need to know "this
+           laptop will fill up in N months at the current rate" with
+           months of lead time.
+     BUILD:
+       - Daily cron (Windows Task Scheduler) that runs a sampler:
+         walks each path, sums sizes, writes to results.db with timestamp.
+       - Projection script that fits the curve and emits days-until-90%-full.
+       - Per-table breakdown for SQLite (sqlite_stat1 + dbstat virtual table).
+     PASS:
+       - Projected days-until-90%-full > 365 at observed usage rate.
+       - Logs/ never exceeds 2GB without rotation kicking in.
+
+2.2  SQLite growth + bloat
+     WHAT: backend-data/storage.db size vs row count vs vacuum-recovered size.
+     WHY:  Encrypted blob columns + chat history + frequent UPDATEs = WAL
+           and free-page bloat. A 50% bloat ratio means we're wasting half
+           the disk we allocated.
+     BUILD:
+       - Sampler that snapshots: total size, WAL size, page count,
+         freelist count, per-table row count and avg row size.
+       - Auto-VACUUM policy check: confirm PRAGMA auto_vacuum is set
+         intentionally; document the choice.
+       - Maintenance recommendation: when bloat > 25%, suggest a VACUUM
+         window (NOT auto-run — VACUUM locks the DB).
+
+2.3  ChromaDB growth
+     WHAT: chroma_db_*/ size vs collection count vs vector count vs HNSW
+           graph size on disk.
+     WHY:  Per existing memory: chroma_db_es has 2.8M chunks; index
+           rebuilds have been interrupted before. We need to know if a
+           rebuild will fit on disk before it starts.
+     BUILD:
+       - Inspector that reports per-collection: vector count, dim,
+         on-disk bytes, segment count, deletes pending.
+       - Pre-flight estimator: given a planned rebuild, estimate peak
+         disk usage during build (often 2-3x final size).
+
+2.4  Log rotation + retention
+     WHAT: Are Caddy, llama.cpp, ai-control, Docker daemon, and Windows
+           Event logs all bounded?
+     WHY:  Unbounded logs are the most common cause of "the disk filled
+           up and the laptop died" in unattended deployments.
+     BUILD:
+       - Inventory script that lists every log path the stack writes to
+         and the rotation policy in effect.
+       - Test that writes 10GB of synthetic log lines and confirms
+         rotation kicks in and old segments are deleted.
+       - Configure Docker logging driver size+rotation in compose file
+         and verify via inspect.
+
+2.5  Backup size + restore time
+     WHAT: Full and incremental backup size; time to restore from backup.
+     WHY:  If we recommend "back up backend-data/ weekly", the operator
+           needs to know how big the external drive must be and how long
+           the restore takes when something goes wrong.
+     BUILD:
+       - Backup script + restore script (separate from this checks dir).
+       - Check that does a real round-trip: snapshot -> backup -> wipe
+         test copy -> restore -> diff. Measure bytes and seconds.
+
+
+================================================================================
+3. DATA INTEGRITY
+================================================================================
+
+3.1  SQLite corruption check
+     WHAT: PRAGMA integrity_check + PRAGMA foreign_key_check on storage.db.
+     WHY:  Sudden power loss + WAL mode = rare but possible corruption.
+     BUILD:
+       - Daily check that runs both PRAGMAs against a read-only snapshot
+         (so it doesn't block live writes).
+       - Power-loss simulation: kill the container mid-write 100 times,
+         confirm zero corruptions afterward (with WAL + synchronous=NORMAL).
+
+3.2  Encrypted-storage roundtrip
+     WHAT: For a sampled subset of encrypted blobs, decrypt and re-encrypt;
+           confirm plaintext is well-formed.
+     WHY:  Silent encryption drift (wrong key version, truncated blob) is
+           catastrophic and undetectable without an active check.
+     BUILD:
+       - Read-only checker that decrypts N random rows per table per day
+         and validates schema (JSON parses, expected fields present).
+       - Alert if decryption fails for any row.
+
+3.3  ChromaDB consistency
+     WHAT: Vector count matches chunk-table count; no orphan vectors;
+           every chunk has metadata; embedding dim matches expected.
+     WHY:  Interrupted rebuilds (we've already had one) can leave the
+           index in a state where queries return wrong-language or
+           wrong-source results.
+     BUILD:
+       - Inspector that joins ChromaDB metadata with the chunk source
+         JSONL and reports mismatches.
+       - Spot-query check: 100 known-answer queries that must return the
+           known-correct chunk in top-10. Acts as a canary for index drift.
+
+3.4  Model file integrity
+     WHAT: SHA256 of every .gguf and .safetensors file vs a manifest.
+     WHY:  Bit rot on cheap SSDs is real over multi-year deployments.
+     BUILD:
+       - Manifest generator (run once per release).
+       - Daily verifier that hashes a rotating subset (full hash weekly,
+         random page checks daily — full hash of a 4GB gguf is slow).
+
+3.5  Docker volume integrity
+     WHAT: Compose-defined volumes still exist, have expected ownership,
+           and are mounted into the right containers.
+     WHY:  A misconfigured volume after a Docker Desktop update can cause
+           silent data loss (writes go to the container's writable layer
+           and disappear on next pull).
+     BUILD:
+       - `docker volume inspect` parser + assertion file.
+
+
+================================================================================
+4. PERFORMANCE REGRESSION
+================================================================================
+
+4.1  Latency baseline suite
+     WHAT: Pinned set of ~50 representative prompts, run sequentially,
+           measure full-pipeline timings broken down by stage:
+           embed -> retrieve -> rerank -> prompt-build -> first-token ->
+           full-response.
+     WHY:  Catch the day a dependency upgrade or model change makes
+           everything 30% slower before it ships to schools.
+     BUILD:
+       - Deterministic prompt set (no time-of-day variation).
+       - Stage timing instrumentation in ai-control (structured logs
+         that the harness can parse, OR an explicit timing endpoint).
+       - Baseline file per release; regression alert at +15% per stage.
+
+4.2  Throughput baseline
+     WHAT: Max sustainable QPS at fixed concurrency, for both LLM-only
+           and full-RAG.
+     WHY:  See above. The number itself matters less than its trend.
+
+4.3  Cold vs warm cache
+     WHAT: Run the baseline suite with caches cold and immediately again
+           warm. The delta tells us how much we rely on caching.
+     WHY:  If warm/cold is 10x, a restart in the middle of a class is
+           painful. We want to know that ratio so we can choose to
+           pre-warm caches at startup.
+
+4.4  Embedding throughput on the live GPU
+     WHAT: bge-m3 batches of 1, 8, 32, 128 sentences; tokens/sec measured.
+     WHY:  Per existing memory: 8GB VRAM means bge-m3 batch tuning is
+           critical. Track that the chosen batch size still fits as
+           other components evolve.
+
+
+================================================================================
+5. RESERVED — (kept for numbering symmetry with hardware section)
+================================================================================
+
+
+================================================================================
+6. HARDWARE HEALTH
+================================================================================
+
+6.1  GPU telemetry
+     WHAT: VRAM used/free, GPU utilization %, temperature, power draw,
+           clock throttle reasons. Sampled every 5s during all stress
+           tests; sampled every 60s during normal operation.
+     WHY:  RTX 3070 laptop GPUs throttle aggressively when hot. A check
+           that says "the GPU was thermal-throttled 40% of the lesson"
+           is more actionable than a latency complaint.
+     BUILD:
+       - `nvidia-smi --query-gpu=... --format=csv` poller, written to
+         results.db with run_id correlation.
+       - Throttle-reason decoder (HW_THERMAL_SLOWDOWN, HW_POWER_BRAKE,
+         SW_THERMAL_SLOWDOWN, etc.).
+     PASS:
+       - GPU temp < 87C during sustained load.
+       - Thermal-throttle duration < 5% of any 30-min window.
+
+6.2  CPU + RAM telemetry
+     WHAT: Per-core utilization, RAM used/free, page-file activity, WSL2
+           VM RAM ceiling vs actual.
+     WHY:  Per existing memory: WSL2 8GB limit has caused OOM kills in
+           ai-control during Spanish HNSW. We need this as a first-class
+           metric, not a guess.
+     BUILD:
+       - psutil-based sampler.
+       - WSL2 specific: read /proc/meminfo from inside the WSL VM AND
+         the Windows-side committed bytes; report both.
+
+6.3  Disk health
+     WHAT: SMART attributes (reallocated sectors, pending sectors, wear
+           leveling), free space per volume, IOPS during tests.
+     WHY:  School laptops get rough treatment. SMART warnings give us
+           months of advance notice before failure.
+     BUILD:
+       - smartctl wrapper (smartmontools for Windows).
+       - Daily snapshot; alert on any non-zero "current pending sector".
+       - SSD wear: report TBW used vs rated TBW; project remaining life.
+
+6.4  Battery + thermal envelope
+     WHAT: Battery cycle count, design vs full-charge capacity, CPU/GPU
+           package temps under no-load, light load, full load.
+     WHY:  A laptop running this stack 8h/day is harder on the battery
+           than typical office use.
+     BUILD:
+       - powercfg /batteryreport parser.
+       - HWiNFO64 CLI export OR LibreHardwareMonitor sampler.
+
+6.5  Power-event resilience
+     WHAT: Confirm clean shutdown on AC loss + battery drain to 5%.
+     WHY:  Schools have power instability. The stack must shut down
+           cleanly, not corrupt SQLite on the way down.
+     BUILD:
+       - Test plan + manual checklist (this one is hard to fully
+         automate, but the post-shutdown state can be verified by
+         section 3 checks).
+
+
+================================================================================
+7. NETWORK / CONNECTIVITY
+================================================================================
+
+7.1  Hotspot stability
+     WHAT: Windows Mobile Hotspot uptime, associated-client count, DHCP
+           lease churn, bytes in/out per client.
+     WHY:  The hotspot is the single point of student access. If it
+           silently drops, every kid is locked out.
+     BUILD:
+       - PowerShell sampler using Get-NetAdapter / netsh wlan show.
+       - Continuous ping from a second device on the network (manual
+         setup, but documented).
+       - Auto-restart hook + alert if the hotspot adapter goes down.
+
+7.2  DNS resolution (puente.link)
+     WHAT: From a connected client, resolve puente.link and confirm it
+           returns 192.168.137.1.
+     WHY:  ICS DNS proxy is fragile; a Windows update can break it.
+     BUILD:
+       - A second-device probe (Raspberry Pi or phone running a script)
+         that resolves the domain every minute and writes back to the
+         laptop over the hotspot.
+       - Caddy-side check: confirm cert/HTTP responses for the host.
+
+7.3  Concurrent-client throughput
+     WHAT: 30 simulated clients on the hotspot, each pulling a static
+           asset, then making an /ai/api/chat call.
+     WHY:  Stress-tests Caddy + Windows networking + hotspot driver as
+           one system, not just the AI pipeline.
+     BUILD:
+       - Combine 1.1 driver with a multi-IP simulation (or actually use
+         multiple physical devices for a periodic real-world test).
+
+7.4  Caddy health
+     WHAT: 200/4xx/5xx breakdown per route, request duration histogram.
+     WHY:  When ai-control hangs, Caddy returns 502. Tracking the ratio
+           per route tells us which backend is failing.
+     BUILD:
+       - Caddy access-log parser (JSON logs enabled in Caddyfile if not
+         already), aggregated into results.db.
+
+
+================================================================================
+8. SECURITY
+================================================================================
+
+8.1  Auth load + lockout behavior
+     WHAT: Hammer /ai/api/auth/login with bad passwords; confirm lockout
+           triggers, doesn't lock out legit users, and doesn't degrade
+           the whole service.
+     WHY:  Argon2 is intentionally slow; a brute-force attempt could DOS
+           the laptop even without succeeding.
+     BUILD:
+       - Driver that simulates 100 failed logins/sec; verify rate-limit
+         and CPU impact on other endpoints.
+
+8.2  Secret hygiene
+     WHAT: No secrets in logs, no secrets in error messages, no secrets
+           in process listings.
+     WHY:  Operators will grep logs and screenshot them for support.
+     BUILD:
+       - Log grep with regexes for known secret shapes (Argon2 hashes,
+         AES-GCM ciphertext markers, .env var names).
+       - CI check that errors on a match.
+
+8.3  Crypto roundtrip + key-rotation drill
+     WHAT: Rotate the storage encryption key in a test copy; confirm all
+           existing data is re-encryptable and readable after.
+     WHY:  We need a documented, tested rotation procedure before we
+           need it.
+     BUILD:
+       - Rotation script + test that runs against a snapshot of
+         backend-data/.
+
+8.4  Session + cookie behavior
+     WHAT: Session expiry, refresh, replay-after-expiry, cross-user
+           isolation.
+     WHY:  Multiple students may share a laptop physically.
+     BUILD:
+       - End-to-end browser-driver test (Playwright in headless mode).
+
+8.5  Update / supply-chain check
+     WHAT: When a Docker image is pulled, verify digest against a pinned
+           manifest before starting.
+     WHY:  Offline systems get updated rarely and manually; a wrong-image
+           pull should be caught at deploy time.
+     BUILD:
+       - Pin digests in compose file; checker that diffs running images
+         vs pinned digests on every startup.
+
+
+================================================================================
+9. RECOVERY / DISASTER
+================================================================================
+
+9.1  Container-crash recovery
+     WHAT: Kill each container (ai-control, llama, caddy, open-webui,
+           kolibri, kiwix) in turn with SIGKILL; measure time-to-healthy
+           and verify zero data loss.
+     WHY:  Docker Desktop crashes happen. We need known recovery times.
+     BUILD:
+       - Script that iterates containers, kills, waits for restart,
+         hits a known endpoint, records timings.
+
+9.2  Disk-full simulation
+     WHAT: Fill the volume to within 100MB of full; confirm graceful
+           degradation (read-only mode, clear error messages, no SQLite
+           corruption).
+     WHY:  This WILL happen in the field.
+     BUILD:
+       - Helper that allocates a large file to a snapshot copy of the
+         data dir; runs the standard smoke test under that constraint.
+
+9.3  OOM behavior
+     WHAT: Memory-pressure ai-control until OOMKilled; confirm restart,
+           confirm chat history not corrupted.
+     WHY:  Per existing memory: WSL2 8GB ceiling. This is a real risk.
+     BUILD:
+       - cgroup-mem-limited container run; exercise Spanish HNSW path
+         specifically.
+
+9.4  Power-loss simulation
+     WHAT: `Stop-VM -TurnOff` on the WSL2 VM (or hard-power the laptop in
+           a controlled bench setup) while writes are in flight.
+     WHY:  Worst-case real-world event. We need to know what survives.
+     BUILD:
+       - Test runner that begins a chat turn, signals an external
+         "power-loss" helper, then on next boot runs all integrity checks.
+
+9.5  Rollback drill
+     WHAT: Roll back to the previous release (compose file + image
+           digests) and confirm storage.db is forward+backward compatible.
+     WHY:  We will ship a bad release. We need rollback to be a known
+           five-minute procedure, not a panic.
+     BUILD:
+       - Rollback runbook + automated test that walks it.
+       - Migration tests: every schema change ships with a downgrade.
+
+
+================================================================================
+10. RETRIEVAL + GENERATION QUALITY (DRIFT OVER TIME)
+================================================================================
+
+10.1 Retrieval gold set
+     WHAT: A fixed set of (query, expected_chunk_id) pairs for both
+           English and Spanish. Measure recall@1/5/10 weekly.
+     WHY:  Per existing memory: chroma_db_es recall@10 = 0.818. We need
+           to know if it drops, in which language, and when.
+     BUILD:
+       - Curated gold set in aibox/checks/quality/gold_retrieval.jsonl
+         (~200 EN + ~200 ES queries with manually-verified answers).
+       - Runner + report; alert on > 2pp drop vs baseline.
+
+10.2 Reranker contribution
+     WHAT: Recall@10 with reranker on vs off. The delta is the reranker's
+           real value; track that it stays positive.
+     WHY:  Reranker eats VRAM. If its contribution shrinks, we can
+           consider dropping it on memory-pressured deployments.
+
+10.3 Generation quality (LLM-as-judge, offline)
+     WHAT: Run a fixed prompt set; have a stronger local model OR a
+           deterministic rubric score the answers for factuality,
+           relevance, language match, refusal-when-appropriate.
+     WHY:  Quantitative gen-quality is the hardest thing to track; even
+           an imperfect signal is better than vibes.
+     BUILD:
+       - Rubric + scoring harness. No external APIs (offline-first).
+       - Track scores per release; flag regressions.
+
+10.4 Language-mismatch detection
+     WHAT: Confirm Spanish queries return Spanish chunks and Spanish
+           answers; same for English.
+     WHY:  This has bitten the project before. It deserves a permanent check.
+     BUILD:
+       - Language detector (fasttext-lid or langid) applied to query,
+         retrieved chunks, and generated answer. Report mismatch rate.
+
+10.5 OOD / hallucination canaries
+     WHAT: Questions with no answer in the corpus. The system should say
+           "I don't know" (or equivalent), not confabulate.
+     WHY:  Hallucinations to students are the worst failure mode for an
+           ed-tech product.
+     BUILD:
+       - Canary query set with known-OOD topics.
+       - Scorer that flags any high-confidence fabricated answer.
+
+
+================================================================================
+11. OBSERVABILITY (THE GLUE)
+================================================================================
+
+11.1 Structured logging across services
+     WHAT: ai-control, llama (where possible), Caddy, Kolibri all emit
+           JSON logs to a known location with consistent fields:
+           timestamp, service, level, request_id, user_id (hashed),
+           latency_ms, route, status.
+     WHY:  Without this, every check above has to do ad-hoc log parsing.
+     BUILD:
+       - Logging refactor in ai-control (structlog).
+       - Caddy log_format json.
+       - Shipper that tails into results.db OR a local SQLite log store.
+
+11.2 Local dashboard
+     WHAT: A single localhost page (served by ai-control or Caddy) that
+           shows: stack health, VRAM/CPU/disk, recent error rate, last
+           check-suite results.
+     WHY:  Field operators need one place to look. No Grafana — keep it
+           lightweight and offline.
+     BUILD:
+       - Static HTML + JS reading from results.db via a small read-only
+         endpoint.
+
+11.3 Alerting (local + optional remote)
+     WHAT: When a check fails, write a clear message to the dashboard
+           and append to a daily summary file. Optionally email when
+           internet is available.
+     WHY:  Failures need to be visible without being noisy.
+     BUILD:
+       - Severity levels, dedup window, daily roll-up file in logs/.
+
+
+================================================================================
+12. PROCESS + RELEASE GATES
+================================================================================
+
+12.1 Pre-release checklist (must pass before a build is promoted)
+     - All sections 1-10 "PASS" suites green in the last 24h.
+     - Baseline file updated and reviewed.
+     - Rollback procedure rehearsed (9.5).
+     - Disk-growth projection > 365 days remaining (2.1).
+
+12.2 Field-deployment checklist (per laptop)
+     - Hardware health check (6.x) green.
+     - Hotspot + DNS check (7.1, 7.2) green from a second device.
+     - Cold-start time (1.5) within budget on this specific hardware.
+     - Backup script tested round-trip (2.5).
+
+12.3 Quarterly maintenance window
+     - Run full integrity suite (3.x).
+     - Vacuum SQLite if bloat > 25%.
+     - Refresh model-file hash manifest (3.4).
+     - Re-run quality gold set (10.x); investigate any > 2pp drops.
+
+12.4 Annual review
+     - Re-baseline all perf thresholds (4.x) — hardware degrades; what
+       was fast on year-1 hardware may not be on year-3 hardware.
+     - Battery/disk wear projections (6.3, 6.4).
+     - Decide retirement vs refresh per device based on projections.
+
+
+================================================================================
+13. OPEN QUESTIONS / DECISIONS NEEDED BEFORE IMPLEMENTATION
+================================================================================
+
+- Locust vs k6 vs a custom asyncio driver for sections 1.x? (k6 has the
+  best built-in stats but is Go; Locust integrates better with our
+  Python ecosystem.)
+- Where does GPU telemetry go on a stock RTX 3070 laptop driver? Confirm
+  nvidia-smi is available on the host, not just inside containers.
+- Do we want a second physical device permanently provisioned as a probe
+  (sections 7.1, 7.2)? Recommended: yes — a $35 Pi Zero W.
+- Quality scoring (10.3): do we trust LLM-as-judge from the same local
+  model that generated the answers? Probably need a rubric + sampled
+  human review per release.
+- Soak-test cadence: continuously? Nightly? Weekly? Disk and laptop wear
+  argue for weekly + before each release rather than continuous.
+- Retention: how long do we keep results.db rows? Recommend 12 months at
+  full resolution, then downsample to daily aggregates.
+
+
+================================================================================
+14. RECOMMENDED BUILD ORDER (highest leverage first)
+================================================================================
+
+  1. Section 0: shared harness + result store + reporting.
+  2. Section 6.1-6.2: GPU + RAM telemetry (cheap, immediately useful).
+  3. Section 2.1-2.3: storage growth (cheap, prevents the most common
+     real-world failure).
+  4. Section 1.1: concurrent chat stress (the headline number we'll
+     reference in every conversation).
+  5. Section 4.1: perf baseline (so we can catch regressions from now on).
+  6. Section 3.1-3.3: data integrity checks.
+  7. Section 10.1: retrieval gold set (lock in current quality before
+     making changes).
+  8. Section 7: network/hotspot — needs a second device; coordinate
+     hardware procurement.
+  9. Section 9: recovery drills — important but invasive; do after the
+     observability layer is solid so we can see what happens.
+ 10. Section 8: security — important; auth-load test (8.1) can go
+     earlier if there's a deployment with internet exposure planned.
+ 11. Section 10.3-10.5: quality drift — last because it needs the most
+     curation work.
+
+================================================================================
+END OF FILE
+================================================================================
