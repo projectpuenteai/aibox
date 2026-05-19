@@ -1,7 +1,5 @@
 # Hotspot + Auto-Start + Control UI — Progress Tracker
 
-Plan: `C:\Users\REDACTED\.claude\plans\i-want-to-get-radiant-sutherland.md`
-
 ## Part 1 — Hotspot working end-to-end
 
 - [x] Fix WinRT projection failure in `setup_hotspot.ps1` (poll `TetheringOperationalState` instead of unwrapping async)
@@ -30,7 +28,7 @@ Plan: `C:\Users\REDACTED\.claude\plans\i-want-to-get-radiant-sutherland.md`
 
 - [ ] V2: down_stack works (`docker ps` empty, hotspot off). Opening the UI auto-starts to Ready, Pause → off + window stays, Start again → up, Stop → off + window closes. Phone test while UI shows Ready.
 - [ ] V3: install autostart, reboot, confirm phone can reach `puente.link` with no PowerShell window or UAC prompt visible. Double-click shortcut → single UAC → UI opens with Ready. Run uninstall, reboot, confirm hotspot does NOT auto-start and shortcut is gone.
-- [ ] V4: regression — `python aibox/tools/ai-control/test_rag_pipeline.py` passes; `docker compose ps` shows all services healthy/running.
+- [ ] V4: regression — `py -3 -m pytest aibox/tools/tests/test_rag_pipeline_smoke.py aibox/tools/tests/test_rag_pipeline_smoke_es.py` passes; `docker compose ps` shows all services healthy/running.
 
 ## Docs
 
