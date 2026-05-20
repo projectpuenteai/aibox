@@ -7,11 +7,16 @@ param(
   [switch]$SkipWslRestart,
   [switch]$FailOnHotspotCancel,
   # Bypass Mobile Hotspot bring-up (developer iteration).
-  [switch]$SkipHotspot
+  [switch]$SkipHotspot,
+  # Force recreate containers (apply .env changes that would otherwise be ignored).
+  [switch]$Recreate
 )
 
 . (Join-Path $PSScriptRoot 'lib\lib_io.ps1')
 . (Join-Path $PSScriptRoot 'lib\lib_env.ps1')
+
+$script:EnvDefaultsPath = Join-Path $PSScriptRoot '..\..\..\stack\.env.defaults'
+$script:EnvDefaults = if (Test-Path -LiteralPath $script:EnvDefaultsPath) { Get-DotEnvMap -Path $script:EnvDefaultsPath } else { @{} }
 
 # ── Boot-log transcript (§3.12) ───────────────────────────────────────────────
 # Capture stdout/stderr to %ProgramData%\AIBox\logs so the scheduled task at
@@ -172,23 +177,29 @@ function Start-DockerDesktopIfNeeded {
 function Get-ComposeExistingServices {
   param([string]$ComposeFilePath)
 
-  $existing = @()
-  $saved = $ErrorActionPreference
-  $ErrorActionPreference = "Continue"
+  # §3.4: separate stdout/stderr via Start-Process so warning lines from docker
+  # (e.g. credential-helper noise on stderr) cannot pollute the service-name
+  # list parsed downstream.
+  $stdoutFile = [IO.Path]::GetTempFileName()
+  $stderrFile = [IO.Path]::GetTempFileName()
   try {
-    $output = & docker compose -f $ComposeFilePath ps --services --all 2>&1
-    if ($LASTEXITCODE -eq 0) {
-      $existing = @(
-        $output |
-          Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
-          ForEach-Object { ([string]$_).Trim() }
-      )
+    $proc = Start-Process -FilePath "docker" `
+      -ArgumentList @("compose","-f",$ComposeFilePath,"ps","--services","--all") `
+      -NoNewWindow -Wait -PassThru `
+      -RedirectStandardOutput $stdoutFile `
+      -RedirectStandardError $stderrFile
+    if ($proc.ExitCode -ne 0) {
+      return @()
     }
+    $lines = @(
+      Get-Content -LiteralPath $stdoutFile |
+        Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+        ForEach-Object { ([string]$_).Trim() }
+    )
+    return @($lines | Select-Object -Unique)
   } finally {
-    $ErrorActionPreference = $saved
+    Remove-Item -LiteralPath $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
   }
-
-  return @($existing | Select-Object -Unique)
 }
 
 function New-HexSecret {
@@ -376,6 +387,9 @@ if (-not $SkipCpuSync) {
 # user-data subdirectories into the new appdata/ subdirectory.  It is
 # idempotent: if appdata/ already contains a given directory it is skipped.
 #
+# §3.5: gated by a sentinel file so we stop printing "[migrate] Skipping ..."
+# lines on every boot once the migration has been completed.
+#
 # Directories that stay at backend-data/ root (NOT moved):
 #   ai-control/   → /state
 #   chroma_db/    → /chroma_db
@@ -383,32 +397,42 @@ if (-not $SkipCpuSync) {
 #   llama/        → /tmp/llama
 $backendDataDir = Join-Path $aiboxDir "backend-data"
 $appdataDir     = Join-Path $backendDataDir "appdata"
+$migrationSentinel = Join-Path $backendDataDir ".migrations\appdata-layout.done"
 
-# Subdirectories that belong under appdata/
-$migrateNames = @("db", "users", "tmp", "security")
+if (-not (Test-Path -LiteralPath $migrationSentinel)) {
+  # Subdirectories that belong under appdata/
+  $migrateNames = @("db", "users", "tmp", "security")
 
-foreach ($name in $migrateNames) {
-  $oldPath = Join-Path $backendDataDir $name
-  $newPath = Join-Path $appdataDir     $name
+  foreach ($name in $migrateNames) {
+    $oldPath = Join-Path $backendDataDir $name
+    $newPath = Join-Path $appdataDir     $name
 
-  if ((Test-Path $oldPath) -and -not (Test-Path $newPath)) {
-    Write-Host "[migrate] backend-data/$name → backend-data/appdata/$name"
-    # Ensure parent exists before moving
-    if (-not (Test-Path $appdataDir)) {
-      New-Item -ItemType Directory -Path $appdataDir -Force | Out-Null
+    if ((Test-Path $oldPath) -and -not (Test-Path $newPath)) {
+      Write-Host "[migrate] backend-data/$name → backend-data/appdata/$name"
+      # Ensure parent exists before moving
+      if (-not (Test-Path $appdataDir)) {
+        New-Item -ItemType Directory -Path $appdataDir -Force | Out-Null
+      }
+      Move-Item -Path $oldPath -Destination $newPath -ErrorAction Stop
+      Write-Host "[migrate] Done: $name"
+    } elseif ((Test-Path $oldPath) -and (Test-Path $newPath)) {
+      Write-Host "[migrate] Skipping $name — already at appdata/$name"
     }
-    Move-Item -Path $oldPath -Destination $newPath -ErrorAction Stop
-    Write-Host "[migrate] Done: $name"
-  } elseif ((Test-Path $oldPath) -and (Test-Path $newPath)) {
-    Write-Host "[migrate] Skipping $name — already at appdata/$name"
   }
-}
 
-# Ensure appdata/ directory exists for a fresh install (app creates its own
-# subdirs on first startup, but Docker needs the mountpoint to exist).
-if (-not (Test-Path $appdataDir)) {
-  New-Item -ItemType Directory -Path $appdataDir -Force | Out-Null
-  Write-Host "[info] Created backend-data/appdata/ for fresh install."
+  # Ensure appdata/ directory exists for a fresh install (app creates its own
+  # subdirs on first startup, but Docker needs the mountpoint to exist).
+  if (-not (Test-Path $appdataDir)) {
+    New-Item -ItemType Directory -Path $appdataDir -Force | Out-Null
+    Write-Host "[info] Created backend-data/appdata/ for fresh install."
+  }
+
+  # Drop the sentinel so this block stays silent on subsequent boots.
+  $sentinelDir = Split-Path -Parent $migrationSentinel
+  if (-not (Test-Path -LiteralPath $sentinelDir)) {
+    New-Item -ItemType Directory -Path $sentinelDir -Force | Out-Null
+  }
+  New-Item -ItemType File -Path $migrationSentinel -Force | Out-Null
 }
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -427,7 +451,13 @@ if ($LASTEXITCODE -ne 0) {
   }
 }
 
-$volumeProbeImage = if ($env:VOLUME_PROBE_IMAGE) { $env:VOLUME_PROBE_IMAGE } else { "caddy:2@sha256:ec18ee54aab3315c22e25f3b2babda73ff8007d39b13b3bd1bfffa2f0444c7d9" }
+$volumeProbeImage = if ($env:VOLUME_PROBE_IMAGE) {
+  $env:VOLUME_PROBE_IMAGE
+} elseif ($script:EnvDefaults.ContainsKey('VOLUME_PROBE_IMAGE')) {
+  $script:EnvDefaults['VOLUME_PROBE_IMAGE']
+} else {
+  "caddy:2@sha256:ec18ee54aab3315c22e25f3b2babda73ff8007d39b13b3bd1bfffa2f0444c7d9"
+}
 # Pre-pull the volume probe image when missing so preflight and bootstrap blocks
 # can use it. Soft-fail when offline or pull is rate-limited.
 & docker image inspect $volumeProbeImage *> $null
@@ -473,7 +503,7 @@ if (-not $volumeProbeImagePresent) {
   Write-Host "[warn] Volume probe image $volumeProbeImage is not local; skipping Spanish Chroma volume copy." -ForegroundColor Yellow
 } elseif (-not $volumeHasCatalog -and (Test-RealFile -Path $spanishChromaCatalogPath)) {
   Write-Host "[info] Populating $spanishChromaVolume from backend-data/chroma_db_es"
-  & docker run --rm -v "${spanishChromaSource}:/src:ro" -v "${spanishChromaVolume}:/dst" $volumeProbeImage sh -c "cp -a /src/. /dst/"
+  & docker run --rm -v "${spanishChromaSource}:/src:ro" -v "${spanishChromaVolume}:/dst" $volumeProbeImage sh -c "cd /src && tar cf - . | tar xf - -C /dst"
   if ($LASTEXITCODE -ne 0) {
     throw "Could not populate $spanishChromaVolume from $spanishChromaSource"
   }
@@ -508,7 +538,7 @@ if (-not $volumeProbeImagePresent) {
   Write-Host "[warn] Volume probe image $volumeProbeImage is not local; skipping Kolibri volume copy." -ForegroundColor Yellow
 } elseif (-not $kolibriHasCatalog -and (Test-Path -LiteralPath $kolibriDataSource -PathType Container) -and (@(Get-ChildItem -LiteralPath $kolibriDataSource -Force -ErrorAction SilentlyContinue).Count -gt 0)) {
   Write-Host "[info] Populating $kolibriDataVolume from kolibri-data/"
-  & docker run --rm -v "${kolibriDataSource}:/src:ro" -v "${kolibriDataVolume}:/dst" $volumeProbeImage sh -c "cp -a /src/. /dst/"
+  & docker run --rm -v "${kolibriDataSource}:/src:ro" -v "${kolibriDataVolume}:/dst" $volumeProbeImage sh -c "cd /src && tar cf - . | tar xf - -C /dst"
   if ($LASTEXITCODE -ne 0) {
     throw "Could not populate $kolibriDataVolume from $kolibriDataSource"
   }
@@ -547,23 +577,64 @@ if ($canUseStart) {
     throw "docker compose start failed (exit code $LASTEXITCODE)"
   }
 } else {
-  $cmd = @("compose", "-f", $ComposeFile, "up", "-d", "--no-recreate")
+  # §3.10: allow operator to override the default --no-recreate (which preserves
+  # existing containers and silently ignores .env changes) with --force-recreate
+  # when they actually want changes applied.
+  $cmd = @("compose", "-f", $ComposeFile, "up", "-d")
+  if ($Recreate) {
+    $cmd += "--force-recreate"
+  } else {
+    $cmd += "--no-recreate"
+  }
   if ($desiredServices.Count -gt 0) {
     $cmd += $desiredServices
   }
   Write-Host "[run] docker $($cmd -join ' ')"
   & docker @cmd
   if ($LASTEXITCODE -ne 0) {
-    throw "docker compose up --no-recreate failed (exit code $LASTEXITCODE)"
+    $recreateMode = if ($Recreate) { "--force-recreate" } else { "--no-recreate" }
+    throw "docker compose up $recreateMode failed (exit code $LASTEXITCODE)"
   }
 }
 
 Write-Host "[ok] stack started" -ForegroundColor Green
 
 Write-Host "[info] Current compose service status:"
-& docker compose -f $ComposeFile ps
-if ($LASTEXITCODE -ne 0) {
-  Write-Host "[warn] docker compose ps returned non-zero; service health summary unavailable." -ForegroundColor Yellow
+# §3.6: emit one colored line per service via JSON parse instead of the default
+# table formatter so health states are obvious at a glance.
+try {
+  $psJson = & docker compose -f $ComposeFile ps --format json 2>$null
+  if ($LASTEXITCODE -eq 0 -and $psJson) {
+    # docker compose ps --format json emits one JSON object per line (ndjson).
+    $services = @(
+      $psJson |
+        ForEach-Object { try { $_ | ConvertFrom-Json } catch { $null } } |
+        Where-Object { $_ }
+    )
+    foreach ($svc in $services) {
+      $state = $svc.State
+      $health = $svc.Health
+      $statusLine = "$($svc.Name) $state"
+      if ($health) { $statusLine += " ($health)" }
+      if ($state -eq 'running' -and ($health -eq 'healthy' -or -not $health)) {
+        Write-Host "[ok]   $statusLine" -ForegroundColor Green
+      } elseif ($state -eq 'running') {
+        Write-Host "[warn] $statusLine" -ForegroundColor Yellow
+      } else {
+        Write-Host "[err]  $statusLine" -ForegroundColor Red
+      }
+    }
+  } else {
+    & docker compose -f $ComposeFile ps   # fallback to default format
+    if ($LASTEXITCODE -ne 0) {
+      Write-Host "[warn] docker compose ps returned non-zero; service health summary unavailable." -ForegroundColor Yellow
+    }
+  }
+} catch {
+  & docker compose -f $ComposeFile ps       # fallback on parse errors
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "[warn] docker compose ps returned non-zero; service health summary unavailable." -ForegroundColor Yellow
+  }
 }
 
 # Prune dangling layers from any rebuild — runs after compose start so live containers are reused.

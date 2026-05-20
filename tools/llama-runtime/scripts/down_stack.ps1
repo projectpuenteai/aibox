@@ -62,8 +62,8 @@ if (-not (Test-IsAdministrator)) {
   if ($EmitJson)    { $selfArgs += "-EmitJson" }
   if ($JsonOutFile) { $selfArgs += @("-JsonOutFile", $JsonOutFile) }
   try {
-    Start-Process -FilePath "powershell.exe" -ArgumentList $selfArgs -Verb RunAs -Wait | Out-Null
-    exit 0
+    $proc = Start-Process -FilePath "powershell.exe" -ArgumentList $selfArgs -Verb RunAs -Wait -PassThru
+    exit $proc.ExitCode
   } catch {
     $result.errors.Add("Elevation cancelled or blocked; cannot shut down hotspot/stack.")
     Emit-Result -ExitCode 1

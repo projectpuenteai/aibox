@@ -12,7 +12,7 @@ name: aibox
 #       docker compose -f docker-compose.yaml \
 #                      -f docker-compose.runtime-control.yaml up -d
 #  The override file mounts the host Docker socket into ai-control and is
-#  documented in docs/runtime-control.md.
+#  documented in docs/SECURITY_RUNBOOK.md under "Runtime Control".
 #
 # ── Volume-access model ────────────────────────────────────────────────────────
 #
@@ -102,6 +102,8 @@ services:
       start_period: 10s
 
   llama:
+    # Default digest is duplicated in aibox/stack/.env.defaults and used by
+    # PowerShell scripts (preflight, up_stack). Keep them in sync if updating.
     image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:5c9266b4f92f1ab0d26dd0f2ede2e65d3853cad99ff86ba219db8fe6d464b995}
     container_name: aibox-llama
     gpus: all
@@ -223,14 +225,12 @@ services:
       - RERANK_MODEL=/models/rerank
       - RERANK_DEVICE=cpu
       - RERANK_SCORE_THRESHOLD=0.15
-      # ── Citation link verification ──
-      # Before exposing a /wiki/.../viewer#... link to the user, HEAD the
-      # corresponding Kiwix article URL. If the ZIM doesn't have it, the link
-      # is suppressed (frontend filters citations with no wiki_url). Set to 0
-      # to disable. KIWIX_BOOK_* must match the .zim files mounted into the
-      # kiwix-en / kiwix-es containers (minus the .zim extension).
-      - WIKI_LINK_VERIFY_ENABLED=1
-      - WIKI_LINK_VERIFY_TIMEOUT=2.0
+      # ── Citation links ──
+      # Citation URLs point at Kiwix's search endpoint (not a direct article)
+      # because retrieved chunk titles are often section headings that don't
+      # exist as their own page. KIWIX_BOOK_* must match the .zim files mounted
+      # into the kiwix-en / kiwix-es containers (minus the .zim extension) so
+      # the search is scoped to the right book.
       - KIWIX_BOOK_EN=wikipedia_en_all_mini_2026-03
       - KIWIX_BOOK_ES=wikipedia_es_all_maxi_2026-02
       - LLAMA_N_PREDICT=2048
@@ -354,7 +354,14 @@ services:
     image: treehouses/kolibri:latest@sha256:a68b49350b93f0d06494dea8b918dec1a6cb00b1e62fab3e027cc0bf04756856
     container_name: aibox-kolibri
     volumes:
-      - ../kolibri-data:/root/.kolibri
+      # Kolibri's SQLite DB previously lived on a Windows bind mount
+      # (../kolibri-data) and corrupted recurrently ("database disk image is
+      # malformed") because Docker Desktop's 9p layer doesn't reliably honor
+      # POSIX fsync/lock semantics. Moved to a WSL2 native ext4 named volume
+      # — same fix pattern as chroma_db_es_native. Repopulate with:
+      #   docker run --rm -v C:\AIBox\aibox\kolibri-data:/src:ro \
+      #                  -v kolibri_data_native:/dst alpine cp -a /src/. /dst/
+      - kolibri_data_native:/root/.kolibri
     networks:
       - aibox_net
     restart: unless-stopped
@@ -381,4 +388,6 @@ volumes:
   caddy_data:
   caddy_config:
   chroma_db_es_native:
+    external: true
+  kolibri_data_native:
     external: true

@@ -17,6 +17,11 @@ param(
 . (Join-Path $PSScriptRoot 'lib\lib_io.ps1')
 . (Join-Path $PSScriptRoot 'lib\lib_env.ps1')
 
+if ($PSVersionTable.PSEdition -ne 'Desktop') {
+    Write-Error "This script requires Windows PowerShell 5.1 (powershell.exe). PowerShell 7 cannot use WinRT directly here."
+    exit 64
+}
+
 $ErrorActionPreference = "SilentlyContinue"
 
 function Test-TcpReachable {

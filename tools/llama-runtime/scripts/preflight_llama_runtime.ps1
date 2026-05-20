@@ -11,6 +11,9 @@ $ErrorActionPreference = "Stop"
 # Test-GgufShardSet). Side-effect-free so the Pester suite can exercise them
 # without dot-sourcing this script.
 . (Join-Path $PSScriptRoot 'lib\lib_model.ps1')
+. (Join-Path $PSScriptRoot 'lib\lib_env.ps1')
+$script:EnvDefaultsPath = Join-Path $PSScriptRoot '..\..\..\stack\.env.defaults'
+$script:EnvDefaults = if (Test-Path -LiteralPath $script:EnvDefaultsPath) { Get-DotEnvMap -Path $script:EnvDefaultsPath } else { @{} }
 
 function Get-DotEnvMap {
   param([string]$Path)
@@ -279,10 +282,12 @@ foreach ($requiredName in $requiredSettings) {
 }
 Write-Host "[info] Required stack secrets are configured."
 
-$llamaImage = Resolve-Setting -Name "LLAMA_IMAGE" -PrimaryMap $stackEnv -SecondaryMap $repoEnv -DefaultValue "ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:5c9266b4f92f1ab0d26dd0f2ede2e65d3853cad99ff86ba219db8fe6d464b995"
+$llamaImageDefault = if ($script:EnvDefaults.ContainsKey('LLAMA_IMAGE')) { $script:EnvDefaults['LLAMA_IMAGE'] } else { "ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:5c9266b4f92f1ab0d26dd0f2ede2e65d3853cad99ff86ba219db8fe6d464b995" }
+$llamaImage = Resolve-Setting -Name "LLAMA_IMAGE" -PrimaryMap $stackEnv -SecondaryMap $repoEnv -DefaultValue $llamaImageDefault
 $modelFile = Resolve-Setting -Name "LLAMA_MODEL_FILE" -PrimaryMap $stackEnv -SecondaryMap $repoEnv -DefaultValue "qwen2.5-7b-instruct-q4_0-00001-of-00002.gguf"
 $imageMode = Resolve-Setting -Name "LLAMA_IMAGE_MODE" -PrimaryMap $stackEnv -SecondaryMap $repoEnv -DefaultValue "prebuilt"
-$volumeProbeImage = Resolve-Setting -Name "VOLUME_PROBE_IMAGE" -PrimaryMap $stackEnv -SecondaryMap $repoEnv -DefaultValue "caddy:2@sha256:ec18ee54aab3315c22e25f3b2babda73ff8007d39b13b3bd1bfffa2f0444c7d9"
+$volumeProbeImageDefault = if ($script:EnvDefaults.ContainsKey('VOLUME_PROBE_IMAGE')) { $script:EnvDefaults['VOLUME_PROBE_IMAGE'] } else { "caddy:2@sha256:ec18ee54aab3315c22e25f3b2babda73ff8007d39b13b3bd1bfffa2f0444c7d9" }
+$volumeProbeImage = Resolve-Setting -Name "VOLUME_PROBE_IMAGE" -PrimaryMap $stackEnv -SecondaryMap $repoEnv -DefaultValue $volumeProbeImageDefault
 $script:VolumeProbeImage = $volumeProbeImage.Value
 $embedModel = Resolve-Setting -Name "EMBED_MODEL" -PrimaryMap $stackEnv -SecondaryMap $repoEnv -DefaultValue "/models/embed-m3"
 $rerankModel = Resolve-Setting -Name "RERANK_MODEL" -PrimaryMap $stackEnv -SecondaryMap $repoEnv -DefaultValue "/models/rerank"

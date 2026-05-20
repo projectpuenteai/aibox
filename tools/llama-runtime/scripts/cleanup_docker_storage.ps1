@@ -7,8 +7,10 @@
 # NEVER removes named volumes or images that are still tagged/in-use,
 # because offline deployment cannot re-pull images.
 #
+# Used by: up_stack.ps1 (post-compose), rebuild_ai_control.ps1 — both invoke with -Apply -Quiet.
+#
 # Usage:
-#   cleanup_docker_storage.ps1                   # Dry-run only
+#   cleanup_docker_storage.ps1                   # Dry-run (no -Apply)
 #   cleanup_docker_storage.ps1 -Apply            # Always cleans safe items
 #   cleanup_docker_storage.ps1 -Apply -ThresholdGB 20
 param(
@@ -29,7 +31,17 @@ function Write-Status {
 }
 
 function Get-FreeDiskGB {
-  $drive = (Get-Location).Drive.Name + ":"
+  $dockerRoot = $null
+  try {
+    $dockerRoot = (& docker info --format '{{ .DockerRootDir }}' 2>$null)
+    if ($LASTEXITCODE -ne 0) { $dockerRoot = $null }
+  } catch { $dockerRoot = $null }
+
+  if ($dockerRoot -and ($dockerRoot -match '^([A-Z]):')) {
+    $drive = $Matches[1] + ':'
+  } else {
+    $drive = "C:"
+  }
   try {
     $disk = Get-PSDrive -Name ($drive -replace ":","") -ErrorAction SilentlyContinue
     if ($disk) {

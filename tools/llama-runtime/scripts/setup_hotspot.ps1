@@ -17,6 +17,11 @@ param(
 . (Join-Path $PSScriptRoot 'lib\lib_io.ps1')
 . (Join-Path $PSScriptRoot 'lib\lib_env.ps1')
 
+if ($PSVersionTable.PSEdition -ne 'Desktop') {
+    Write-Error "This script requires Windows PowerShell 5.1 (powershell.exe). PowerShell 7 cannot use WinRT directly here."
+    exit 64
+}
+
 $ErrorActionPreference = "Stop"
 
 $scriptDir    = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -268,7 +273,9 @@ function Set-HostsEntry {
     $filtered = @($lines | Where-Object { $_ -and ($_ -notmatch $domainPattern) -and ($_ -notmatch $tagPattern) })
     $newLine  = "$IpAddress $Domain $hostsTagPrefix"
     $newContent = $filtered + @($newLine)
-    [System.IO.File]::WriteAllLines($hostsFilePath, [string[]]$newContent, [System.Text.Encoding]::ASCII)
+    $tmpHosts = "$hostsFilePath.aibox-tmp"
+    [System.IO.File]::WriteAllLines($tmpHosts, [string[]]$newContent, [System.Text.Encoding]::ASCII)
+    Move-FileAtomic -Source $tmpHosts -Destination $hostsFilePath
     return $true
   } catch {
     Write-Host "      ! Set-HostsEntry failed: $($_.Exception.Message)" -ForegroundColor Yellow
@@ -285,7 +292,9 @@ function Remove-HostsEntry {
     $lines = @($raw)
     $filtered = @($lines | Where-Object { $_ -notmatch [regex]::Escape($hostsTagPrefix) })
     if ($filtered.Count -ne $lines.Count) {
-      [System.IO.File]::WriteAllLines($hostsFilePath, [string[]]$filtered, [System.Text.Encoding]::ASCII)
+      $tmpHosts = "$hostsFilePath.aibox-tmp"
+      [System.IO.File]::WriteAllLines($tmpHosts, [string[]]$filtered, [System.Text.Encoding]::ASCII)
+      Move-FileAtomic -Source $tmpHosts -Destination $hostsFilePath
     }
     return $true
   } catch {

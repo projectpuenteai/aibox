@@ -10,6 +10,7 @@
 **/.env
 **/.env.*
 !stack/.env.example
+!stack/.env.defaults
 
 # Runtime data and local state
 backend-data/**

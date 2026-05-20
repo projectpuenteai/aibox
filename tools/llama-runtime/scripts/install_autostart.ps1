@@ -74,7 +74,6 @@ if (-not $SkipTask) {
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
     -StartWhenAvailable `
-    -ExecutionTimeLimit (New-TimeSpan -Hours 0) `
     -MultipleInstances IgnoreNew
 
   $taskPrincipal = New-ScheduledTaskPrincipal `
@@ -88,6 +87,14 @@ if (-not $SkipTask) {
     -Settings   $taskSettings `
     -Principal  $taskPrincipal `
     -Description "Starts the AIBox Docker stack + offline Wi-Fi hotspot at user logon." | Out-Null
+
+  # ExecutionTimeLimit = PT0S (ISO 8601 "no limit"). Setting it via
+  # New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 0)
+  # is interpreted inconsistently across Windows builds, so we patch the
+  # registered task's XML directly.
+  $task = Get-ScheduledTask -TaskName $TaskName
+  $task.Settings.ExecutionTimeLimit = "PT0S"
+  Set-ScheduledTask -InputObject $task | Out-Null
 
   Write-Host "      + Task registered." -ForegroundColor Green
 } else {
