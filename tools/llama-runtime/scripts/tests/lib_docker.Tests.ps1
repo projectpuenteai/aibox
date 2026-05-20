@@ -16,6 +16,9 @@ Describe 'lib_docker' {
         It 'rejects empty arg list' {
             Test-DockerPruneArgs -ArgList @() | Should -BeFalse
         }
+        It 'rejects image prune --all' {
+            Test-DockerPruneArgs -ArgList @('image','prune','--all') | Should -BeFalse
+        }
     }
 
     Context 'Test-LocalDockerImage' {

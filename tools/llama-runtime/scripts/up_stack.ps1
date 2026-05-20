@@ -5,10 +5,13 @@ param(
   [switch]$SkipGpuProbe,
   [switch]$SkipCpuSync,
   [switch]$SkipWslRestart,
-  [switch]$FailOnHotspotCancel
+  [switch]$FailOnHotspotCancel,
+  # Bypass Mobile Hotspot bring-up (developer iteration).
+  [switch]$SkipHotspot
 )
 
 . (Join-Path $PSScriptRoot 'lib\lib_io.ps1')
+. (Join-Path $PSScriptRoot 'lib\lib_env.ps1')
 
 # ── Boot-log transcript (§3.12) ───────────────────────────────────────────────
 # Capture stdout/stderr to %ProgramData%\AIBox\logs so the scheduled task at
@@ -97,11 +100,12 @@ function Wait-DockerDaemon {
   )
 
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  $emittedError = $false
   while ((Get-Date) -lt $deadline) {
     $saved = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
-      $null = & docker info 2>&1
+      $errorOutput = & docker info 2>&1 | Out-String
       $code = $LASTEXITCODE
     } finally {
       $ErrorActionPreference = $saved
@@ -109,6 +113,14 @@ function Wait-DockerDaemon {
 
     if ($code -eq 0) {
       return $true
+    }
+
+    if (-not $emittedError -and $errorOutput) {
+      $firstLine = ($errorOutput -split "`r?`n") | Where-Object { $_ -match '\S' } | Select-Object -First 1
+      if ($firstLine) {
+        Write-Host "[warn] docker info: $firstLine" -ForegroundColor Yellow
+        $emittedError = $true
+      }
     }
 
     Start-Sleep -Seconds $IntervalSeconds
@@ -177,36 +189,6 @@ function Get-ComposeExistingServices {
   }
 
   return @($existing | Select-Object -Unique)
-}
-
-function Get-DotEnvMap {
-  param([string]$Path)
-
-  $map = @{}
-  if (-not (Test-Path $Path)) {
-    return $map
-  }
-
-  foreach ($line in Get-Content $Path) {
-    $trimmed = $line.Trim()
-    if (-not $trimmed -or $trimmed.StartsWith("#")) {
-      continue
-    }
-
-    $idx = $trimmed.IndexOf("=")
-    if ($idx -lt 1) {
-      continue
-    }
-
-    $key = $trimmed.Substring(0, $idx).Trim()
-    $value = $trimmed.Substring($idx + 1).Trim()
-    if ($value.StartsWith('"') -and $value.EndsWith('"') -and $value.Length -ge 2) {
-      $value = $value.Substring(1, $value.Length - 2)
-    }
-    $map[$key] = $value
-  }
-
-  return $map
 }
 
 function New-HexSecret {
@@ -357,6 +339,20 @@ if (-not $SkipCpuSync) {
 
   if ($syncResult.changed -and -not $SkipWslRestart) {
     Write-Host "[info] .wslconfig updated ($($syncResult.configured_processors_before) -> $($syncResult.configured_processors_after)); restarting WSL..."
+    try {
+      $runningDistros = & wsl --list --running --quiet 2>$null
+      if ($LASTEXITCODE -eq 0 -and $runningDistros) {
+        $otherDistros = $runningDistros | Where-Object { $_ -and ($_ -notmatch '^docker-desktop') } | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+        if ($otherDistros.Count -gt 0) {
+          Write-Host "[warn] WSL --shutdown is about to terminate these running distros (unsaved work will be lost):" -ForegroundColor Yellow
+          foreach ($d in $otherDistros) { Write-Host "  - $d" -ForegroundColor Yellow }
+          Write-Host "[warn] Sleeping 5 seconds; press Ctrl+C to abort." -ForegroundColor Yellow
+          Start-Sleep -Seconds 5
+        }
+      }
+    } catch {
+      # Best-effort warning; don't fail the WSL sync over a query glitch.
+    }
     & wsl --shutdown
     if ($LASTEXITCODE -ne 0) {
       throw "wsl --shutdown failed (exit code $LASTEXITCODE)"
@@ -372,23 +368,6 @@ if (-not $SkipCpuSync) {
   } else {
     Write-Host "[info] WSL CPU allocation already aligned with host logical CPUs ($($syncResult.host_logical_cpus))."
   }
-}
-
-# ── Docker storage cleanup (safe offline prune) ───────────────────────────────
-# Cleans stopped containers, dangling image layers, and build cache.
-# Only removes items that cannot be pulled back (never removes tagged images
-# or named volumes), so it is safe to run unconditionally — this stops build
-# cache and dangling layers from accumulating between stack restarts even
-# when free disk is plentiful.
-$cleanupScript = Join-Path $scriptDir "cleanup_docker_storage.ps1"
-if (Test-Path $cleanupScript) {
-  Write-Host "[info] Running routine Docker storage cleanup..."
-  & powershell -ExecutionPolicy Bypass -File $cleanupScript -Apply -Quiet
-  if ($LASTEXITCODE -ne 0) {
-    Write-Host "[warn] Docker storage cleanup returned a non-zero exit code; continuing anyway." -ForegroundColor Yellow
-  }
-} else {
-  Write-Host "[warn] cleanup_docker_storage.ps1 not found; skipping storage check." -ForegroundColor Yellow
 }
 
 # ── One-time backend-data layout migration ────────────────────────────────────
@@ -470,49 +449,23 @@ if ($LASTEXITCODE -eq 0) {
 
 function Test-RealFile {
   # Robust replacement for `Test-Path -PathType Leaf` that correctly handles
-  # NTFS reparse points (junctions, symlinks). Returns $true only if the path
-  # ultimately resolves to a real file on disk.
+  # NTFS reparse points. Returns $true only if the path ultimately resolves
+  # to a real file on disk.
   param([string]$Path)
-
-  if (-not (Test-Path -LiteralPath $Path)) {
-    return $false
-  }
-
   try {
     $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
-    if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
-      $target = $null
-      try {
-        $target = Get-Item -LiteralPath $Path -Force -ErrorAction Stop | Select-Object -ExpandProperty Target
-      } catch {
-        $target = $null
-      }
-      # .Target may be $null, a string, or a collection depending on PS edition.
-      if ($target) {
-        $targetPath = if ($target -is [System.Array]) { [string]$target[0] } else { [string]$target }
-        if (-not [System.IO.Path]::IsPathRooted($targetPath)) {
-          $parent = Split-Path -Parent $Path
-          if ($parent) {
-            $targetPath = Join-Path $parent $targetPath
-          }
-        }
-        Write-Host "[info] Spanish Chroma catalog path '$Path' is a reparse point; following to '$targetPath'."
-        try {
-          $resolved = Get-Item -LiteralPath $targetPath -Force -ErrorAction Stop
-          return (-not ($resolved.PSIsContainer))
-        } catch {
-          Write-Host "[warn] Could not resolve reparse target '$targetPath'; falling back to Test-Path -PathType Leaf." -ForegroundColor Yellow
-          return (Test-Path -LiteralPath $Path -PathType Leaf)
-        }
-      }
-      # Reparse point with no readable target — fall back.
-      Write-Host "[warn] Reparse point '$Path' has no readable .Target; falling back to Test-Path -PathType Leaf." -ForegroundColor Yellow
-      return (Test-Path -LiteralPath $Path -PathType Leaf)
-    }
-    return (-not ($item.PSIsContainer))
   } catch {
-    return (Test-Path -LiteralPath $Path -PathType Leaf)
+    return $false
   }
+  if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+    try {
+      $resolved = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Path -ErrorAction Stop))
+      return (Test-Path -LiteralPath $resolved -PathType Leaf)
+    } catch {
+      return $false
+    }
+  }
+  return (-not $item.PSIsContainer)
 }
 
 $spanishChromaCatalogPath = Join-Path $spanishChromaSource "chroma.sqlite3"
@@ -613,44 +566,60 @@ if ($LASTEXITCODE -ne 0) {
   Write-Host "[warn] docker compose ps returned non-zero; service health summary unavailable." -ForegroundColor Yellow
 }
 
-# Try to bring up the offline hotspot after the stack is live so the local DNS
-# service is already available when the hotspot validation runs.
-$hotspotScript = Join-Path $scriptDir "setup_hotspot.ps1"
-if ($FailOnHotspotCancel) {
-  Write-Host "[info] Hotspot-cancel policy: STRICT (-FailOnHotspotCancel set; script will exit 1 if elevation is declined or hotspot does not come up)."
+# Prune dangling layers from any rebuild — runs after compose start so live containers are reused.
+$cleanupScript = Join-Path $scriptDir "cleanup_docker_storage.ps1"
+if (Test-Path $cleanupScript) {
+  Write-Host "[info] Running routine Docker storage cleanup..."
+  & powershell -ExecutionPolicy Bypass -File $cleanupScript -Apply -Quiet
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "[warn] Docker storage cleanup returned a non-zero exit code; continuing anyway." -ForegroundColor Yellow
+  }
 } else {
-  Write-Host "[info] Hotspot-cancel policy: LENIENT (default; script will continue without offline networking if elevation is declined)."
+  Write-Host "[warn] cleanup_docker_storage.ps1 not found; skipping storage check." -ForegroundColor Yellow
 }
-Write-Host "[info] Starting offline hotspot..."
-$hotspotResult = Invoke-HotspotStartup -ScriptPath $hotspotScript
-if ($hotspotResult) {
-  foreach ($hotspotWarning in @($hotspotResult.warnings)) {
-    if (-not [string]::IsNullOrWhiteSpace([string]$hotspotWarning)) {
-      Write-Host "[warn] $hotspotWarning" -ForegroundColor Yellow
-    }
-  }
-  foreach ($hotspotError in @($hotspotResult.errors)) {
-    if (-not [string]::IsNullOrWhiteSpace([string]$hotspotError)) {
-      Write-Host "[warn] $hotspotError" -ForegroundColor Yellow
-    }
-  }
 
-  switch ([string]$hotspotResult.status) {
-    "ready" {
-      Write-Host "[ok] Hotspot ready for offline clients at http://$($hotspotResult.domain)/" -ForegroundColor Green
-    }
-    "ip_only" {
-      Write-Host "[warn] Hotspot is active, but offline DNS is not ready. Clients should use http://$($hotspotResult.host_ip)/ until puente.link validates." -ForegroundColor Yellow
-    }
-    default {
-      Write-Host "[warn] Hotspot is not ready. Stack startup completed, but offline student access is unavailable." -ForegroundColor Yellow
-    }
+if (-not $SkipHotspot) {
+  # Try to bring up the offline hotspot after the stack is live so the local DNS
+  # service is already available when the hotspot validation runs.
+  $hotspotScript = Join-Path $scriptDir "setup_hotspot.ps1"
+  if ($FailOnHotspotCancel) {
+    Write-Host "[info] Hotspot-cancel policy: STRICT (-FailOnHotspotCancel set; script will exit 1 if elevation is declined or hotspot does not come up)."
+  } else {
+    Write-Host "[info] Hotspot-cancel policy: LENIENT (default; script will continue without offline networking if elevation is declined)."
   }
+  Write-Host "[info] Starting offline hotspot..."
+  $hotspotResult = Invoke-HotspotStartup -ScriptPath $hotspotScript
+  if ($hotspotResult) {
+    foreach ($hotspotWarning in @($hotspotResult.warnings)) {
+      if (-not [string]::IsNullOrWhiteSpace([string]$hotspotWarning)) {
+        Write-Host "[warn] $hotspotWarning" -ForegroundColor Yellow
+      }
+    }
+    foreach ($hotspotError in @($hotspotResult.errors)) {
+      if (-not [string]::IsNullOrWhiteSpace([string]$hotspotError)) {
+        Write-Host "[warn] $hotspotError" -ForegroundColor Yellow
+      }
+    }
 
-  if ($FailOnHotspotCancel -and [string]$hotspotResult.status -ne "ready" -and [string]$hotspotResult.status -ne "ip_only") {
-    Write-Host "[fatal] -FailOnHotspotCancel was set and hotspot did not reach a usable state (status='$([string]$hotspotResult.status)'). Exiting with code 1." -ForegroundColor Red
-    exit 1
+    switch ([string]$hotspotResult.status) {
+      "ready" {
+        Write-Host "[ok] Hotspot ready for offline clients at http://$($hotspotResult.domain)/" -ForegroundColor Green
+      }
+      "ip_only" {
+        Write-Host "[warn] Hotspot is active, but offline DNS is not ready. Clients should use http://$($hotspotResult.host_ip)/ until puente.link validates." -ForegroundColor Yellow
+      }
+      default {
+        Write-Host "[warn] Hotspot is not ready. Stack startup completed, but offline student access is unavailable." -ForegroundColor Yellow
+      }
+    }
+
+    if ($FailOnHotspotCancel -and [string]$hotspotResult.status -ne "ready" -and [string]$hotspotResult.status -ne "ip_only") {
+      Write-Host "[fatal] -FailOnHotspotCancel was set and hotspot did not reach a usable state (status='$([string]$hotspotResult.status)'). Exiting with code 1." -ForegroundColor Red
+      exit 1
+    }
   }
+} else {
+  Write-Host "[info] Hotspot skipped via -SkipHotspot."
 }
 
 # ── Update portal connection info (best-effort, non-fatal) ────────────────────

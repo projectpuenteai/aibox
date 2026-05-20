@@ -15,27 +15,9 @@ param(
 )
 
 . (Join-Path $PSScriptRoot 'lib\lib_io.ps1')
+. (Join-Path $PSScriptRoot 'lib\lib_env.ps1')
 
 $ErrorActionPreference = "SilentlyContinue"
-
-function Read-EnvValue {
-  param(
-    [string]$Key,
-    [string]$Default = ""
-  )
-  $val = [System.Environment]::GetEnvironmentVariable($Key)
-  if (-not [string]::IsNullOrWhiteSpace($val)) { return $val }
-  if (Test-Path $stackEnvFile) {
-    $line = Get-Content $stackEnvFile -ErrorAction SilentlyContinue |
-            Where-Object { $_ -match "^\s*$Key\s*=" } |
-            Select-Object -First 1
-    if ($line) {
-      $val = ($line -split "=", 2)[1].Trim().Trim('"').Trim("'")
-      if (-not [string]::IsNullOrWhiteSpace($val)) { return $val }
-    }
-  }
-  return $Default
-}
 
 function Test-TcpReachable {
   param(
@@ -318,6 +300,27 @@ $ethernetRestoreStateFile = Join-Path $hotspotStateDir "ethernet-restore-state.j
 $hotspotLastResultFile = Join-Path $hotspotStateDir "hotspot-last-result.json"
 $portalDir    = Join-Path $aiboxDir "stack\portal"
 $outFile      = Join-Path $portalDir "network-info.json"
+
+function Read-EnvValue {
+  # Local wrapper preserving the (Key, Default) signature used throughout this
+  # script. Routes parsing through lib_env.ps1::Get-DotEnvMap (shared parser)
+  # while keeping the historical semantics: process env var wins, otherwise
+  # falls back to the stack .env, otherwise $Default.
+  param(
+    [string]$Key,
+    [string]$Default = ""
+  )
+  $val = [System.Environment]::GetEnvironmentVariable($Key)
+  if (-not [string]::IsNullOrWhiteSpace($val)) { return $val }
+  if (Test-Path -LiteralPath $stackEnvFile) {
+    $map = Get-DotEnvMap -Path $stackEnvFile
+    if ($map.ContainsKey($Key)) {
+      $val = $map[$Key]
+      if (-not [string]::IsNullOrWhiteSpace($val)) { return $val }
+    }
+  }
+  return $Default
+}
 
 function Load-LastHotspotResult {
   if (-not (Test-Path $hotspotLastResultFile)) { return $null }

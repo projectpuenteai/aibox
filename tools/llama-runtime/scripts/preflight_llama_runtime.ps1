@@ -7,6 +7,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Pure model-integrity helpers (Test-ModelDirectoryIntegrity, Get-GgufShardPlan,
+# Test-GgufShardSet). Side-effect-free so the Pester suite can exercise them
+# without dot-sourcing this script.
+. (Join-Path $PSScriptRoot 'lib\lib_model.ps1')
+
 function Get-DotEnvMap {
   param([string]$Path)
 
@@ -121,17 +126,17 @@ function Test-RequiredDirectory {
     [string]$Code,
     [string]$Path,
     [string]$Description,
-    [switch]$RequireContent
+    [switch]$RequireContent,
+    [string[]]$RequiredFiles
   )
 
-  if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
-    Fail $Code "$Description directory not found: $Path"
-  }
-
-  if ($RequireContent) {
-    $first = Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($null -eq $first) {
-      Fail $Code "$Description directory is empty: $Path"
+  $result = Test-ModelDirectoryIntegrity -Path $Path -RequireContent:$RequireContent -RequiredFiles $RequiredFiles
+  if (-not $result.Ok) {
+    switch ($result.Reason) {
+      'directory_missing'     { Fail $Code "$Description directory not found: $Path" }
+      'directory_empty'       { Fail $Code "$Description directory is empty: $Path" }
+      'required_file_missing' { Fail $Code "$Description $($result.Message)" }
+      default                 { Fail $Code "$Description integrity check failed: $($result.Message)" }
     }
   }
 
@@ -379,18 +384,25 @@ if (-not $SkipGpuProbe) {
 
 $modelRoot = Join-Path $aiboxDir "models\llm\gguf"
 $modelPath = Join-Path $modelRoot $modelFile.Value
-if (-not (Test-Path $modelPath)) {
+$shardResult = Test-GgufShardSet -Directory $modelRoot -FileName $modelFile.Value
+if (-not $shardResult.Ok) {
   $available = ""
   if (Test-Path $modelRoot) {
     $available = (Get-ChildItem -Path $modelRoot -Filter *.gguf -File | Select-Object -ExpandProperty Name) -join ", "
   }
-  Fail "model_missing" "Model file not found: $modelPath. Available: $available"
+  Fail $shardResult.Reason "$($shardResult.Message). Available: $available"
+}
+$shardPlan = Get-GgufShardPlan -FileName $modelFile.Value
+if ($shardPlan.IsSharded) {
+  Write-Host "[info] Found GGUF model shards: $($shardPlan.Total) shards under $modelRoot (prefix '$($shardPlan.Prefix)')"
+} else {
+  Write-Host "[info] Found GGUF model file: $modelPath"
 }
 
 $embedRel = ([string]$embedModel.Value).TrimStart("/").Replace("/", "\")
 $rerankRel = ([string]$rerankModel.Value).TrimStart("/").Replace("/", "\")
-Test-RequiredDirectory -Code "embed_model_missing" -Path (Join-Path $aiboxDir $embedRel) -Description "embedding model" -RequireContent
-Test-RequiredDirectory -Code "rerank_model_missing" -Path (Join-Path $aiboxDir $rerankRel) -Description "rerank model" -RequireContent
+Test-RequiredDirectory -Code "embed_model_missing" -Path (Join-Path $aiboxDir $embedRel) -Description "embedding model" -RequireContent -RequiredFiles @('config.json','tokenizer.json')
+Test-RequiredDirectory -Code "rerank_model_missing" -Path (Join-Path $aiboxDir $rerankRel) -Description "rerank model" -RequireContent -RequiredFiles @('config.json')
 
 $kiwixDir = Join-Path $aiboxDir "kiwix"
 Test-RequiredFile -Code "kiwix_en_missing" -Path (Join-Path $kiwixDir "wikipedia_en_all_mini_2026-03.zim") -Description "English Kiwix ZIM"

@@ -17,6 +17,8 @@ param(
   [switch]$Quiet
 )
 
+. (Join-Path $PSScriptRoot 'lib\lib_docker.ps1')
+
 $ErrorActionPreference = "Stop"
 
 function Write-Status {
@@ -45,12 +47,8 @@ function Get-FreeDiskGB {
 function Invoke-DockerPrune {
   param([string[]]$Args, [string]$Label)
 
-  $joined = " $($Args -join ' ') "
-  $forbidden = @(" volume ", "--volumes", " image prune -a ", " system prune ")
-  foreach ($pattern in $forbidden) {
-    if ($joined -like "*$pattern*") {
-      throw "Refusing unsafe Docker cleanup command: docker $($Args -join ' ')"
-    }
+  if (-not (Test-DockerPruneArgs -ArgList $Args)) {
+      throw "Refusing to run forbidden docker command: docker $($Args -join ' ')"
   }
 
   if (-not $Apply) {

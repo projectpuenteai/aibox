@@ -15,6 +15,7 @@ param(
 )
 
 . (Join-Path $PSScriptRoot 'lib\lib_io.ps1')
+. (Join-Path $PSScriptRoot 'lib\lib_env.ps1')
 
 $ErrorActionPreference = "Stop"
 
@@ -33,15 +34,17 @@ $script:restoreOnFailure = $false
 $script:restoreWifiOnFailure = $false
 
 function Read-EnvValue {
+  # Local wrapper preserving the (Key, Default) signature used throughout this
+  # script. Routes parsing through lib_env.ps1::Get-DotEnvMap (shared parser)
+  # while keeping the historical semantics: process env var wins, otherwise
+  # falls back to the stack .env, otherwise $Default.
   param([string]$Key, [string]$Default = "")
   $val = [System.Environment]::GetEnvironmentVariable($Key)
   if (-not [string]::IsNullOrWhiteSpace($val)) { return $val }
-  if (Test-Path $stackEnvFile) {
-    $line = Get-Content $stackEnvFile -ErrorAction SilentlyContinue |
-      Where-Object { $_ -match "^\s*$Key\s*=" } |
-      Select-Object -First 1
-    if ($line) {
-      $val = ($line -split "=", 2)[1].Trim().Trim('"').Trim("'")
+  if (Test-Path -LiteralPath $stackEnvFile) {
+    $map = Get-DotEnvMap -Path $stackEnvFile
+    if ($map.ContainsKey($Key)) {
+      $val = $map[$Key]
       if (-not [string]::IsNullOrWhiteSpace($val)) { return $val }
     }
   }
@@ -485,7 +488,8 @@ function Disconnect-UpstreamWifiForHotspot {
   try {
     [void](Save-ManagedWifiState -Profile $profile)
     Write-Host "      + Saved upstream Wi-Fi profile '$($profile.profile_name)' for reconnect on stop."
-    $output = & netsh wlan disconnect interface="$($profile.interface_name)" 2>&1
+    $netshArgs = @('wlan', 'disconnect', "interface=$($profile.interface_name)")
+    $output = & netsh @netshArgs 2>&1
     $disconnectResult.output = @($output | ForEach-Object { [string]$_ })
     Start-Sleep -Seconds 3
     $after = Get-ConnectedWifiProfile
@@ -611,10 +615,12 @@ function Configure-FirewallRules {
   }
 
   Write-Host "[3/5] Verifying Windows Firewall inbound rules..."
+  $httpPort = [int](Read-EnvValue "HTTP_PORT" "80")
+  $dnsPort  = [int](Read-EnvValue "DNS_PORT"  "53")
   $rules = @(
-    @{ Name = "AIBox-HTTP-Inbound";    Proto = "TCP"; Port = 80; Desc = "AIBox portal (HTTP)" },
-    @{ Name = "AIBox-DNS-TCP-Inbound"; Proto = "TCP"; Port = 53; Desc = "AIBox DNS (TCP)" },
-    @{ Name = "AIBox-DNS-UDP-Inbound"; Proto = "UDP"; Port = 53; Desc = "AIBox DNS (UDP)" }
+    @{ Name = "AIBox-HTTP-Inbound-$httpPort";    Proto = "TCP"; Port = $httpPort; Desc = "AIBox portal (HTTP $httpPort)" },
+    @{ Name = "AIBox-DNS-TCP-Inbound-$dnsPort";  Proto = "TCP"; Port = $dnsPort;  Desc = "AIBox DNS (TCP $dnsPort)" },
+    @{ Name = "AIBox-DNS-UDP-Inbound-$dnsPort";  Proto = "UDP"; Port = $dnsPort;  Desc = "AIBox DNS (UDP $dnsPort)" }
   )
 
   foreach ($rule in $rules) {
