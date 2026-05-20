@@ -43,6 +43,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+. (Join-Path $PSScriptRoot 'lib\lib_log.ps1')
+
 $scriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $runtimeDir = Split-Path -Parent $scriptDir
 $toolsDir   = Split-Path -Parent $runtimeDir
@@ -202,5 +204,5 @@ $markerJson = $marker | ConvertTo-Json -Compress
 $result.marker_written = $true
 
 Write-Host ""
-Write-Host "[ok] Verified appdata integrity and refreshed cleanup marker." -ForegroundColor Green
+Write-Ok "Verified appdata integrity and refreshed cleanup marker."
 Emit-Result -ExitCode 0

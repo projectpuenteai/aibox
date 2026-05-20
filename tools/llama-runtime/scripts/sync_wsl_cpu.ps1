@@ -5,6 +5,7 @@ param(
 )
 
 . (Join-Path $PSScriptRoot 'lib\lib_io.ps1')
+. (Join-Path $PSScriptRoot 'lib\lib_log.ps1')
 
 $ErrorActionPreference = "Stop"
 
@@ -111,9 +112,9 @@ if ($EmitJson) {
 }
 
 if ($changed) {
-  Write-Host "[info] Updated $ConfigPath to processors=$targetProcessors"
+  Write-Info "Updated $ConfigPath to processors=$targetProcessors"
 } else {
-  Write-Host "[info] No change needed in $ConfigPath (processors=$targetProcessors)."
+  Write-Info "No change needed in $ConfigPath (processors=$targetProcessors)."
 }
 
 exit 0

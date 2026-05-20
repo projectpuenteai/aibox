@@ -75,10 +75,18 @@ function Wait-TetheringState {
     $TargetState,
     [int]$TimeoutMs = 20000
   )
-  $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
+  $start = [DateTime]::UtcNow
+  $deadline = $start.AddMilliseconds($TimeoutMs)
   while ([DateTime]::UtcNow -lt $deadline) {
     if ($Manager.TetheringOperationalState -eq $TargetState) { return $true }
-    Start-Sleep -Milliseconds 250
+    # Tight 250 ms poll for the first 2 s to catch fast transitions,
+    # then back off to 500 ms to reduce churn during long waits.
+    $elapsedMs = ([DateTime]::UtcNow - $start).TotalMilliseconds
+    if ($elapsedMs -lt 2000) {
+      Start-Sleep -Milliseconds 250
+    } else {
+      Start-Sleep -Milliseconds 500
+    }
   }
   return $Manager.TetheringOperationalState -eq $TargetState
 }
@@ -226,7 +234,11 @@ function Wait-ForHostnameResolutionUsingServer {
 function Get-HotspotHostIp {
   try {
     $ip = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
-      Where-Object { $_.IPAddress -like "192.168.137.*" -and $_.IPAddress -notlike "169.254.*" } |
+      Where-Object {
+        $_.IPAddress -like "192.168.137.*" -and
+        $_.IPAddress -notlike "169.254.*" -and
+        (Get-NetIPInterface -InterfaceIndex $_.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ConnectionState -eq 'Connected'
+      } |
       Select-Object -ExpandProperty IPAddress -First 1
     if ($ip) { return $ip }
   } catch {}
@@ -1029,7 +1041,7 @@ $result.details.rejected_profiles = @(
 )
 
 Write-Host "SSID     : $ssid"
-Write-Host "Password : $key"
+Write-Host "Password : $(('•' * $key.Length))"
 Write-Host "Band     : $($wifiBand.Label)"
 Write-Host "Policy   : Ethernet source = $ethernetPolicy"
 Write-Host "Policy   : Upstream Wi-Fi = $wifiClientPolicy"
@@ -1193,7 +1205,7 @@ if ($result.status -eq "ready") {
   Write-Host "  Hotspot Ready" -ForegroundColor Green
   Write-Host "==========================================" -ForegroundColor Green
   Write-Host "  Join Wi-Fi : $ssid" -ForegroundColor Cyan
-  Write-Host "  Password   : $key" -ForegroundColor Cyan
+  Write-Host "  Password   : $(('•' * $key.Length))" -ForegroundColor Cyan
   Write-Host "  Source     : $($selectedCandidate.InterfaceTypeLabel)" -ForegroundColor Cyan
   Write-Host "  Open       : http://$preferredHostname/" -ForegroundColor Cyan
   Write-Host "  Fallback   : http://$hostIp/" -ForegroundColor Cyan
@@ -1205,7 +1217,7 @@ if ($result.status -eq "ip_only") {
   Write-Host "  Hotspot Active (IP fallback only)" -ForegroundColor Yellow
   Write-Host "==========================================" -ForegroundColor Yellow
   Write-Host "  Join Wi-Fi : $ssid" -ForegroundColor Cyan
-  Write-Host "  Password   : $key" -ForegroundColor Cyan
+  Write-Host "  Password   : $(('•' * $key.Length))" -ForegroundColor Cyan
   Write-Host "  Source     : $($selectedCandidate.InterfaceTypeLabel)" -ForegroundColor Cyan
   Write-Host "  Use        : http://$hostIp/" -ForegroundColor Cyan
   Write-Host "  Hostname   : $preferredHostname is not ready yet" -ForegroundColor Yellow

@@ -20,13 +20,27 @@ param(
 )
 
 . (Join-Path $PSScriptRoot 'lib\lib_docker.ps1')
+. (Join-Path $PSScriptRoot 'lib\lib_log.ps1')
 
 $ErrorActionPreference = "Stop"
 
 function Write-Status {
-  param([string]$Message, [string]$Color = "Cyan")
-  if (-not $Quiet) {
-    Write-Host $Message -ForegroundColor $Color
+  # Wraps the standard log helpers in a -Quiet gate so cleanup_docker_storage.ps1
+  # stays silent when invoked from rebuild/up scripts with -Quiet. The $Level
+  # param replaces the older $Color param; the legacy color names are mapped to
+  # the closest log level.
+  param(
+    [string]$Message,
+    [ValidateSet("Info","Ok","Warn","Err","Run")]
+    [string]$Level = "Info"
+  )
+  if ($Quiet) { return }
+  switch ($Level) {
+    "Info" { Write-Info $Message }
+    "Ok"   { Write-Ok   $Message }
+    "Warn" { Write-Warn $Message }
+    "Err"  { Write-Err  $Message }
+    "Run"  { Write-Run  $Message }
   }
 }
 
@@ -47,8 +61,8 @@ function Get-FreeDiskGB {
     if ($disk) {
       return [math]::Round($disk.Free / 1GB, 2)
     }
-    # Fallback via WMI
-    $vol = Get-WmiObject -Query "SELECT FreeSpace FROM Win32_LogicalDisk WHERE DeviceID='$drive'" -ErrorAction SilentlyContinue
+    # Fallback via CIM
+    $vol = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='$drive'" -ErrorAction SilentlyContinue
     if ($vol) {
       return [math]::Round($vol.FreeSpace / 1GB, 2)
     }
@@ -64,7 +78,7 @@ function Invoke-DockerPrune {
   }
 
   if (-not $Apply) {
-    Write-Status "  [dry-run] would run: docker $($Args -join ' ')" "Yellow"
+    Write-Status "  [dry-run] would run: docker $($Args -join ' ')" "Warn"
     return
   }
 
@@ -78,14 +92,14 @@ function Invoke-DockerPrune {
   }
 
   if ($code -ne 0) {
-    Write-Status "  [warn] $Label prune returned exit code $code`: $output" "Yellow"
+    Write-Status "$Label prune returned exit code $code`: $output" "Warn"
   } else {
     # Extract the reclaimed space line if present
     $reclaimLine = @($output) | Where-Object { $_ -match "Total reclaimed space" }
     if ($reclaimLine) {
-      Write-Status "  $Label`: $reclaimLine" "Green"
+      Write-Status "$Label`: $reclaimLine" "Ok"
     } else {
-      Write-Status "  $Label`: done" "Green"
+      Write-Status "$Label`: done" "Ok"
     }
   }
 }
@@ -95,27 +109,27 @@ function Invoke-DockerPrune {
 $freeGB = Get-FreeDiskGB
 
 if ($null -ne $freeGB) {
-  Write-Status "[info] Free disk space: $freeGB GB"
+  Write-Status "Free disk space: $freeGB GB" "Info"
 } else {
-  Write-Status "[warn] Could not determine free disk space; proceeding with cleanup." "Yellow"
+  Write-Status "Could not determine free disk space; proceeding with cleanup." "Warn"
 }
 
 if ($ThresholdGB -gt 0 -and $null -ne $freeGB -and $freeGB -ge $ThresholdGB) {
-  Write-Status "[ok] Free disk space ($freeGB GB) is above threshold ($ThresholdGB GB). No cleanup needed." "Green"
+  Write-Status "Free disk space ($freeGB GB) is above threshold ($ThresholdGB GB). No cleanup needed." "Ok"
   exit 0
 }
 
 if ($ThresholdGB -gt 0) {
   if ($Apply) {
-    Write-Status "[warn] Free disk space ($freeGB GB) is below threshold ($ThresholdGB GB). Cleaning Docker storage..." "Yellow"
+    Write-Status "Free disk space ($freeGB GB) is below threshold ($ThresholdGB GB). Cleaning Docker storage..." "Warn"
   } else {
-    Write-Status "[warn] Free disk space ($freeGB GB) is below threshold ($ThresholdGB GB). Dry-run only; pass -Apply to prune." "Yellow"
+    Write-Status "Free disk space ($freeGB GB) is below threshold ($ThresholdGB GB). Dry-run only; pass -Apply to prune." "Warn"
   }
 } else {
   if ($Apply) {
-    Write-Status "[info] Running routine Docker storage cleanup..."
+    Write-Status "Running routine Docker storage cleanup..." "Info"
   } else {
-    Write-Status "[info] Running routine Docker storage cleanup dry-run. Pass -Apply to prune."
+    Write-Status "Running routine Docker storage cleanup dry-run. Pass -Apply to prune." "Info"
   }
 }
 
@@ -123,18 +137,18 @@ if ($ThresholdGB -gt 0) {
 # Order matters: containers first, then images (so stopped containers don't
 # prevent image layer removal), then build cache, then networks.
 
-Write-Status "[step] Removing stopped containers..."
+Write-Status "Removing stopped containers..." "Info"
 Invoke-DockerPrune -Args @("container", "prune", "--force") -Label "containers"
 
-Write-Status "[step] Removing dangling image layers (untagged, not in use)..."
+Write-Status "Removing dangling image layers (untagged, not in use)..." "Info"
 # NOTE: We intentionally do NOT use 'image prune -a' because that would remove
 # all images not currently running — including the ones we need offline.
 Invoke-DockerPrune -Args @("image", "prune", "--force") -Label "dangling images"
 
-Write-Status "[step] Removing unused build cache..."
+Write-Status "Removing unused build cache..." "Info"
 Invoke-DockerPrune -Args @("builder", "prune", "--force") -Label "build cache"
 
-Write-Status "[step] Removing unused networks..."
+Write-Status "Removing unused networks..." "Info"
 Invoke-DockerPrune -Args @("network", "prune", "--force") -Label "networks"
 
 # ── Report result ─────────────────────────────────────────────────────────────
@@ -142,10 +156,10 @@ Invoke-DockerPrune -Args @("network", "prune", "--force") -Label "networks"
 if ($Apply) {
   $freeAfter = Get-FreeDiskGB
   if ($null -ne $freeAfter) {
-    Write-Status "[ok] Cleanup complete. Free disk space: $freeAfter GB" "Green"
+    Write-Status "Cleanup complete. Free disk space: $freeAfter GB" "Ok"
   } else {
-    Write-Status "[ok] Cleanup complete." "Green"
+    Write-Status "Cleanup complete." "Ok"
   }
 } else {
-  Write-Status "[ok] Dry-run complete. No changes were made." "Yellow"
+  Write-Status "Dry-run complete. No changes were made." "Warn"
 }

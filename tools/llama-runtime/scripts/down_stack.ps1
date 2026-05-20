@@ -20,6 +20,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+. (Join-Path $PSScriptRoot 'lib\lib_log.ps1')
+
 function Test-IsAdministrator {
   $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
   return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -129,11 +131,11 @@ if (-not $SkipDocker) {
 
 if ($result.errors.Count -eq 0) {
   Write-Host ""
-  Write-Host "[ok] AIBox stack shut down." -ForegroundColor Green
+  Write-Ok "AIBox stack shut down."
   Emit-Result -ExitCode 0
 } else {
   Write-Host ""
-  Write-Host "[warn] Shutdown completed with errors:" -ForegroundColor Yellow
+  Write-Warn "Shutdown completed with errors:"
   foreach ($e in $result.errors) { Write-Host "  - $e" -ForegroundColor Yellow }
   Emit-Result -ExitCode 1
 }

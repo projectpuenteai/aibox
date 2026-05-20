@@ -14,6 +14,7 @@ param(
 
 . (Join-Path $PSScriptRoot 'lib\lib_io.ps1')
 . (Join-Path $PSScriptRoot 'lib\lib_env.ps1')
+. (Join-Path $PSScriptRoot 'lib\lib_log.ps1')
 
 $script:EnvDefaultsPath = Join-Path $PSScriptRoot '..\..\..\stack\.env.defaults'
 $script:EnvDefaults = if (Test-Path -LiteralPath $script:EnvDefaultsPath) { Get-DotEnvMap -Path $script:EnvDefaultsPath } else { @{} }
@@ -123,7 +124,7 @@ function Wait-DockerDaemon {
     if (-not $emittedError -and $errorOutput) {
       $firstLine = ($errorOutput -split "`r?`n") | Where-Object { $_ -match '\S' } | Select-Object -First 1
       if ($firstLine) {
-        Write-Host "[warn] docker info: $firstLine" -ForegroundColor Yellow
+        Write-Warn "docker info: $firstLine"
         $emittedError = $true
       }
     }
@@ -151,7 +152,7 @@ function Start-DockerDesktopIfNeeded {
   )
 
   if (Test-DockerDaemon) {
-    Write-Host "[info] Docker daemon is already reachable."
+    Write-Info "Docker daemon is already reachable."
     return
   }
 
@@ -165,13 +166,13 @@ function Start-DockerDesktopIfNeeded {
     throw "Docker daemon is not reachable and Docker Desktop.exe was not found under Program Files."
   }
 
-  Write-Host "[info] Docker daemon is not reachable. Launching Docker Desktop..."
+  Write-Info "Docker daemon is not reachable. Launching Docker Desktop..."
   Start-Process -FilePath $dockerDesktop -WindowStyle Minimized | Out-Null
-  Write-Host "[info] Waiting for Docker daemon to become reachable..."
+  Write-Info "Waiting for Docker daemon to become reachable..."
   if (-not (Wait-DockerDaemon -TimeoutSeconds $TimeoutSeconds -IntervalSeconds 3)) {
     throw "Docker daemon did not become reachable within $TimeoutSeconds seconds after launching Docker Desktop."
   }
-  Write-Host "[ok] Docker daemon is reachable."
+  Write-Ok "Docker daemon is reachable."
 }
 
 function Get-ComposeExistingServices {
@@ -263,18 +264,18 @@ function Ensure-StartupEnv {
   $dnsEnv = [Environment]::GetEnvironmentVariable("DNS_ADMIN_PASSWORD")
 
   if (-not [string]::IsNullOrWhiteSpace($dnsEnv)) {
-    Write-Host "[info] DNS_ADMIN_PASSWORD supplied by process environment."
+    Write-Info "DNS_ADMIN_PASSWORD supplied by process environment."
     return
   }
 
   if ($stackEnv.ContainsKey("DNS_ADMIN_PASSWORD") -and -not [string]::IsNullOrWhiteSpace($stackEnv["DNS_ADMIN_PASSWORD"])) {
-    Write-Host "[info] DNS_ADMIN_PASSWORD already configured in stack/.env."
+    Write-Info "DNS_ADMIN_PASSWORD already configured in stack/.env."
     return
   }
 
   $generated = New-HexSecret -Bytes 32
   Set-DotEnvValue -Path $stackEnvPath -Name "DNS_ADMIN_PASSWORD" -Value $generated
-  Write-Host "[info] Generated DNS_ADMIN_PASSWORD and saved it to stack/.env."
+  Write-Info "Generated DNS_ADMIN_PASSWORD and saved it to stack/.env."
 }
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -296,7 +297,7 @@ if (-not $SkipCpuSync) {
     throw "CPU sync script not found: $syncScript"
   }
 
-  Write-Host "[run] powershell -ExecutionPolicy Bypass -File $syncScript -EmitJson"
+  Write-Run "powershell -ExecutionPolicy Bypass -File $syncScript -EmitJson"
   # Capture both stdout and stderr via temp files. In Windows PowerShell 5.1
   # using `2>&1` on a native exe wraps stderr lines in ErrorRecord objects and
   # corrupts $?; Start-Process with -RedirectStandardError gives us the raw
@@ -323,10 +324,10 @@ if (-not $SkipCpuSync) {
       $syncStderr = Get-Content -LiteralPath $syncStderrFile -Raw
     }
     if (-not [string]::IsNullOrWhiteSpace($syncStderr)) {
-      Write-Host "[stderr] sync_wsl_cpu.ps1 wrote to stderr:" -ForegroundColor Yellow
+      Write-Warn "sync_wsl_cpu.ps1 wrote to stderr:"
       foreach ($line in ($syncStderr -split "`r?`n")) {
         if (-not [string]::IsNullOrWhiteSpace($line)) {
-          Write-Host "[stderr]   $line" -ForegroundColor Yellow
+          Write-Warn "  $line"
         }
       }
     }
@@ -349,15 +350,15 @@ if (-not $SkipCpuSync) {
   }
 
   if ($syncResult.changed -and -not $SkipWslRestart) {
-    Write-Host "[info] .wslconfig updated ($($syncResult.configured_processors_before) -> $($syncResult.configured_processors_after)); restarting WSL..."
+    Write-Info ".wslconfig updated ($($syncResult.configured_processors_before) -> $($syncResult.configured_processors_after)); restarting WSL..."
     try {
       $runningDistros = & wsl --list --running --quiet 2>$null
       if ($LASTEXITCODE -eq 0 -and $runningDistros) {
         $otherDistros = $runningDistros | Where-Object { $_ -and ($_ -notmatch '^docker-desktop') } | ForEach-Object { $_.Trim() } | Where-Object { $_ }
         if ($otherDistros.Count -gt 0) {
-          Write-Host "[warn] WSL --shutdown is about to terminate these running distros (unsaved work will be lost):" -ForegroundColor Yellow
-          foreach ($d in $otherDistros) { Write-Host "  - $d" -ForegroundColor Yellow }
-          Write-Host "[warn] Sleeping 5 seconds; press Ctrl+C to abort." -ForegroundColor Yellow
+          Write-Warn "WSL --shutdown is about to terminate these running distros (unsaved work will be lost):"
+          foreach ($d in $otherDistros) { Write-Warn "  - $d" }
+          Write-Warn "Sleeping 5 seconds; press Ctrl+C to abort."
           Start-Sleep -Seconds 5
         }
       }
@@ -369,15 +370,15 @@ if (-not $SkipCpuSync) {
       throw "wsl --shutdown failed (exit code $LASTEXITCODE)"
     }
 
-    Write-Host "[info] Waiting for Docker daemon to recover..."
+    Write-Info "Waiting for Docker daemon to recover..."
     if (-not (Wait-DockerDaemon -TimeoutSeconds 300 -IntervalSeconds 3)) {
       throw "Docker daemon did not recover after WSL restart within timeout."
     }
-    Write-Host "[info] Docker daemon is back online."
+    Write-Info "Docker daemon is back online."
   } elseif ($syncResult.changed) {
-    Write-Host "[warn] .wslconfig updated but restart was skipped; CPU allocation change will apply after next WSL restart."
+    Write-Warn ".wslconfig updated but restart was skipped; CPU allocation change will apply after next WSL restart."
   } else {
-    Write-Host "[info] WSL CPU allocation already aligned with host logical CPUs ($($syncResult.host_logical_cpus))."
+    Write-Info "WSL CPU allocation already aligned with host logical CPUs ($($syncResult.host_logical_cpus))."
   }
 }
 
@@ -408,15 +409,15 @@ if (-not (Test-Path -LiteralPath $migrationSentinel)) {
     $newPath = Join-Path $appdataDir     $name
 
     if ((Test-Path $oldPath) -and -not (Test-Path $newPath)) {
-      Write-Host "[migrate] backend-data/$name → backend-data/appdata/$name"
+      Write-Info "backend-data/$name → backend-data/appdata/$name"
       # Ensure parent exists before moving
       if (-not (Test-Path $appdataDir)) {
         New-Item -ItemType Directory -Path $appdataDir -Force | Out-Null
       }
       Move-Item -Path $oldPath -Destination $newPath -ErrorAction Stop
-      Write-Host "[migrate] Done: $name"
+      Write-Info "Done: $name"
     } elseif ((Test-Path $oldPath) -and (Test-Path $newPath)) {
-      Write-Host "[migrate] Skipping $name — already at appdata/$name"
+      Write-Info "Skipping $name — already at appdata/$name"
     }
   }
 
@@ -424,7 +425,7 @@ if (-not (Test-Path -LiteralPath $migrationSentinel)) {
   # subdirs on first startup, but Docker needs the mountpoint to exist).
   if (-not (Test-Path $appdataDir)) {
     New-Item -ItemType Directory -Path $appdataDir -Force | Out-Null
-    Write-Host "[info] Created backend-data/appdata/ for fresh install."
+    Write-Info "Created backend-data/appdata/ for fresh install."
   }
 
   # Drop the sentinel so this block stays silent on subsequent boots.
@@ -444,7 +445,7 @@ $spanishChromaSource = Join-Path $backendDataDir "chroma_db_es"
 $spanishChromaVolume = "chroma_db_es_native"
 $volumeInspect = & docker volume inspect $spanishChromaVolume 2>$null
 if ($LASTEXITCODE -ne 0) {
-  Write-Host "[info] Creating Docker volume $spanishChromaVolume"
+  Write-Info "Creating Docker volume $spanishChromaVolume"
   & docker volume create $spanishChromaVolume | Out-Null
   if ($LASTEXITCODE -ne 0) {
     throw "Could not create Docker volume $spanishChromaVolume"
@@ -462,10 +463,10 @@ $volumeProbeImage = if ($env:VOLUME_PROBE_IMAGE) {
 # can use it. Soft-fail when offline or pull is rate-limited.
 & docker image inspect $volumeProbeImage *> $null
 if ($LASTEXITCODE -ne 0) {
-  Write-Host "[info] Pulling volume probe image $volumeProbeImage"
+  Write-Info "Pulling volume probe image $volumeProbeImage"
   & docker pull $volumeProbeImage 2>&1 | ForEach-Object { Write-Host "  $_" }
   if ($LASTEXITCODE -ne 0) {
-    Write-Host "[warn] Volume probe image not pullable (offline or rate-limited); bootstrap will skip volume-content probes." -ForegroundColor Yellow
+    Write-Warn "Volume probe image not pullable (offline or rate-limited); bootstrap will skip volume-content probes."
   }
 }
 $volumeHasCatalog = $false
@@ -500,15 +501,15 @@ function Test-RealFile {
 
 $spanishChromaCatalogPath = Join-Path $spanishChromaSource "chroma.sqlite3"
 if (-not $volumeProbeImagePresent) {
-  Write-Host "[warn] Volume probe image $volumeProbeImage is not local; skipping Spanish Chroma volume copy." -ForegroundColor Yellow
+  Write-Warn "Volume probe image $volumeProbeImage is not local; skipping Spanish Chroma volume copy."
 } elseif (-not $volumeHasCatalog -and (Test-RealFile -Path $spanishChromaCatalogPath)) {
-  Write-Host "[info] Populating $spanishChromaVolume from backend-data/chroma_db_es"
+  Write-Info "Populating $spanishChromaVolume from backend-data/chroma_db_es"
   & docker run --rm -v "${spanishChromaSource}:/src:ro" -v "${spanishChromaVolume}:/dst" $volumeProbeImage sh -c "cd /src && tar cf - . | tar xf - -C /dst"
   if ($LASTEXITCODE -ne 0) {
     throw "Could not populate $spanishChromaVolume from $spanishChromaSource"
   }
 } elseif (-not $volumeHasCatalog) {
-  Write-Host "[warn] $spanishChromaVolume is not populated and backend-data/chroma_db_es/chroma.sqlite3 is missing." -ForegroundColor Yellow
+  Write-Warn "$spanishChromaVolume is not populated and backend-data/chroma_db_es/chroma.sqlite3 is missing."
 }
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -521,7 +522,7 @@ $kolibriDataSource = Join-Path $aiboxDir "kolibri-data"
 $kolibriDataVolume = "kolibri_data_native"
 $kolibriVolumeInspect = & docker volume inspect $kolibriDataVolume 2>$null
 if ($LASTEXITCODE -ne 0) {
-  Write-Host "[info] Creating Docker volume $kolibriDataVolume"
+  Write-Info "Creating Docker volume $kolibriDataVolume"
   & docker volume create $kolibriDataVolume | Out-Null
   if ($LASTEXITCODE -ne 0) {
     throw "Could not create Docker volume $kolibriDataVolume"
@@ -535,15 +536,15 @@ if ($volumeProbeImagePresent) {
 }
 
 if (-not $volumeProbeImagePresent) {
-  Write-Host "[warn] Volume probe image $volumeProbeImage is not local; skipping Kolibri volume copy." -ForegroundColor Yellow
+  Write-Warn "Volume probe image $volumeProbeImage is not local; skipping Kolibri volume copy."
 } elseif (-not $kolibriHasCatalog -and (Test-Path -LiteralPath $kolibriDataSource -PathType Container) -and (@(Get-ChildItem -LiteralPath $kolibriDataSource -Force -ErrorAction SilentlyContinue).Count -gt 0)) {
-  Write-Host "[info] Populating $kolibriDataVolume from kolibri-data/"
+  Write-Info "Populating $kolibriDataVolume from kolibri-data/"
   & docker run --rm -v "${kolibriDataSource}:/src:ro" -v "${kolibriDataVolume}:/dst" $volumeProbeImage sh -c "cd /src && tar cf - . | tar xf - -C /dst"
   if ($LASTEXITCODE -ne 0) {
     throw "Could not populate $kolibriDataVolume from $kolibriDataSource"
   }
 } elseif (-not $kolibriHasCatalog) {
-  Write-Host "[warn] $kolibriDataVolume is not populated and bind-mount source ($kolibriDataSource) is empty/missing." -ForegroundColor Yellow
+  Write-Warn "$kolibriDataVolume is not populated and bind-mount source ($kolibriDataSource) is empty/missing."
 }
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -571,7 +572,7 @@ if ($canUseStart) {
   if ($desiredServices.Count -gt 0) {
     $cmd += $desiredServices
   }
-  Write-Host "[run] docker $($cmd -join ' ')"
+  Write-Run "docker $($cmd -join ' ')"
   & docker @cmd
   if ($LASTEXITCODE -ne 0) {
     throw "docker compose start failed (exit code $LASTEXITCODE)"
@@ -589,7 +590,7 @@ if ($canUseStart) {
   if ($desiredServices.Count -gt 0) {
     $cmd += $desiredServices
   }
-  Write-Host "[run] docker $($cmd -join ' ')"
+  Write-Run "docker $($cmd -join ' ')"
   & docker @cmd
   if ($LASTEXITCODE -ne 0) {
     $recreateMode = if ($Recreate) { "--force-recreate" } else { "--no-recreate" }
@@ -597,9 +598,9 @@ if ($canUseStart) {
   }
 }
 
-Write-Host "[ok] stack started" -ForegroundColor Green
+Write-Ok "stack started"
 
-Write-Host "[info] Current compose service status:"
+Write-Info "Current compose service status:"
 # §3.6: emit one colored line per service via JSON parse instead of the default
 # table formatter so health states are obvious at a glance.
 try {
@@ -617,36 +618,36 @@ try {
       $statusLine = "$($svc.Name) $state"
       if ($health) { $statusLine += " ($health)" }
       if ($state -eq 'running' -and ($health -eq 'healthy' -or -not $health)) {
-        Write-Host "[ok]   $statusLine" -ForegroundColor Green
+        Write-Ok   $statusLine
       } elseif ($state -eq 'running') {
-        Write-Host "[warn] $statusLine" -ForegroundColor Yellow
+        Write-Warn $statusLine
       } else {
-        Write-Host "[err]  $statusLine" -ForegroundColor Red
+        Write-Err  $statusLine
       }
     }
   } else {
     & docker compose -f $ComposeFile ps   # fallback to default format
     if ($LASTEXITCODE -ne 0) {
-      Write-Host "[warn] docker compose ps returned non-zero; service health summary unavailable." -ForegroundColor Yellow
+      Write-Warn "docker compose ps returned non-zero; service health summary unavailable."
     }
   }
 } catch {
   & docker compose -f $ComposeFile ps       # fallback on parse errors
   if ($LASTEXITCODE -ne 0) {
-    Write-Host "[warn] docker compose ps returned non-zero; service health summary unavailable." -ForegroundColor Yellow
+    Write-Warn "docker compose ps returned non-zero; service health summary unavailable."
   }
 }
 
 # Prune dangling layers from any rebuild — runs after compose start so live containers are reused.
 $cleanupScript = Join-Path $scriptDir "cleanup_docker_storage.ps1"
 if (Test-Path $cleanupScript) {
-  Write-Host "[info] Running routine Docker storage cleanup..."
+  Write-Info "Running routine Docker storage cleanup..."
   & powershell -ExecutionPolicy Bypass -File $cleanupScript -Apply -Quiet
   if ($LASTEXITCODE -ne 0) {
-    Write-Host "[warn] Docker storage cleanup returned a non-zero exit code; continuing anyway." -ForegroundColor Yellow
+    Write-Warn "Docker storage cleanup returned a non-zero exit code; continuing anyway."
   }
 } else {
-  Write-Host "[warn] cleanup_docker_storage.ps1 not found; skipping storage check." -ForegroundColor Yellow
+  Write-Warn "cleanup_docker_storage.ps1 not found; skipping storage check."
 }
 
 if (-not $SkipHotspot) {
@@ -654,43 +655,43 @@ if (-not $SkipHotspot) {
   # service is already available when the hotspot validation runs.
   $hotspotScript = Join-Path $scriptDir "setup_hotspot.ps1"
   if ($FailOnHotspotCancel) {
-    Write-Host "[info] Hotspot-cancel policy: STRICT (-FailOnHotspotCancel set; script will exit 1 if elevation is declined or hotspot does not come up)."
+    Write-Info "Hotspot-cancel policy: STRICT (-FailOnHotspotCancel set; script will exit 1 if elevation is declined or hotspot does not come up)."
   } else {
-    Write-Host "[info] Hotspot-cancel policy: LENIENT (default; script will continue without offline networking if elevation is declined)."
+    Write-Info "Hotspot-cancel policy: LENIENT (default; script will continue without offline networking if elevation is declined)."
   }
-  Write-Host "[info] Starting offline hotspot..."
+  Write-Info "Starting offline hotspot..."
   $hotspotResult = Invoke-HotspotStartup -ScriptPath $hotspotScript
   if ($hotspotResult) {
     foreach ($hotspotWarning in @($hotspotResult.warnings)) {
       if (-not [string]::IsNullOrWhiteSpace([string]$hotspotWarning)) {
-        Write-Host "[warn] $hotspotWarning" -ForegroundColor Yellow
+        Write-Warn "$hotspotWarning"
       }
     }
     foreach ($hotspotError in @($hotspotResult.errors)) {
       if (-not [string]::IsNullOrWhiteSpace([string]$hotspotError)) {
-        Write-Host "[warn] $hotspotError" -ForegroundColor Yellow
+        Write-Warn "$hotspotError"
       }
     }
 
     switch ([string]$hotspotResult.status) {
       "ready" {
-        Write-Host "[ok] Hotspot ready for offline clients at http://$($hotspotResult.domain)/" -ForegroundColor Green
+        Write-Ok "Hotspot ready for offline clients at http://$($hotspotResult.domain)/"
       }
       "ip_only" {
-        Write-Host "[warn] Hotspot is active, but offline DNS is not ready. Clients should use http://$($hotspotResult.host_ip)/ until puente.link validates." -ForegroundColor Yellow
+        Write-Warn "Hotspot is active, but offline DNS is not ready. Clients should use http://$($hotspotResult.host_ip)/ until puente.link validates."
       }
       default {
-        Write-Host "[warn] Hotspot is not ready. Stack startup completed, but offline student access is unavailable." -ForegroundColor Yellow
+        Write-Warn "Hotspot is not ready. Stack startup completed, but offline student access is unavailable."
       }
     }
 
     if ($FailOnHotspotCancel -and [string]$hotspotResult.status -ne "ready" -and [string]$hotspotResult.status -ne "ip_only") {
-      Write-Host "[fatal] -FailOnHotspotCancel was set and hotspot did not reach a usable state (status='$([string]$hotspotResult.status)'). Exiting with code 1." -ForegroundColor Red
+      Write-Err "-FailOnHotspotCancel was set and hotspot did not reach a usable state (status='$([string]$hotspotResult.status)'). Exiting with code 1."
       exit 1
     }
   }
 } else {
-  Write-Host "[info] Hotspot skipped via -SkipHotspot."
+  Write-Info "Hotspot skipped via -SkipHotspot."
 }
 
 # ── Update portal connection info (best-effort, non-fatal) ────────────────────
@@ -698,13 +699,13 @@ if (-not $SkipHotspot) {
 # status without needing a live API call.  Does not require elevation.
 $netInfoScript = Join-Path $scriptDir "get_network_info.ps1"
 if (Test-Path $netInfoScript) {
-  Write-Host "[info] Refreshing network info for portal..."
+  Write-Info "Refreshing network info for portal..."
   & powershell -ExecutionPolicy Bypass -File $netInfoScript -Quiet
   if ($LASTEXITCODE -ne 0) {
-    Write-Host "[warn] get_network_info.ps1 returned non-zero; portal connection info may be stale." -ForegroundColor Yellow
+    Write-Warn "get_network_info.ps1 returned non-zero; portal connection info may be stale."
   }
 } else {
-  Write-Host "[warn] get_network_info.ps1 not found; portal connection info not updated." -ForegroundColor Yellow
+  Write-Warn "get_network_info.ps1 not found; portal connection info not updated."
 }
 
 # ── Stop transcript + rotate boot logs (§3.12) ────────────────────────────────

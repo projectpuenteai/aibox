@@ -16,6 +16,7 @@ param(
 
 . (Join-Path $PSScriptRoot 'lib\lib_io.ps1')
 . (Join-Path $PSScriptRoot 'lib\lib_env.ps1')
+. (Join-Path $PSScriptRoot 'lib\lib_log.ps1')
 
 if ($PSVersionTable.PSEdition -ne 'Desktop') {
     Write-Error "This script requires Windows PowerShell 5.1 (powershell.exe). PowerShell 7 cannot use WinRT directly here."
@@ -439,7 +440,8 @@ try {
     Where-Object {
       $_.IPAddress -notlike "127.*" -and
       $_.IPAddress -notlike "169.254.*" -and
-      $_.PrefixOrigin -ne "WellKnown"
+      $_.PrefixOrigin -ne "WellKnown" -and
+      (Get-NetIPInterface -InterfaceIndex $_.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ConnectionState -eq 'Connected'
     }
 
   foreach ($addr in $allAddrs) {
@@ -769,7 +771,7 @@ if (-not (Test-Path $portalDir)) {
 } else {
   Write-Utf8NoBom -Path $outFile -Lines @($json -split "`r?`n")
   if (-not $Quiet) {
-    Write-Host "[ok] Wrote $outFile" -ForegroundColor Green
+    Write-Ok "Wrote $outFile"
   }
 }
 

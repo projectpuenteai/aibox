@@ -12,6 +12,7 @@ $ErrorActionPreference = "Stop"
 # without dot-sourcing this script.
 . (Join-Path $PSScriptRoot 'lib\lib_model.ps1')
 . (Join-Path $PSScriptRoot 'lib\lib_env.ps1')
+. (Join-Path $PSScriptRoot 'lib\lib_log.ps1')
 $script:EnvDefaultsPath = Join-Path $PSScriptRoot '..\..\..\stack\.env.defaults'
 $script:EnvDefaults = if (Test-Path -LiteralPath $script:EnvDefaultsPath) { Get-DotEnvMap -Path $script:EnvDefaultsPath } else { @{} }
 
@@ -93,7 +94,7 @@ function Fail {
     [string]$Message
   )
 
-  Write-Host "[error][$Code] $Message" -ForegroundColor Red
+  Write-Err "[$Code] $Message"
   exit 1
 }
 
@@ -121,7 +122,7 @@ function Test-RequiredFile {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
     Fail $Code "$Description not found: $Path"
   }
-  Write-Host "[info] Found $Description`: $Path"
+  Write-Info "Found $Description`: $Path"
 }
 
 function Test-RequiredDirectory {
@@ -143,7 +144,7 @@ function Test-RequiredDirectory {
     }
   }
 
-  Write-Host "[info] Found $Description`: $Path"
+  Write-Info "Found $Description`: $Path"
 }
 
 function Test-DockerVolumeDirectory {
@@ -181,7 +182,7 @@ function Test-DockerVolumeDirectory {
     }
 
     if ($hostCheckPassed) {
-      Write-Host "[warn] Volume probe image '$script:VolumeProbeImage' absent - falling back to host-side mountpoint check, $Description volume '$VolumeName' looks populated." -ForegroundColor Yellow
+      Write-Warn "Volume probe image '$script:VolumeProbeImage' absent - falling back to host-side mountpoint check, $Description volume '$VolumeName' looks populated."
       return
     }
 
@@ -196,7 +197,7 @@ function Test-DockerVolumeDirectory {
     $requiredText = if ($RequiredFile) { " containing $RequiredFile" } else { "" }
     Fail "volume_empty" "$Description Docker volume '$VolumeName' is missing expected content$requiredText."
   }
-  Write-Host "[info] Found $Description Docker volume: $VolumeName"
+  Write-Info "Found $Description Docker volume: $VolumeName"
 }
 
 function Test-LocalDockerImage {
@@ -280,7 +281,7 @@ $requiredSettings = @(
 foreach ($requiredName in $requiredSettings) {
   $null = Test-RequiredSetting -Name $requiredName -PrimaryMap $stackEnv -SecondaryMap $repoEnv
 }
-Write-Host "[info] Required stack secrets are configured."
+Write-Info "Required stack secrets are configured."
 
 $llamaImageDefault = if ($script:EnvDefaults.ContainsKey('LLAMA_IMAGE')) { $script:EnvDefaults['LLAMA_IMAGE'] } else { "ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:5c9266b4f92f1ab0d26dd0f2ede2e65d3853cad99ff86ba219db8fe6d464b995" }
 $llamaImage = Resolve-Setting -Name "LLAMA_IMAGE" -PrimaryMap $stackEnv -SecondaryMap $repoEnv -DefaultValue $llamaImageDefault
@@ -308,13 +309,13 @@ if ($mode -eq "auto") {
   }
 }
 
-Write-Host "[info] Compose file: $ComposeFile"
-Write-Host "[info] LLAMA_IMAGE = $($llamaImage.Value) [$($llamaImage.Source)]"
-Write-Host "[info] LLAMA_IMAGE_MODE = $mode [$($imageMode.Source)]"
-Write-Host "[info] VOLUME_PROBE_IMAGE = $script:VolumeProbeImage [$($volumeProbeImage.Source)]"
-Write-Host "[info] LLAMA_MODEL_FILE = $($modelFile.Value) [$($modelFile.Source)]"
-Write-Host "[info] CHROMA_COLLECTION = $($chromaCollection.Value) [$($chromaCollection.Source)]"
-Write-Host "[info] CHROMA_COLLECTION_ES = $($chromaCollectionEs.Value) [$($chromaCollectionEs.Source)]"
+Write-Info "Compose file: $ComposeFile"
+Write-Info "LLAMA_IMAGE = $($llamaImage.Value) [$($llamaImage.Source)]"
+Write-Info "LLAMA_IMAGE_MODE = $mode [$($imageMode.Source)]"
+Write-Info "VOLUME_PROBE_IMAGE = $script:VolumeProbeImage [$($volumeProbeImage.Source)]"
+Write-Info "LLAMA_MODEL_FILE = $($modelFile.Value) [$($modelFile.Source)]"
+Write-Info "CHROMA_COLLECTION = $($chromaCollection.Value) [$($chromaCollection.Source)]"
+Write-Info "CHROMA_COLLECTION_ES = $($chromaCollectionEs.Value) [$($chromaCollectionEs.Source)]"
 
 $dockerInfo = Invoke-Docker -Args @("info")
 if ($dockerInfo.Output -match "Error loading config file: .*Access is denied") {
@@ -337,10 +338,10 @@ if ($mode -eq "local") {
     $buildScript = Join-Path $scriptDir "build_llama_image.ps1"
     Fail "local_image_missing" "Local image '$($llamaImage.Value)' not found. Build it first: powershell -ExecutionPolicy Bypass -File $buildScript"
   }
-  Write-Host "[info] Local image present: $($llamaImage.Value)"
+  Write-Info "Local image present: $($llamaImage.Value)"
 } else {
   if (Test-LocalDockerImage -ImageRef $llamaImage.Value) {
-    Write-Host "[info] Prebuilt image present locally: $($llamaImage.Value)"
+    Write-Info "Prebuilt image present locally: $($llamaImage.Value)"
   } elseif ($OnlineImageCheck) {
     $manifest = Invoke-Docker -Args @("manifest", "inspect", $llamaImage.Value)
     if ($manifest.ExitCode -ne 0) {
@@ -356,7 +357,7 @@ if ($mode -eq "local") {
       }
       Fail $code "Unable to verify pullability for '$($llamaImage.Value)': $($manifest.Output)"
     }
-    Write-Host "[info] Prebuilt image pullability verified online: $($llamaImage.Value)"
+    Write-Info "Prebuilt image pullability verified online: $($llamaImage.Value)"
   } else {
     Fail "image_missing" "Image '$($llamaImage.Value)' is not present locally. Pull it while online, or rerun with -OnlineImageCheck to verify registry availability."
   }
@@ -381,9 +382,9 @@ if (-not $SkipGpuProbe) {
     if ($probe.ExitCode -ne 0) {
       Fail "nvidia_runtime_missing" "NVIDIA GPU not usable from containers. Ensure Docker Desktop GPU support and WSL2 NVIDIA CUDA are installed. Probe error: $($probe.Output)"
     }
-    Write-Host "[info] NVIDIA GPU probe succeeded (nvidia-smi)."
+    Write-Info "NVIDIA GPU probe succeeded (nvidia-smi)."
   } else {
-    Write-Host "[info] Docker runtimes: $runtimesJson"
+    Write-Info "Docker runtimes: $runtimesJson"
   }
 }
 
@@ -399,9 +400,9 @@ if (-not $shardResult.Ok) {
 }
 $shardPlan = Get-GgufShardPlan -FileName $modelFile.Value
 if ($shardPlan.IsSharded) {
-  Write-Host "[info] Found GGUF model shards: $($shardPlan.Total) shards under $modelRoot (prefix '$($shardPlan.Prefix)')"
+  Write-Info "Found GGUF model shards: $($shardPlan.Total) shards under $modelRoot (prefix '$($shardPlan.Prefix)')"
 } else {
-  Write-Host "[info] Found GGUF model file: $modelPath"
+  Write-Info "Found GGUF model file: $modelPath"
 }
 
 $embedRel = ([string]$embedModel.Value).TrimStart("/").Replace("/", "\")
@@ -416,7 +417,9 @@ Test-RequiredFile -Code "kiwix_es_missing" -Path (Join-Path $kiwixDir "wikipedia
 Test-DockerVolumeDirectory -VolumeName "kolibri_data_native" -Description "Kolibri data"
 $kolibriDir = Join-Path $aiboxDir "kolibri-data"
 if (Test-Path -LiteralPath $kolibriDir -PathType Container) {
-  Write-Host "[info] Bind-mount source still present at $kolibriDir; safe to delete after verifying named-volume contents." -ForegroundColor DarkGray
+  # DarkGray soft-info hint; intentionally left as raw Write-Host so the visual
+  # weight stays low (lib_log Write-Info uses default foreground).
+  Write-Host "[INFO] Bind-mount source still present at $kolibriDir; safe to delete after verifying named-volume contents." -ForegroundColor DarkGray
 }
 
 $backendDataDir = Join-Path $aiboxDir "backend-data"
@@ -432,15 +435,15 @@ if ($retrievalOn) {
   Test-RequiredFile -Code "chroma_en_sqlite_missing" -Path $chromaDb -Description "English Chroma SQLite catalog"
   Test-DockerVolumeDirectory -VolumeName "chroma_db_es_native" -Description "Spanish Chroma index" -RequiredFile "chroma.sqlite3"
   if (Test-Path -LiteralPath $chromaEsDir -PathType Container) {
-    Write-Host "[info] Found Spanish Chroma bind-mount source for repopulation: $chromaEsDir"
+    Write-Info "Found Spanish Chroma bind-mount source for repopulation: $chromaEsDir"
   } else {
-    Write-Host "[warn] Spanish Chroma bind-mount source is absent: $chromaEsDir. Runtime uses chroma_db_es_native." -ForegroundColor Yellow
+    Write-Warn "Spanish Chroma bind-mount source is absent: $chromaEsDir. Runtime uses chroma_db_es_native."
   }
 } else {
-  Write-Host "[warn] Retrieval is disabled by RETRIEVAL_ENABLED_DEFAULT; Chroma index validation skipped." -ForegroundColor Yellow
+  Write-Warn "Retrieval is disabled by RETRIEVAL_ENABLED_DEFAULT; Chroma index validation skipped."
 }
 
-Write-Host "[ok] Preflight passed." -ForegroundColor Green
+Write-Ok "Preflight passed."
 exit 0
 
 

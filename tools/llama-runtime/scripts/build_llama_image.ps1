@@ -9,6 +9,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+. (Join-Path $PSScriptRoot 'lib\lib_log.ps1')
+
 function Run-Command {
   param([scriptblock]$Cmd, [string]$FailureMessage)
   & $Cmd
@@ -23,11 +25,11 @@ $buildRoot = Join-Path $env:TEMP "aibox-llama-cpp-src"
 $srcDir = Join-Path $buildRoot "llama.cpp"
 $dockerfilePath = Join-Path $srcDir ".devops\cuda.Dockerfile"
 
-Write-Host "[info] Building llama fallback image via upstream cuda.Dockerfile" -ForegroundColor Cyan
-Write-Host "[info] Tag: $ImageTag"
-Write-Host "[info] llama.cpp repo: $LlamaCppRepo"
-Write-Host "[info] llama.cpp ref: $LlamaCppRef"
-Write-Host "[info] build source dir: $srcDir"
+Write-Info "Building llama fallback image via upstream cuda.Dockerfile"
+Write-Info "Tag: $ImageTag"
+Write-Info "llama.cpp repo: $LlamaCppRepo"
+Write-Info "llama.cpp ref: $LlamaCppRef"
+Write-Info "build source dir: $srcDir"
 
 if (Test-Path $buildRoot) {
   Remove-Item -Force -Recurse $buildRoot
@@ -66,6 +68,6 @@ if (-not $KeepSource) {
   Remove-Item -Force -Recurse $buildRoot
 }
 
-Write-Host "[ok] Built fallback image: $ImageTag" -ForegroundColor Green
+Write-Ok "Built fallback image: $ImageTag"
 
 
