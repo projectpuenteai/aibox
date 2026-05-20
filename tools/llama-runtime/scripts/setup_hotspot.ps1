@@ -14,6 +14,8 @@ param(
   [string]$JsonOutFile = ""
 )
 
+. (Join-Path $PSScriptRoot 'lib\lib_io.ps1')
+
 $ErrorActionPreference = "Stop"
 
 $scriptDir    = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -139,10 +141,10 @@ function Finalize-Result {
   $json = $Result | ConvertTo-Json -Depth 8
   try {
     Ensure-HotspotStateDirectory
-    $json | Set-Content -Path $hotspotLastResultFile -Encoding UTF8
+    Write-Utf8NoBom -Path $hotspotLastResultFile -Lines @($json -split "`r?`n")
   } catch {}
   if (-not [string]::IsNullOrWhiteSpace($JsonOutFile)) {
-    $json | Set-Content -Path $JsonOutFile -Encoding UTF8
+    Write-Utf8NoBom -Path $JsonOutFile -Lines @($json -split "`r?`n")
   }
   if ($EmitJson) {
     Write-Output $json
@@ -377,7 +379,8 @@ function Save-ManagedEthernetState {
       }
     )
   }
-  ($state | ConvertTo-Json -Depth 6) | Set-Content -Path $ethernetRestoreStateFile -Encoding UTF8
+  $json = $state | ConvertTo-Json -Depth 6
+  Write-Utf8NoBom -Path $ethernetRestoreStateFile -Lines @($json -split "`r?`n")
   return $state
 }
 
@@ -435,7 +438,8 @@ function Save-ManagedWifiState {
     channel = $Profile.channel
     radio_type = [string]$Profile.radio_type
   }
-  ($state | ConvertTo-Json -Depth 5) | Set-Content -Path $wifiRestoreStateFile -Encoding UTF8
+  $json = $state | ConvertTo-Json -Depth 5
+  Write-Utf8NoBom -Path $wifiRestoreStateFile -Lines @($json -split "`r?`n")
   return $state
 }
 

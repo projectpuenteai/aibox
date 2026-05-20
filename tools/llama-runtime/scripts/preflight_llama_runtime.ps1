@@ -151,6 +151,32 @@ function Test-DockerVolumeDirectory {
   }
 
   if (-not (Test-LocalDockerImage -ImageRef $script:VolumeProbeImage)) {
+    # Probe image is absent (e.g. first boot, fully offline). Try a host-side
+    # mountpoint check against the Docker volume; if the WSL-visible _data path
+    # is populated we treat the volume as good and continue with a warning.
+    $mountpoint = $null
+    $inspectMount = Invoke-Docker -Args @("volume", "inspect", "--format", "{{.Mountpoint}}", $VolumeName)
+    if ($inspectMount.ExitCode -eq 0) {
+      $mountpoint = ($inspectMount.Output | Out-String).Trim()
+    }
+
+    $hostCheckPassed = $false
+    if (-not [string]::IsNullOrWhiteSpace($mountpoint)) {
+      # Docker Desktop on Windows stores volumes inside the docker-desktop-data
+      # WSL distro. Probe the volume's _data dir via wsl.exe — non-blocking,
+      # ignores errors, and we only treat a non-empty listing as success.
+      $wslPath = "/mnt/wsl/docker-desktop-data/data/docker/volumes/$VolumeName/_data"
+      $listing = & wsl.exe -e sh -c "ls -A '$wslPath' 2>/dev/null | head -1" 2>$null
+      if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace(($listing | Out-String))) {
+        $hostCheckPassed = $true
+      }
+    }
+
+    if ($hostCheckPassed) {
+      Write-Host "[warn] Volume probe image '$script:VolumeProbeImage' absent - falling back to host-side mountpoint check, $Description volume '$VolumeName' looks populated." -ForegroundColor Yellow
+      return
+    }
+
     Fail "volume_probe_image_missing" "Volume probe image '$script:VolumeProbeImage' is not present locally. Pull/start the stack once while online, then retry preflight."
   }
   $probeScript = "test -d /data && test -n `"$(find /data -mindepth 1 -maxdepth 1 -print -quit)`""
@@ -297,8 +323,7 @@ if ($dockerInfo.ExitCode -ne 0) {
 }
 
 if ($mode -eq "local") {
-  $inspect = Invoke-Docker -Args @("image", "inspect", $llamaImage.Value)
-  if ($inspect.ExitCode -ne 0) {
+  if (-not (Test-LocalDockerImage -ImageRef $llamaImage.Value)) {
     $buildScript = Join-Path $scriptDir "build_llama_image.ps1"
     Fail "local_image_missing" "Local image '$($llamaImage.Value)' not found. Build it first: powershell -ExecutionPolicy Bypass -File $buildScript"
   }
@@ -371,8 +396,11 @@ $kiwixDir = Join-Path $aiboxDir "kiwix"
 Test-RequiredFile -Code "kiwix_en_missing" -Path (Join-Path $kiwixDir "wikipedia_en_all_mini_2026-03.zim") -Description "English Kiwix ZIM"
 Test-RequiredFile -Code "kiwix_es_missing" -Path (Join-Path $kiwixDir "wikipedia_es_all_maxi_2026-02.zim") -Description "Spanish Kiwix ZIM"
 
+Test-DockerVolumeDirectory -VolumeName "kolibri_data_native" -Description "Kolibri data"
 $kolibriDir = Join-Path $aiboxDir "kolibri-data"
-Test-RequiredDirectory -Code "kolibri_data_missing" -Path $kolibriDir -Description "Kolibri data"
+if (Test-Path -LiteralPath $kolibriDir -PathType Container) {
+  Write-Host "[info] Bind-mount source still present at $kolibriDir; safe to delete after verifying named-volume contents." -ForegroundColor DarkGray
+}
 
 $backendDataDir = Join-Path $aiboxDir "backend-data"
 $appdataDir = Join-Path $backendDataDir "appdata"

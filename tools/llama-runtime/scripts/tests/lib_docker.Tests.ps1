@@ -17,4 +17,25 @@ Describe 'lib_docker' {
             Test-DockerPruneArgs -ArgList @() | Should -BeFalse
         }
     }
+
+    Context 'Test-LocalDockerImage' {
+        It 'returns true when docker image inspect succeeds' -Skip:(-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+            # If docker is reachable, picking an image known to exist locally tests the primary path.
+            # caddy:2 was pulled for volume probing; if it's local, this should return $true.
+            $caddyDigest = "caddy:2@sha256:ec18ee54aab3315c22e25f3b2babda73ff8007d39b13b3bd1bfffa2f0444c7d9"
+            $localCaddyExists = $false
+            & docker image inspect $caddyDigest 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) { $localCaddyExists = $true }
+            if (-not $localCaddyExists) {
+                Set-ItResult -Skipped -Because "caddy:2 reference not local on this machine"
+                return
+            }
+            Test-LocalDockerImage -ImageRef $caddyDigest | Should -BeTrue
+        }
+
+        It 'returns false for an obviously fake digest' -Skip:(-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+            $fake = "aibox/does-not-exist@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            Test-LocalDockerImage -ImageRef $fake | Should -BeFalse
+        }
+    }
 }

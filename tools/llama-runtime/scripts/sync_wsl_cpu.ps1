@@ -4,6 +4,8 @@ param(
   [switch]$EmitJson
 )
 
+. (Join-Path $PSScriptRoot 'lib\lib_io.ps1')
+
 $ErrorActionPreference = "Stop"
 
 function Get-HostLogicalCpuCount {
@@ -92,11 +94,7 @@ if ($changed) {
     New-Item -ItemType Directory -Force -Path $parent | Out-Null
   }
 
-  $content = [string]::Join("`r`n", $lines)
-  if ($content.Length -gt 0) {
-    $content += "`r`n"
-  }
-  Set-Content -Path $ConfigPath -Value $content -Encoding UTF8
+  Write-Utf8NoBom -Path $ConfigPath -Lines @($lines)
 }
 
 $result = [ordered]@{

@@ -8,6 +8,20 @@ param(
   [switch]$FailOnHotspotCancel
 )
 
+. (Join-Path $PSScriptRoot 'lib\lib_io.ps1')
+
+# ── Boot-log transcript (§3.12) ───────────────────────────────────────────────
+# Capture stdout/stderr to %ProgramData%\AIBox\logs so the scheduled task at
+# logon (which runs hidden) leaves a trail for post-mortem debugging.  Some
+# hosts (e.g. ISE) already have a transcript running and Start-Transcript
+# errors out — the try/catch + SilentlyContinue handles that gracefully.
+$bootLogDir = Join-Path $env:ProgramData "AIBox\logs"
+if (-not (Test-Path -LiteralPath $bootLogDir)) {
+  New-Item -ItemType Directory -Path $bootLogDir -Force | Out-Null
+}
+$bootLogFile = Join-Path $bootLogDir ("up_stack_" + (Get-Date -Format "yyyyMMdd_HHmmss") + ".log")
+try { Start-Transcript -Path $bootLogFile -Append -ErrorAction SilentlyContinue | Out-Null } catch {}
+
 $ErrorActionPreference = "Stop"
 
 function Test-IsAdministrator {
@@ -221,7 +235,7 @@ function Set-DotEnvValue {
     if ($parent -and -not (Test-Path $parent)) {
       New-Item -ItemType Directory -Path $parent -Force | Out-Null
     }
-    Set-Content -LiteralPath $Path -Value @("# AIBox local stack configuration", $line) -Encoding UTF8
+    Write-Utf8NoBom -Path $Path -Lines @("# AIBox local stack configuration", $line)
     return
   }
 
@@ -244,7 +258,7 @@ function Set-DotEnvValue {
     $lines += $line
   }
 
-  Set-Content -LiteralPath $Path -Value $lines -Encoding UTF8
+  Write-Utf8NoBom -Path $Path -Lines @($lines)
 }
 
 function Ensure-StartupEnv {
@@ -363,11 +377,13 @@ if (-not $SkipCpuSync) {
 # ── Docker storage cleanup (safe offline prune) ───────────────────────────────
 # Cleans stopped containers, dangling image layers, and build cache.
 # Only removes items that cannot be pulled back (never removes tagged images
-# or named volumes). Triggers when free disk space falls below 15 GB.
+# or named volumes), so it is safe to run unconditionally — this stops build
+# cache and dangling layers from accumulating between stack restarts even
+# when free disk is plentiful.
 $cleanupScript = Join-Path $scriptDir "cleanup_docker_storage.ps1"
 if (Test-Path $cleanupScript) {
-  Write-Host "[info] Checking Docker storage (threshold: 15 GB free)..."
-  & powershell -ExecutionPolicy Bypass -File $cleanupScript -ThresholdGB 15 -Apply
+  Write-Host "[info] Running routine Docker storage cleanup..."
+  & powershell -ExecutionPolicy Bypass -File $cleanupScript -Apply -Quiet
   if ($LASTEXITCODE -ne 0) {
     Write-Host "[warn] Docker storage cleanup returned a non-zero exit code; continuing anyway." -ForegroundColor Yellow
   }
@@ -433,6 +449,16 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $volumeProbeImage = if ($env:VOLUME_PROBE_IMAGE) { $env:VOLUME_PROBE_IMAGE } else { "caddy:2@sha256:ec18ee54aab3315c22e25f3b2babda73ff8007d39b13b3bd1bfffa2f0444c7d9" }
+# Pre-pull the volume probe image when missing so preflight and bootstrap blocks
+# can use it. Soft-fail when offline or pull is rate-limited.
+& docker image inspect $volumeProbeImage *> $null
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "[info] Pulling volume probe image $volumeProbeImage"
+  & docker pull $volumeProbeImage 2>&1 | ForEach-Object { Write-Host "  $_" }
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "[warn] Volume probe image not pullable (offline or rate-limited); bootstrap will skip volume-content probes." -ForegroundColor Yellow
+  }
+}
 $volumeHasCatalog = $false
 $volumeProbeImagePresent = $false
 & docker image inspect $volumeProbeImage *> $null
@@ -500,6 +526,41 @@ if (-not $volumeProbeImagePresent) {
   }
 } elseif (-not $volumeHasCatalog) {
   Write-Host "[warn] $spanishChromaVolume is not populated and backend-data/chroma_db_es/chroma.sqlite3 is missing." -ForegroundColor Yellow
+}
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Kolibri native-volume bootstrap ──────────────────────────────────────────
+# Kolibri was migrated from a bind-mount to a named volume on 2026-05-19 to
+# avoid SQLite corruption on NTFS. Mirror the Spanish-Chroma self-healing
+# pattern: ensure the volume exists, and seed it from the repo-adjacent
+# bind-mount source when the volume is empty.
+$kolibriDataSource = Join-Path $aiboxDir "kolibri-data"
+$kolibriDataVolume = "kolibri_data_native"
+$kolibriVolumeInspect = & docker volume inspect $kolibriDataVolume 2>$null
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "[info] Creating Docker volume $kolibriDataVolume"
+  & docker volume create $kolibriDataVolume | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "Could not create Docker volume $kolibriDataVolume"
+  }
+}
+
+$kolibriHasCatalog = $false
+if ($volumeProbeImagePresent) {
+  & docker run --rm -v "${kolibriDataVolume}:/dst:ro" $volumeProbeImage sh -c "test -f /dst/db.sqlite3" *> $null
+  $kolibriHasCatalog = ($LASTEXITCODE -eq 0)
+}
+
+if (-not $volumeProbeImagePresent) {
+  Write-Host "[warn] Volume probe image $volumeProbeImage is not local; skipping Kolibri volume copy." -ForegroundColor Yellow
+} elseif (-not $kolibriHasCatalog -and (Test-Path -LiteralPath $kolibriDataSource -PathType Container) -and (@(Get-ChildItem -LiteralPath $kolibriDataSource -Force -ErrorAction SilentlyContinue).Count -gt 0)) {
+  Write-Host "[info] Populating $kolibriDataVolume from kolibri-data/"
+  & docker run --rm -v "${kolibriDataSource}:/src:ro" -v "${kolibriDataVolume}:/dst" $volumeProbeImage sh -c "cp -a /src/. /dst/"
+  if ($LASTEXITCODE -ne 0) {
+    throw "Could not populate $kolibriDataVolume from $kolibriDataSource"
+  }
+} elseif (-not $kolibriHasCatalog) {
+  Write-Host "[warn] $kolibriDataVolume is not populated and bind-mount source ($kolibriDataSource) is empty/missing." -ForegroundColor Yellow
 }
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -605,3 +666,17 @@ if (Test-Path $netInfoScript) {
 } else {
   Write-Host "[warn] get_network_info.ps1 not found; portal connection info not updated." -ForegroundColor Yellow
 }
+
+# ── Stop transcript + rotate boot logs (§3.12) ────────────────────────────────
+# Best-effort: if Start-Transcript above failed (no-op in unsupported host),
+# Stop-Transcript will also fail silently.  Windows flushes the transcript on
+# process exit, so even if the script throws before reaching here the partial
+# log is recoverable.
+try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch {}
+# Rotate: keep the 10 most recent boot logs.
+try {
+  Get-ChildItem -LiteralPath $bootLogDir -Filter "up_stack_*.log" -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -Skip 10 |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+} catch {}

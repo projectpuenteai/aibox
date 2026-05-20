@@ -68,7 +68,7 @@ if (-not $SkipTask) {
   $taskTrigger = New-ScheduledTaskTrigger -AtLogOn
   # Small delay so network stack + Docker Desktop are up before we attempt
   # `docker compose up` and hotspot configuration.
-  $taskTrigger.Delay = "PT45S"
+  $taskTrigger.Delay = "PT90S"
 
   $taskSettings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `

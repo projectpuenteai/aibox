@@ -14,6 +14,8 @@ param(
   [switch]$Quiet
 )
 
+. (Join-Path $PSScriptRoot 'lib\lib_io.ps1')
+
 $ErrorActionPreference = "SilentlyContinue"
 
 function Read-EnvValue {
@@ -757,7 +759,7 @@ if (-not (Test-Path $portalDir)) {
     Write-Host "WARNING: Portal directory not found: $portalDir" -ForegroundColor Yellow
   }
 } else {
-  $json | Set-Content -Path $outFile -Encoding UTF8
+  Write-Utf8NoBom -Path $outFile -Lines @($json -split "`r?`n")
   if (-not $Quiet) {
     Write-Host "[ok] Wrote $outFile" -ForegroundColor Green
   }
