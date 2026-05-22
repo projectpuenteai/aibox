@@ -262,7 +262,7 @@ Write-BootstrapLog "WPF assemblies loaded"
 [xml]$xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Consola Puente Admin" Height="480" Width="720" MinHeight="420" MinWidth="640"
+        Title="Consola Puente Admin" Height="660" Width="760" MinHeight="560" MinWidth="680"
         WindowStartupLocation="CenterScreen" FontFamily="Aptos, Segoe UI, Tahoma"
         Foreground="#0F172A" Background="#F5F8FC">
   <Window.Resources>
@@ -332,6 +332,7 @@ Write-BootstrapLog "WPF assemblies loaded"
   <Grid Margin="22">
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
       <RowDefinition Height="*"/>
       <RowDefinition Height="Auto"/>
     </Grid.RowDefinitions>
@@ -340,6 +341,7 @@ Write-BootstrapLog "WPF assemblies loaded"
     <Grid Grid.Row="0" Margin="0,0,0,20">
       <Grid.ColumnDefinitions>
         <ColumnDefinition Width="*"/>
+        <ColumnDefinition Width="Auto"/>
         <ColumnDefinition Width="Auto"/>
       </Grid.ColumnDefinitions>
 
@@ -354,8 +356,18 @@ Write-BootstrapLog "WPF assemblies loaded"
         </StackPanel>
       </StackPanel>
 
+      <!-- Middle: status pill -->
+      <Border Grid.Column="1" Name="StatusPill" VerticalAlignment="Center"
+              CornerRadius="14" Padding="12,6" Margin="0,0,16,0"
+              Background="#F1F5F9" BorderBrush="#D9E5F3" BorderThickness="1">
+        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+          <Ellipse Name="StatusDot" Width="10" Height="10" Margin="0,0,8,0" Fill="#94A3B8"/>
+          <TextBlock Name="TxtStatus" FontSize="12" FontWeight="Bold" Foreground="#475569"/>
+        </StackPanel>
+      </Border>
+
       <!-- Right: stacked lang toggle + hero button -->
-      <StackPanel Grid.Column="1" Orientation="Vertical" HorizontalAlignment="Right">
+      <StackPanel Grid.Column="2" Orientation="Vertical" HorizontalAlignment="Right">
         <Button Name="BtnLang" Style="{StaticResource GhostBtn}"
                 Width="120" HorizontalAlignment="Right" Margin="0,0,0,12"/>
 
@@ -428,8 +440,59 @@ Write-BootstrapLog "WPF assemblies loaded"
       </Grid>
     </Border>
 
-    <!-- ROW 2: footer status -->
-    <TextBlock Grid.Row="2" Name="TxtFooter" FontSize="11" Foreground="#94A3B8" Margin="4,12,0,0"/>
+    <!-- ROW 2: integrated PowerShell-style console -->
+    <Border Grid.Row="2" Margin="0,16,0,0" CornerRadius="14"
+            Background="#0F172A" BorderBrush="#1E293B" BorderThickness="1" Padding="14">
+      <Grid>
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+        <Grid Grid.Row="0" Margin="0,0,0,8">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+          </Grid.ColumnDefinitions>
+          <TextBlock Name="LblConsole" FontSize="12" FontWeight="Bold" Foreground="#94A3B8"/>
+          <Button Grid.Column="1" Name="BtnClearConsole"
+                  MinWidth="80" Height="28" Padding="10,0"
+                  Background="#1E293B" Foreground="#E2E8F0"
+                  BorderBrush="#334155" BorderThickness="1"
+                  FontSize="11" FontWeight="SemiBold" Cursor="Hand">
+            <Button.Template>
+              <ControlTemplate TargetType="Button">
+                <Border x:Name="cbd" CornerRadius="8"
+                        Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}">
+                  <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                    Margin="{TemplateBinding Padding}"/>
+                </Border>
+                <ControlTemplate.Triggers>
+                  <Trigger Property="IsMouseOver" Value="True">
+                    <Setter TargetName="cbd" Property="Background" Value="#334155"/>
+                  </Trigger>
+                </ControlTemplate.Triggers>
+              </ControlTemplate>
+            </Button.Template>
+          </Button>
+        </Grid>
+        <TextBox Name="ConsoleBox" Grid.Row="1"
+                 Background="#0F172A" Foreground="#E2E8F0"
+                 BorderThickness="0"
+                 FontFamily="Cascadia Mono, Cascadia Code, Consolas"
+                 FontSize="11"
+                 IsReadOnly="True"
+                 AcceptsReturn="True"
+                 TextWrapping="NoWrap"
+                 VerticalScrollBarVisibility="Auto"
+                 HorizontalScrollBarVisibility="Auto"
+                 SelectionBrush="#1E40AF"/>
+      </Grid>
+    </Border>
+
+    <!-- ROW 3: footer status -->
+    <TextBlock Grid.Row="3" Name="TxtFooter" FontSize="11" Foreground="#94A3B8" Margin="4,12,0,0"/>
   </Grid>
 </Window>
 "@
@@ -446,8 +509,10 @@ Write-BootstrapLog "XAML loaded"
 
 $controlNames = @(
   "LogoImage","TxtTitle","TxtSubtitle",
+  "StatusPill","StatusDot","TxtStatus",
   "BtnLang","BtnPrimary",
   "LblSsid","TxtSsid","LblPassword","TxtPassword","LblIPv4","TxtIPv4",
+  "LblConsole","BtnClearConsole","ConsoleBox",
   "TxtFooter"
 )
 $ctrl = @{}
@@ -514,6 +579,12 @@ $Text = @{
     password          = "Contrasena"
     ipv4              = "Direccion IP"
     ipUnavailable     = "Inicia el sistema"
+    pillOff           = "APAGADO"
+    pillStarting      = "INICIANDO..."
+    pillReady         = "ENCENDIDO"
+    pillStopping      = "DETENIENDO..."
+    consoleTitle      = "Salida del sistema"
+    clearBtn          = "Limpiar"
     footerReady       = "Listo - {0}"
     footerOff         = "Sistema apagado"
     footerStarting    = "Iniciando el sistema..."
@@ -534,6 +605,12 @@ $Text = @{
     password          = "Password"
     ipv4              = "IP address"
     ipUnavailable     = "Start the system"
+    pillOff           = "OFF"
+    pillStarting      = "STARTING..."
+    pillReady         = "ON"
+    pillStopping      = "STOPPING..."
+    consoleTitle      = "System output"
+    clearBtn          = "Clear"
     footerReady       = "Ready - {0}"
     footerOff         = "System off"
     footerStarting    = "Starting the system..."
@@ -577,14 +654,17 @@ function TF {
 # ---- Locale apply ----------------------------------------------------------
 
 function Set-LanguageLabels {
-  $window.Title          = (T "title")
-  $ctrl.TxtTitle.Text    = (T "title")
-  $ctrl.TxtSubtitle.Text = (T "subtitle")
-  $ctrl.BtnLang.Content  = (T "lang")
-  $ctrl.LblSsid.Text     = (T "ssid")
-  $ctrl.LblPassword.Text = (T "password")
-  $ctrl.LblIPv4.Text     = (T "ipv4")
-  # Re-apply the current state's button label so a mid-flight language toggle picks up immediately.
+  $window.Title              = (T "title")
+  $ctrl.TxtTitle.Text        = (T "title")
+  $ctrl.TxtSubtitle.Text     = (T "subtitle")
+  $ctrl.BtnLang.Content      = (T "lang")
+  $ctrl.LblSsid.Text         = (T "ssid")
+  $ctrl.LblPassword.Text     = (T "password")
+  $ctrl.LblIPv4.Text         = (T "ipv4")
+  $ctrl.LblConsole.Text      = (T "consoleTitle")
+  $ctrl.BtnClearConsole.Content = (T "clearBtn")
+  # Re-apply the current state's button + pill labels so a mid-flight language
+  # toggle picks up immediately.
   Set-ButtonState -State $script:state -SkipBrush
   # Refresh the Wi-Fi panel so the IPv4 placeholder text matches the new language.
   Update-WifiPanel
@@ -716,6 +796,43 @@ function Set-ButtonState {
         }
       }
 
+      # Status pill (dot + label) mirrors the button state.
+      switch ($State) {
+        "Off" {
+          $pillKey   = "pillOff"
+          $dotR = 148; $dotG = 163; $dotB = 184   # #94A3B8 gray
+          $bgR  = 241; $bgG  = 245; $bgB  = 249   # #F1F5F9
+          $bdR  = 217; $bdG  = 229; $bdB  = 243   # #D9E5F3
+          $txR  =  71; $txG  =  85; $txB  = 105   # #475569
+        }
+        "Starting" {
+          $pillKey   = "pillStarting"
+          $dotR = 217; $dotG = 119; $dotB =   6   # #D97706 amber
+          $bgR  = 255; $bgG  = 251; $bgB  = 235   # #FFFBEB
+          $bdR  = 253; $bdG  = 230; $bdB  = 138   # #FDE68A-ish
+          $txR  = 146; $txG  =  64; $txB  =  14   # #92400E
+        }
+        "Ready" {
+          $pillKey   = "pillReady"
+          $dotR =   5; $dotG = 150; $dotB = 105   # #059669 green
+          $bgR  = 236; $bgG  = 253; $bgB  = 245   # #ECFDF5
+          $bdR  = 167; $bdG  = 243; $bdB  = 208   # #A7F3D0
+          $txR  =   4; $txG  = 120; $txB  =  87   # #047857
+        }
+        "Stopping" {
+          $pillKey   = "pillStopping"
+          $dotR = 217; $dotG = 119; $dotB =   6   # #D97706 amber
+          $bgR  = 255; $bgG  = 251; $bgB  = 235   # #FFFBEB
+          $bdR  = 253; $bdG  = 230; $bdB  = 138
+          $txR  = 146; $txG  =  64; $txB  =  14
+        }
+      }
+      $ctrl.TxtStatus.Text = (T $pillKey)
+      $ctrl.StatusDot.Fill         = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb($dotR, $dotG, $dotB))
+      $ctrl.StatusPill.Background  = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb($bgR,  $bgG,  $bgB ))
+      $ctrl.StatusPill.BorderBrush = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb($bdR,  $bdG,  $bdB ))
+      $ctrl.TxtStatus.Foreground   = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb($txR,  $txG,  $txB ))
+
       # Language toggle is locked while a background script is running so the
       # button label can't change mid-flight (cosmetic guard).
       $ctrl.BtnLang.IsEnabled = ($State -eq "Off" -or $State -eq "Ready")
@@ -806,6 +923,7 @@ function Start-BackgroundScript {
     $rs.SessionStateProxy.SetVariable("uiWindow",     $window)
     $rs.SessionStateProxy.SetVariable("uiLogFile",    $bootstrapLogFile)
     $rs.SessionStateProxy.SetVariable("uiLogDir",     $bootstrapLogDir)
+    $rs.SessionStateProxy.SetVariable("uiConsole",    $ctrl.ConsoleBox)
 
     $ps = [powershell]::Create()
     $ps.Runspace = $rs
@@ -816,6 +934,28 @@ function Start-BackgroundScript {
           if (-not (Test-Path $uiLogDir)) { New-Item -ItemType Directory -Path $uiLogDir -Force | Out-Null }
           $ts = Get-Date -Format "yyyy-MM-ddTHH:mm:ssK"
           Add-Content -LiteralPath $uiLogFile -Value ("{0} [{1}] {2}" -f $ts, $Tag, $Line) -Encoding UTF8
+        } catch {}
+      }
+
+      function Push-Console {
+        param([string]$Tag, [string]$Line)
+        if ($null -eq $uiConsole -or $null -eq $uiWindow) { return }
+        $stamp = Get-Date -Format "HH:mm:ss"
+        $formatted = "[{0}] [{1}] {2}`r`n" -f $stamp, $Tag, $Line
+        try {
+          $null = $uiWindow.Dispatcher.BeginInvoke([action]{
+            try {
+              $atBottom = ($uiConsole.SelectionStart -ge ([Math]::Max(0, $uiConsole.Text.Length - 4)))
+              $uiConsole.AppendText($formatted)
+              # Soft cap at 500 lines: drop oldest 100 if exceeded.
+              if ($uiConsole.LineCount -gt 500) {
+                $lines = $uiConsole.Text -split "`r`n"
+                $uiConsole.Text = ($lines | Select-Object -Skip 100) -join "`r`n"
+                $uiConsole.CaretIndex = $uiConsole.Text.Length
+              }
+              if ($atBottom) { $uiConsole.ScrollToEnd() }
+            } catch {}
+          })
         } catch {}
       }
 
@@ -835,11 +975,13 @@ function Start-BackgroundScript {
         param($sender, $args)
         if ([string]::IsNullOrEmpty($args.Data)) { return }
         Write-SubLog "stdout" $args.Data
+        Push-Console "out" $args.Data
       }
       $errHandler = [System.Diagnostics.DataReceivedEventHandler]{
         param($sender, $args)
         if ([string]::IsNullOrEmpty($args.Data)) { return }
         Write-SubLog "stderr" $args.Data
+        Push-Console "err" $args.Data
       }
 
       $proc.add_OutputDataReceived($outHandler)
@@ -941,6 +1083,7 @@ $ctrl.BtnPrimary.Add_Click({
   try {
     switch ($script:state) {
       "Off" {
+        $ctrl.ConsoleBox.Clear()
         Set-ButtonState -State "Starting"
         Update-Footer
         Start-BackgroundScript -Path $upScript `
@@ -952,6 +1095,7 @@ $ctrl.BtnPrimary.Add_Click({
           }
       }
       "Ready" {
+        $ctrl.ConsoleBox.Clear()
         Set-ButtonState -State "Stopping"
         Update-Footer
         Start-BackgroundScript -Path $downScript `
@@ -969,6 +1113,10 @@ $ctrl.BtnPrimary.Add_Click({
     $st = $_.ScriptStackTrace; if (-not $st) { $st = "" }
     Write-BootstrapLog "BtnPrimary handler error: $($_.Exception.Message)`n  $st"
   }
+})
+
+$ctrl.BtnClearConsole.Add_Click({
+  try { $ctrl.ConsoleBox.Clear() } catch {}
 })
 
 $ctrl.BtnLang.Add_Click({

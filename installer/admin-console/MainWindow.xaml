@@ -1,0 +1,76 @@
+<Window x:Class="AIBox.AdminConsole.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:pages="clr-namespace:AIBox.AdminConsole.Pages"
+        Title="{Binding Title}"
+        Icon="pack://application:,,,/Resources/circlelogo.png"
+        Height="880" Width="820"
+        MinHeight="680" MinWidth="720"
+        WindowStartupLocation="CenterScreen">
+    <Window.Resources>
+        <!-- TabItem header style: bigger, bold, brand-coloured, with a rounded
+             selected-state pill so the language picker reads as a clear toggle. -->
+        <Style TargetType="TabItem">
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Padding" Value="22,10"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Foreground" Value="{StaticResource BrandTextSoft}"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                        <Border x:Name="bd" CornerRadius="12"
+                                Margin="4,0"
+                                Background="{TemplateBinding Background}"
+                                BorderThickness="0">
+                            <ContentPresenter ContentSource="Header"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              Margin="{TemplateBinding Padding}"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="bd" Property="Background" Value="{StaticResource BrandBlue}"/>
+                                <Setter Property="Foreground" Value="White"/>
+                            </Trigger>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="IsMouseOver" Value="True"/>
+                                    <Condition Property="IsSelected" Value="False"/>
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="bd" Property="Background" Value="#EEF4FB"/>
+                            </MultiTrigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="TabControl">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="0"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" Background="{StaticResource BrandBg}" Padding="14,12,14,0">
+            <TabControl x:Name="LangTabs" SelectionChanged="LangTabs_SelectionChanged"
+                        HorizontalAlignment="Center">
+                <TabItem Header="Español">
+                    <pages:ControlPanelView/>
+                </TabItem>
+                <TabItem Header="English">
+                    <pages:ControlPanelView/>
+                </TabItem>
+            </TabControl>
+        </Border>
+    </Grid>
+</Window>

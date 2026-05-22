@@ -1,0 +1,24 @@
+<Application x:Class="AIBox.AdminConsole.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             StartupUri="MainWindow.xaml">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="Styles/BrandStyles.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+
+            <Style TargetType="{x:Type Window}">
+                <Setter Property="Background" Value="{StaticResource BrandBg}"/>
+                <Setter Property="Foreground" Value="{StaticResource BrandTextDark}"/>
+                <Setter Property="FontFamily" Value="Aptos, Segoe UI, Tahoma"/>
+                <Setter Property="FontSize" Value="14"/>
+            </Style>
+
+            <Style TargetType="{x:Type TextBlock}">
+                <Setter Property="Foreground" Value="{StaticResource BrandTextDark}"/>
+                <Setter Property="FontFamily" Value="Aptos, Segoe UI, Tahoma"/>
+            </Style>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

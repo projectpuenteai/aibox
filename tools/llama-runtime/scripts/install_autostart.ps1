@@ -44,8 +44,21 @@ $toolsDir     = Split-Path -Parent $runtimeDir
 $aiboxDir     = Split-Path -Parent $toolsDir
 $iconCandidate = Join-Path $aiboxDir "stack\portal\assets\circlelogo.png"  # .ico preferred; .png accepted by some shells
 
+# Compiled WPF .exe (preferred). Falls back to the PowerShell-launched UI when
+# the .exe has not been built on this host yet, so install_autostart.ps1
+# remains usable on fresh checkouts.
+$exeCandidate = Join-Path $aiboxDir "installer\admin-console\bin\Release\net8.0-windows\win-x64\publish\AIBox Admin Console.exe"
+$useExe       = Test-Path -LiteralPath $exeCandidate
+
 foreach ($p in @($upScript, $uiScript)) {
   if (-not (Test-Path $p)) { throw "Required script missing: $p" }
+}
+
+if ($useExe) {
+  Write-Host "Found compiled admin console: $exeCandidate" -ForegroundColor DarkGray
+} else {
+  Write-Host "Compiled admin console not built; shortcut will launch aibox_control_ui.ps1 instead." -ForegroundColor DarkGray
+  Write-Host "  Build it with: dotnet publish $aiboxDir\installer\admin-console\AIBoxAdminConsole.csproj -c Release -r win-x64 --no-self-contained" -ForegroundColor DarkGray
 }
 
 Write-Host ""
@@ -144,15 +157,26 @@ function New-AdminShortcut {
 
 $uiTargetArgs = '-NoLogo -NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $uiScript + '" -NoElevate'
 
+# Resolve the shortcut target once: prefer the .exe, fall back to powershell+ps1.
+if ($useExe) {
+  $shortcutTarget    = $exeCandidate
+  $shortcutArguments = ""
+  $shortcutWorkDir   = Split-Path -Parent $exeCandidate
+} else {
+  $shortcutTarget    = "powershell.exe"
+  $shortcutArguments = $uiTargetArgs
+  $shortcutWorkDir   = $scriptDir
+}
+
 if (-not $SkipDesktopShortcut) {
   Write-Host "[2/3] Creating Desktop shortcut..."
   $desktop = [Environment]::GetFolderPath("Desktop")
   $link = Join-Path $desktop "Consola Puente Admin.lnk"
   New-AdminShortcut `
     -LinkPath $link `
-    -TargetPath "powershell.exe" `
-    -Arguments $uiTargetArgs `
-    -WorkingDirectory $scriptDir `
+    -TargetPath $shortcutTarget `
+    -Arguments $shortcutArguments `
+    -WorkingDirectory $shortcutWorkDir `
     -IconPath $iconCandidate
   Write-Host "      + $link" -ForegroundColor Green
 } else {
@@ -166,9 +190,9 @@ if (-not $SkipStartMenuShortcut) {
   $link = Join-Path $startMenu "Consola Puente Admin.lnk"
   New-AdminShortcut `
     -LinkPath $link `
-    -TargetPath "powershell.exe" `
-    -Arguments $uiTargetArgs `
-    -WorkingDirectory $scriptDir `
+    -TargetPath $shortcutTarget `
+    -Arguments $shortcutArguments `
+    -WorkingDirectory $shortcutWorkDir `
     -IconPath $iconCandidate
   Write-Host "      + $link" -ForegroundColor Green
 

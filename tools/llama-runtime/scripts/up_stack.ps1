@@ -875,6 +875,52 @@ if (-not $SkipHotspot -and $hotspotResult -and (([string]$hotspotResult.status) 
   }
 }
 
+# ── Hotspot recovery after DNS responder phase ───────────────────────────────
+# Disable-IcsDnsProxy / Enable-IcsDnsProxy each call Restart-Service SharedAccess.
+# Mobile Hotspot piggybacks on the SharedAccess service for NAT/DHCP/DNS, so
+# restarting it tears the hotspot down. Most boots survive (the WinRT layer
+# re-establishes the adapter within a second or two), but some — especially
+# when the service stop hangs (see the 17-second "Waiting for service..."
+# warning Windows emits) — leave 192.168.137.1 unbound and clients with no
+# AP to join. Probe for the IP and, if it is missing, re-invoke setup_hotspot
+# so the hero-button-Start path always converges on a live hotspot.
+if (-not $SkipHotspot -and $hotspotResult -and (([string]$hotspotResult.status) -in @('ready','ip_only'))) {
+  $hotspotStillAlive = $false
+  # Poll a few seconds — the WinRT layer can take 2-5 s to rebind .1 after the
+  # SharedAccess restart even when nothing is actually broken.
+  $recoveryDeadline = (Get-Date).AddSeconds(10)
+  while ((Get-Date) -lt $recoveryDeadline) {
+    try {
+      $hotspotStillAlive = [bool](
+        Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
+          Where-Object { $_.IPAddress -eq '192.168.137.1' }
+      )
+    } catch {
+      $hotspotStillAlive = $false
+    }
+    if ($hotspotStillAlive) { break }
+    Start-Sleep -Milliseconds 500
+  }
+
+  if (-not $hotspotStillAlive) {
+    Write-Warn "Hotspot adapter dropped after DNS responder phase; re-running setup_hotspot.ps1 to recover..."
+    $hotspotRecovered = Invoke-HotspotStartup -ScriptPath $hotspotScript
+    if ($hotspotRecovered) {
+      $hotspotResult = $hotspotRecovered
+      foreach ($w in @($hotspotRecovered.warnings)) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$w)) { Write-Warn "$w" }
+      }
+      switch ([string]$hotspotRecovered.status) {
+        "ready"   { Write-Ok "Hotspot recovered after DNS responder disruption." }
+        "ip_only" { Write-Warn "Hotspot recovered with IP only (DNS not validated)." }
+        default   { Write-Warn "Hotspot could not be recovered (status='$([string]$hotspotRecovered.status)'). Clients will not be able to join." }
+      }
+    } else {
+      Write-Warn "Hotspot recovery attempt produced no result. Clients may not be able to join."
+    }
+  }
+}
+
 # ── Update portal connection info (best-effort, non-fatal) ────────────────────
 # Writes portal/network-info.json so connect.html shows current IPs / hotspot
 # status without needing a live API call.  Does not require elevation.

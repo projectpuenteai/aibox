@@ -1,0 +1,110 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- Puente brand palette. Hex values match aibox/stack/portal/index.html
+         CSS variables and the existing PowerShell control panel exactly. -->
+    <SolidColorBrush x:Key="BrandBlue"       Color="#2F74DB"/>
+    <SolidColorBrush x:Key="BrandBlueLight"  Color="#4B84E4"/>
+    <SolidColorBrush x:Key="BrandBlueDeep"   Color="#1B4F9C"/>
+    <SolidColorBrush x:Key="BrandTextDark"   Color="#0F172A"/>
+    <SolidColorBrush x:Key="BrandTextSoft"   Color="#475569"/>
+    <SolidColorBrush x:Key="BrandTextMuted"  Color="#64748B"/>
+    <SolidColorBrush x:Key="BrandBg"         Color="#F5F8FC"/>
+    <SolidColorBrush x:Key="BrandCardBg"     Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="BrandBorder"     Color="#D9E5F3"/>
+    <SolidColorBrush x:Key="BrandSuccess"    Color="#059669"/>
+    <SolidColorBrush x:Key="BrandSuccessBg"  Color="#ECFDF5"/>
+    <SolidColorBrush x:Key="BrandSuccessBd"  Color="#A7F3D0"/>
+    <SolidColorBrush x:Key="BrandWarn"       Color="#D97706"/>
+    <SolidColorBrush x:Key="BrandWarnBg"     Color="#FFFBEB"/>
+    <SolidColorBrush x:Key="BrandWarnBd"     Color="#FDE68A"/>
+    <SolidColorBrush x:Key="BrandDanger"     Color="#EF4444"/>
+    <SolidColorBrush x:Key="BrandDangerDeep" Color="#B91C1C"/>
+    <SolidColorBrush x:Key="BrandIdleDot"    Color="#94A3B8"/>
+    <SolidColorBrush x:Key="BrandIdleBg"     Color="#F1F5F9"/>
+
+    <!-- Gradients for the hero Start/Stop button. -->
+    <LinearGradientBrush x:Key="HeroStartBrush" StartPoint="0,0" EndPoint="1,0">
+        <GradientStop Color="#4B84E4" Offset="0"/>
+        <GradientStop Color="#2F74DB" Offset="1"/>
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="HeroStopBrush" StartPoint="0,0" EndPoint="1,0">
+        <GradientStop Color="#EF4444" Offset="0"/>
+        <GradientStop Color="#B91C1C" Offset="1"/>
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="HeroBusyBrush" StartPoint="0,0" EndPoint="1,0">
+        <GradientStop Color="#94A3B8" Offset="0"/>
+        <GradientStop Color="#64748B" Offset="1"/>
+    </LinearGradientBrush>
+
+    <!-- Hero Start/Stop button: large rounded rectangle, gradient background,
+         drop shadow. The background brush is set per-state from code-behind. -->
+    <Style x:Key="HeroButton" TargetType="Button">
+        <Setter Property="Background" Value="{StaticResource HeroStartBrush}"/>
+        <Setter Property="Foreground" Value="White"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="FontSize" Value="20"/>
+        <Setter Property="FontWeight" Value="Bold"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Height" Value="64"/>
+        <Setter Property="MinWidth" Value="280"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="heroBd" CornerRadius="18"
+                            Background="{TemplateBinding Background}">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="20" ShadowDepth="0" Color="#1B4F9C" Opacity="0.40"/>
+                        </Border.Effect>
+                        <ContentPresenter HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="heroBd" Property="Effect">
+                                <Setter.Value>
+                                    <DropShadowEffect BlurRadius="28" ShadowDepth="0" Color="#1B4F9C" Opacity="0.60"/>
+                                </Setter.Value>
+                            </Setter>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.85"/>
+                            <Setter Property="Cursor" Value="Wait"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Card border with subtle shadow. -->
+    <Style x:Key="Card" TargetType="Border">
+        <Setter Property="CornerRadius" Value="18"/>
+        <Setter Property="Background" Value="{StaticResource BrandCardBg}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource BrandBorder}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Padding" Value="24"/>
+        <Setter Property="Effect">
+            <Setter.Value>
+                <DropShadowEffect BlurRadius="22" ShadowDepth="0" Color="#1B4F8A" Opacity="0.10"/>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="WifiLabel" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="Foreground" Value="{StaticResource BrandTextMuted}"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
+    </Style>
+
+    <Style x:Key="WifiValue" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="20"/>
+        <Setter Property="FontWeight" Value="Bold"/>
+        <Setter Property="Foreground" Value="{StaticResource BrandTextDark}"/>
+        <Setter Property="FontFamily" Value="Cascadia Code, Consolas"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
+        <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+    </Style>
+
+</ResourceDictionary>
