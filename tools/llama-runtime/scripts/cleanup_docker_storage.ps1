@@ -71,21 +71,21 @@ function Get-FreeDiskGB {
 }
 
 function Invoke-DockerPrune {
-  param([string[]]$Args, [string]$Label)
+  param([string[]]$ArgList, [string]$Label)
 
-  if (-not (Test-DockerPruneArgs -ArgList $Args)) {
-      throw "Refusing to run forbidden docker command: docker $($Args -join ' ')"
+  if (-not (Test-DockerPruneArgs -ArgList $ArgList)) {
+      throw "Refusing to run forbidden docker command: docker $($ArgList -join ' ')"
   }
 
   if (-not $Apply) {
-    Write-Status "  [dry-run] would run: docker $($Args -join ' ')" "Warn"
+    Write-Status "  [dry-run] would run: docker $($ArgList -join ' ')" "Warn"
     return
   }
 
   $saved = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
   try {
-    $output = & docker @Args 2>&1
+    $output = & docker @ArgList 2>&1
     $code = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $saved
@@ -138,18 +138,18 @@ if ($ThresholdGB -gt 0) {
 # prevent image layer removal), then build cache, then networks.
 
 Write-Status "Removing stopped containers..." "Info"
-Invoke-DockerPrune -Args @("container", "prune", "--force") -Label "containers"
+Invoke-DockerPrune -ArgList @("container", "prune", "--force") -Label "containers"
 
 Write-Status "Removing dangling image layers (untagged, not in use)..." "Info"
 # NOTE: We intentionally do NOT use 'image prune -a' because that would remove
 # all images not currently running — including the ones we need offline.
-Invoke-DockerPrune -Args @("image", "prune", "--force") -Label "dangling images"
+Invoke-DockerPrune -ArgList @("image", "prune", "--force") -Label "dangling images"
 
 Write-Status "Removing unused build cache..." "Info"
-Invoke-DockerPrune -Args @("builder", "prune", "--force") -Label "build cache"
+Invoke-DockerPrune -ArgList @("builder", "prune", "--force") -Label "build cache"
 
 Write-Status "Removing unused networks..." "Info"
-Invoke-DockerPrune -Args @("network", "prune", "--force") -Label "networks"
+Invoke-DockerPrune -ArgList @("network", "prune", "--force") -Label "networks"
 
 # ── Report result ─────────────────────────────────────────────────────────────
 

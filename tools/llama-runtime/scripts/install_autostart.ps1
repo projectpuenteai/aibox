@@ -66,9 +66,11 @@ if (-not $SkipTask) {
     -Argument ('-ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $upScript + '"')
 
   $taskTrigger = New-ScheduledTaskTrigger -AtLogOn
-  # Small delay so network stack + Docker Desktop are up before we attempt
-  # `docker compose up` and hotspot configuration.
-  $taskTrigger.Delay = "PT90S"
+  # Delay so network stack + Docker Desktop are up before we attempt
+  # `docker compose up` and hotspot configuration. up_stack.ps1's
+  # Wait-DockerDaemon has its own 300s timeout, so this is just a head-start.
+  # 180s covers slower boots (first boot after Windows update, mechanical disk).
+  $taskTrigger.Delay = "PT180S"
 
   $taskSettings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `

@@ -1,0 +1,1219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Practical Kolibri guide for teachers. How to sign in, create accounts, classes, groups, lessons, and review student progress.">
+<title>Teacher Guide · Kolibri</title>
+<style>
+  /* ============================================================
+     Teacher Guide · Kolibri — embedded styles, no external CDN.
+     Designed for modest hardware, small screens, and printing.
+     ============================================================ */
+  :root {
+    --color-bg: #ffffff;
+    --color-surface: #f5f5f7;
+    --color-surface-alt: #eef0f6;
+    --color-border: #d4d4dd;
+    --color-text: #1d1d1f;
+    --color-muted: #5d5d63;
+    --color-primary: #2e3192;
+    --color-primary-dark: #1c1f6a;
+    --color-accent: #b85c8e;
+    --color-warning-bg: #fff7e6;
+    --color-warning-border: #e5a73a;
+    --color-tip-bg: #eaf4ea;
+    --color-tip-border: #3f8a3f;
+    --color-note-bg: #e8eef8;
+    --color-note-border: #3a6db1;
+    --color-danger-bg: #fbeaea;
+    --color-danger-border: #c0392b;
+    --radius: 6px;
+    --shadow: 0 1px 3px rgba(0,0,0,.08);
+    --font-base: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font-family: var(--font-base);
+    font-size: 17px;
+    line-height: 1.6;
+    color: var(--color-text);
+    background: var(--color-bg);
+  }
+  .skip-link {
+    position: absolute; left: -9999px; top: 0;
+    background: var(--color-primary); color: #fff;
+    padding: .75rem 1rem; z-index: 1000; text-decoration: none;
+  }
+  .skip-link:focus { left: 1rem; top: 1rem; }
+
+  .topbar {
+    position: sticky; top: 0; z-index: 50;
+    background: var(--color-primary); color: #fff;
+    padding: .75rem 1.25rem;
+    display: flex; align-items: center; gap: 1rem;
+    flex-wrap: wrap;
+    box-shadow: var(--shadow);
+  }
+  .topbar h1 { margin: 0; font-size: 1.15rem; font-weight: 600; letter-spacing: .2px; }
+  .topbar .subtitle { opacity: .85; font-size: .85rem; margin-left: .25rem; }
+  .topbar .lang-link { margin-left: auto; color: #fff; text-decoration: underline; font-size: .9rem; }
+  .topbar .lang-link:hover { opacity: .85; }
+  .search-wrap { flex: 1 1 280px; max-width: 420px; position: relative; }
+  .search-wrap input {
+    width: 100%; padding: .55rem .8rem .55rem 2.2rem;
+    border: 1px solid rgba(255,255,255,.4); border-radius: var(--radius);
+    background: rgba(255,255,255,.15); color: #fff; font-size: .95rem;
+  }
+  .search-wrap input::placeholder { color: rgba(255,255,255,.75); }
+  .search-wrap input:focus {
+    outline: 2px solid #fff; outline-offset: 1px;
+    background: #fff; color: var(--color-text);
+  }
+  .search-wrap input:focus::placeholder { color: var(--color-muted); }
+  .search-wrap .icon {
+    position: absolute; left: .7rem; top: 50%; transform: translateY(-50%);
+    width: 16px; height: 16px; opacity: .85; pointer-events: none;
+  }
+  .menu-toggle {
+    background: rgba(255,255,255,.15); color: #fff;
+    border: 1px solid rgba(255,255,255,.35); border-radius: var(--radius);
+    padding: .4rem .7rem; font-size: .9rem; cursor: pointer; display: none;
+  }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 280px minmax(0, 1fr);
+    gap: 0; max-width: 1300px; margin: 0 auto;
+  }
+  .sidebar {
+    background: var(--color-surface);
+    border-right: 1px solid var(--color-border);
+    padding: 1.25rem 1rem 2rem;
+    position: sticky; top: 64px; align-self: start;
+    max-height: calc(100vh - 64px); overflow-y: auto;
+  }
+  .sidebar h2 {
+    font-size: .8rem; text-transform: uppercase; letter-spacing: .8px;
+    color: var(--color-muted); margin: 1.2rem 0 .4rem; padding-left: .25rem;
+  }
+  .sidebar h2:first-child { margin-top: .25rem; }
+  .sidebar ul { list-style: none; margin: 0; padding: 0; }
+  .sidebar li { margin: 0; }
+  .sidebar a {
+    display: block; padding: .45rem .6rem; color: var(--color-text);
+    text-decoration: none; border-radius: 4px; font-size: .95rem; line-height: 1.35;
+  }
+  .sidebar a:hover { background: var(--color-surface-alt); }
+  .sidebar a:focus { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+  .sidebar a.active {
+    background: #fff; color: var(--color-primary); font-weight: 600;
+    border-left: 3px solid var(--color-primary);
+    padding-left: calc(.6rem - 3px);
+  }
+
+  main { padding: 1.75rem 2rem 4rem; min-width: 0; }
+  main > section { max-width: 820px; margin: 0 auto 3rem; }
+  h2.section-title {
+    font-size: 1.8rem; margin: 2.5rem 0 .75rem;
+    color: var(--color-primary-dark);
+    border-bottom: 2px solid var(--color-border);
+    padding-bottom: .35rem;
+    scroll-margin-top: 80px;
+  }
+  h3 {
+    font-size: 1.25rem; margin: 1.75rem 0 .5rem;
+    color: var(--color-primary-dark); scroll-margin-top: 80px;
+  }
+  h4 { font-size: 1.05rem; margin: 1.25rem 0 .35rem; color: var(--color-text); }
+  p { margin: .5rem 0 1rem; }
+  ol, ul { padding-left: 1.4rem; margin: .25rem 0 1rem; }
+  li { margin: .35rem 0; }
+  strong { color: var(--color-primary-dark); }
+  code, kbd {
+    background: var(--color-surface); border: 1px solid var(--color-border);
+    border-radius: 3px; padding: 1px 5px; font-family: var(--font-mono); font-size: .9em;
+  }
+  a { color: var(--color-primary); }
+  a:hover { color: var(--color-accent); }
+
+  .hero {
+    background: linear-gradient(135deg, #2e3192 0%, #5a3aa8 100%);
+    color: #fff; padding: 2rem 1.75rem; border-radius: 10px; margin: 1rem 0 2rem;
+  }
+  .hero h2 { margin: 0 0 .5rem; color: #fff; border: none; padding: 0; font-size: 1.7rem; }
+  .hero p { margin: .4rem 0; opacity: .95; }
+  .hero .hero-actions { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: 1rem; }
+  .btn {
+    display: inline-block; background: #fff; color: var(--color-primary);
+    text-decoration: none; padding: .65rem 1.1rem; border-radius: var(--radius);
+    font-weight: 600; border: 1px solid rgba(255,255,255,.3);
+    transition: transform .05s, background .12s;
+  }
+  .btn:hover { background: var(--color-surface); color: var(--color-primary-dark); }
+  .btn:active { transform: translateY(1px); }
+  .btn-secondary { background: transparent; color: #fff; border-color: rgba(255,255,255,.6); }
+  .btn-secondary:hover { background: rgba(255,255,255,.12); color: #fff; }
+
+  .tasks-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: .9rem; margin: 1rem 0 1.5rem;
+  }
+  .task-card {
+    display: block; background: var(--color-surface);
+    border: 1px solid var(--color-border); border-radius: var(--radius);
+    padding: 1rem; text-decoration: none; color: var(--color-text);
+    transition: border-color .12s, transform .05s;
+  }
+  .task-card:hover { border-color: var(--color-primary); color: var(--color-primary-dark); }
+  .task-card:active { transform: translateY(1px); }
+  .task-card .num {
+    display: inline-block; background: var(--color-primary); color: #fff;
+    width: 1.6rem; height: 1.6rem; border-radius: 50%;
+    text-align: center; line-height: 1.6rem;
+    font-size: .85rem; font-weight: 600; margin-right: .4rem;
+  }
+  .task-card strong { display: block; margin-top: .3rem; font-size: 1.02rem; }
+  .task-card span { font-size: .88rem; color: var(--color-muted); }
+
+  ol.steps { counter-reset: step; list-style: none; padding-left: 0; }
+  ol.steps > li {
+    counter-increment: step; position: relative;
+    padding: .25rem 0 .25rem 2.6rem; margin: .65rem 0;
+  }
+  ol.steps > li::before {
+    content: counter(step); position: absolute; left: 0; top: .15rem;
+    background: var(--color-primary); color: #fff;
+    width: 1.9rem; height: 1.9rem; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-weight: 600; font-size: .95rem;
+  }
+
+  .callout { border-left: 4px solid; padding: .75rem 1rem; border-radius: 4px; margin: 1rem 0; }
+  .callout p { margin: .2rem 0; }
+  .callout .label {
+    font-weight: 700; display: block; margin-bottom: .15rem;
+    font-size: .92rem; text-transform: uppercase; letter-spacing: .4px;
+  }
+  .callout.note { background: var(--color-note-bg); border-color: var(--color-note-border); }
+  .callout.note .label { color: var(--color-note-border); }
+  .callout.tip { background: var(--color-tip-bg); border-color: var(--color-tip-border); }
+  .callout.tip .label { color: var(--color-tip-border); }
+  .callout.warning { background: var(--color-warning-bg); border-color: var(--color-warning-border); }
+  .callout.warning .label { color: #b87a14; }
+  .callout.danger { background: var(--color-danger-bg); border-color: var(--color-danger-border); }
+  .callout.danger .label { color: var(--color-danger-border); }
+
+  figure {
+    margin: 1rem 0 1.5rem; padding: .6rem;
+    background: var(--color-surface); border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+  }
+  figure img {
+    max-width: 100%; height: auto; display: block; margin: 0 auto;
+    border-radius: 3px; background: #fff;
+  }
+  figure .img-placeholder {
+    background: #fff; border: 1px dashed var(--color-border);
+    border-radius: 3px; padding: 1.5rem 1rem;
+    color: var(--color-muted); font-size: .88rem;
+    text-align: center; font-family: var(--font-mono); word-break: break-all;
+  }
+  figcaption { font-size: .9rem; color: var(--color-muted); margin-top: .5rem; font-style: italic; text-align: center; }
+
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .95rem; }
+  th, td { border: 1px solid var(--color-border); padding: .55rem .7rem; text-align: left; vertical-align: top; }
+  th { background: var(--color-surface); color: var(--color-primary-dark); font-weight: 600; }
+  tbody tr:nth-child(even) td { background: #fafafc; }
+
+  details.tshoot {
+    background: var(--color-surface); border: 1px solid var(--color-border);
+    border-radius: var(--radius); padding: .15rem 1rem; margin: .6rem 0;
+  }
+  details.tshoot summary {
+    cursor: pointer; padding: .7rem 0; font-weight: 600;
+    color: var(--color-primary-dark); list-style: none;
+  }
+  details.tshoot summary::-webkit-details-marker { display: none; }
+  details.tshoot summary::before {
+    content: "+"; display: inline-block; width: 1.3rem;
+    color: var(--color-primary); font-weight: 700;
+  }
+  details.tshoot[open] summary::before { content: "−"; }
+  details.tshoot[open] { background: #fff; }
+
+  footer {
+    border-top: 1px solid var(--color-border); padding: 1.5rem 2rem;
+    font-size: .85rem; color: var(--color-muted); background: var(--color-surface);
+  }
+  footer p { margin: .25rem 0; }
+  footer a { color: var(--color-primary); }
+
+  .no-results {
+    background: var(--color-warning-bg); border: 1px solid var(--color-warning-border);
+    padding: 1rem; border-radius: var(--radius); margin: 1rem 0; display: none;
+  }
+  .no-results.visible { display: block; }
+
+  @media (max-width: 860px) {
+    .layout { grid-template-columns: 1fr; }
+    .sidebar {
+      position: static; max-height: none;
+      border-right: none; border-bottom: 1px solid var(--color-border);
+      display: none;
+    }
+    .sidebar.open { display: block; }
+    .menu-toggle { display: inline-block; }
+    main { padding: 1.25rem 1rem 3rem; }
+    .topbar h1 { font-size: 1rem; }
+    .topbar .subtitle { display: none; }
+  }
+
+  @media print {
+    .topbar, .sidebar, .menu-toggle, .search-wrap,
+    .hero .hero-actions, .no-results { display: none !important; }
+    .layout { grid-template-columns: 1fr; }
+    body { font-size: 11pt; color: #000; }
+    main { padding: 0; max-width: 100%; }
+    main > section { max-width: 100%; page-break-inside: avoid; }
+    h2.section-title {
+      page-break-before: always; border-bottom: 1px solid #000; color: #000;
+    }
+    h2.section-title:first-of-type { page-break-before: auto; }
+    h3, h4 { color: #000; page-break-after: avoid; }
+    a { color: #000; text-decoration: underline; }
+    a[href^="http"]::after { content: " (" attr(href) ")"; font-size: .85em; }
+    figure { page-break-inside: avoid; background: #fff; border: 1px solid #888; }
+    .hero { background: #f0f0f0 !important; color: #000 !important; border: 1px solid #888; }
+    .hero h2 { color: #000; }
+    .callout { background: #f7f7f7 !important; border-left: 3px solid #555 !important; }
+    details.tshoot { background: #fff; border: 1px solid #888; }
+    details.tshoot[open] summary,
+    details.tshoot summary { padding: .4rem 0; }
+    details.tshoot > *:not(summary) { display: block !important; }
+    .task-card { border: 1px solid #888; background: #fff; page-break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<a href="#main" class="skip-link">Skip to content</a>
+
+<header class="topbar" role="banner">
+  <button class="menu-toggle" id="menuToggle" aria-label="Show menu" aria-expanded="false">☰ Menu</button>
+  <h1>Teacher Guide · Kolibri</h1>
+  <span class="subtitle">Practical classroom manual</span>
+  <div class="search-wrap" role="search">
+    <input type="search" id="searchInput" placeholder="Search… (e.g. class, password, lesson)"
+           aria-label="Search the guide" autocomplete="off">
+    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+         aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+  </div>
+  <a href="kolibri-es.html" class="lang-link" lang="es">Español</a>
+</header>
+
+<div class="layout">
+  <aside class="sidebar" id="sidebar" role="navigation" aria-label="Table of contents">
+    <h2>Start here</h2>
+    <ul>
+      <li><a href="#home">Home</a></li>
+      <li><a href="#common-tasks">Most common tasks</a></li>
+      <li><a href="#what-is-kolibri">What is Kolibri?</a></li>
+      <li><a href="#signing-in">How to sign in</a></li>
+    </ul>
+
+    <h2>Accounts &amp; classes</h2>
+    <ul>
+      <li><a href="#roles">User roles</a></li>
+      <li><a href="#create-students">Create student accounts</a></li>
+      <li><a href="#create-teachers">Create teacher accounts</a></li>
+      <li><a href="#create-class">Create a class</a></li>
+      <li><a href="#enroll-students">Enroll students in a class</a></li>
+      <li><a href="#groups">Create groups inside a class</a></li>
+    </ul>
+
+    <h2>Day-to-day teaching</h2>
+    <ul>
+      <li><a href="#lessons">Assign lessons</a></li>
+      <li><a href="#quizzes">Create quizzes</a></li>
+      <li><a href="#progress">Check progress</a></li>
+      <li><a href="#content">Help students find content</a></li>
+    </ul>
+
+    <h2>Reference</h2>
+    <ul>
+      <li><a href="#checklist">First-day checklist</a></li>
+      <li><a href="#troubleshooting">Troubleshooting</a></li>
+      <li><a href="#quick-reference">Quick reference</a></li>
+      <li><a href="#glossary">Short glossary</a></li>
+    </ul>
+  </aside>
+
+  <main id="main" tabindex="-1">
+
+    <div class="no-results" id="noResults" role="status" aria-live="polite">
+      No matches. Try a different keyword or
+      <a href="#" id="clearSearch">clear the search</a>.
+    </div>
+
+    <!-- HOME -->
+    <section id="home" data-keywords="home welcome landing intro">
+      <div class="hero">
+        <h2>Welcome to Kolibri</h2>
+        <p>This guide walks you through everyday use of Kolibri with your students.</p>
+        <p>It works fully offline — everything runs from the school's computer.</p>
+        <div class="hero-actions">
+          <a class="btn" href="#common-tasks">Start with the common tasks</a>
+          <a class="btn btn-secondary" href="#signing-in">How do I sign in?</a>
+        </div>
+      </div>
+
+      <p>This guide is written for teachers who may be using Kolibri for the first time.
+        Each section covers one classroom job, with numbered steps.
+        Read it in order or jump straight to the section you need using the sidebar
+        on the left or the search bar at the top.</p>
+
+      <div class="callout tip">
+        <span class="label">Tip</span>
+        <p>If you are short on time, start with the
+          <a href="#checklist">First-day checklist</a> and the
+          <a href="#common-tasks">Most common tasks</a> section. That covers most of
+          what you'll need in your first week.</p>
+      </div>
+    </section>
+
+    <!-- COMMON TASKS -->
+    <section id="common-tasks" data-keywords="common tasks shortcuts main actions">
+      <h2 class="section-title">Most common tasks</h2>
+      <p>Tap or click a card to jump to the step-by-step instructions.</p>
+      <div class="tasks-grid">
+        <a class="task-card" href="#signing-in">
+          <span class="num">1</span><strong>Sign in</strong>
+          <span>Log in to Kolibri with your account.</span>
+        </a>
+        <a class="task-card" href="#create-students">
+          <span class="num">2</span><strong>Create students</strong>
+          <span>Register the children who will use Kolibri.</span>
+        </a>
+        <a class="task-card" href="#create-class">
+          <span class="num">3</span><strong>Create a class</strong>
+          <span>Organize your students into a class.</span>
+        </a>
+        <a class="task-card" href="#enroll-students">
+          <span class="num">4</span><strong>Enroll students</strong>
+          <span>Add students to the class.</span>
+        </a>
+        <a class="task-card" href="#lessons">
+          <span class="num">5</span><strong>Assign a lesson</strong>
+          <span>Pick materials and deliver them to the class.</span>
+        </a>
+        <a class="task-card" href="#progress">
+          <span class="num">6</span><strong>Check progress</strong>
+          <span>See who is moving forward and who needs help.</span>
+        </a>
+      </div>
+    </section>
+
+    <!-- WHAT IS KOLIBRI -->
+    <section id="what-is-kolibri" data-keywords="what is kolibri overview platform offline learning">
+      <h2 class="section-title">What is Kolibri?</h2>
+      <p><strong>Kolibri</strong> is a learning platform that works <strong>without an internet
+        connection</strong>. Students can watch videos, read documents, do exercises and take
+        quizzes on the school's computers, even when there is no signal.</p>
+
+      <p>As a teacher — called a <strong>coach</strong> inside Kolibri — you can:</p>
+      <ul>
+        <li>Create classes and organize your students.</li>
+        <li>Assign lessons with a chosen selection of materials (videos, readings, exercises).</li>
+        <li>Prepare quizzes to evaluate what they have learned.</li>
+        <li>Review each student's progress from the coach dashboard.</li>
+      </ul>
+
+      <div class="callout note">
+        <span class="label">Note</span>
+        <p>This guide uses <strong>teacher</strong> and <strong>coach</strong> interchangeably.
+          On screen, Kolibri may say <em>Coach</em> (English) or <em>Tutor</em> (Spanish),
+          depending on the language of the device.</p>
+      </div>
+
+      <p>Kolibri is already installed and configured on the school's computers.
+        You do <strong>not</strong> need to install anything or change technical settings.
+        Your job is to teach; this guide helps with the day-to-day.</p>
+    </section>
+
+    <!-- SIGNING IN -->
+    <section id="signing-in" data-keywords="sign in login enter password username log in access">
+      <h2 class="section-title">How to sign in</h2>
+      <p>To use the coach features (create classes, assign lessons, check progress), you must sign in
+        with your teacher account.</p>
+
+      <h3>Step by step</h3>
+      <ol class="steps">
+        <li>Open the browser (Chrome, Firefox, or the browser installed on the computer).</li>
+        <li>If the Kolibri screen is already open, find the <strong>SIGN IN</strong> button.
+          If not, ask the school's lead for the Kolibri address
+          (usually something like <code>http://192.168.x.x:8080</code>).</li>
+        <li>If the computer belongs to more than one <em>facility</em>, choose the facility
+          your account belongs to first.</li>
+        <li>Type your <strong>username</strong> and, if asked, your <strong>password</strong>.</li>
+        <li>Click <strong>SIGN IN</strong>.</li>
+      </ol>
+
+      <figure>
+        <img src="images/create-account.png" alt="Kolibri sign-in / account-creation screen with username, password, and facility fields."
+             onerror="this.outerHTML='&lt;div class=&quot;img-placeholder&quot;&gt;[ Sign-in / create-account screen — images/create-account.png ]&lt;/div&gt;'">
+        <figcaption>Sign-in and account-creation screen. The exact look may vary by Kolibri version.</figcaption>
+      </figure>
+
+      <div class="callout warning">
+        <span class="label">Forgot your password?</span>
+        <p>Ask your facility admin (the person in charge of Kolibri at your school) to reset it.
+          See <a href="#troubleshooting">Troubleshooting</a> below.</p>
+      </div>
+
+      <h3>Sign out when you're done</h3>
+      <p>At the end of class, sign out so students don't end up using your teacher account:</p>
+      <ol class="steps">
+        <li>Click the menu icon at the top (three lines <strong>☰</strong> or your name initial).</li>
+        <li>Choose <strong>Sign out</strong>.</li>
+      </ol>
+    </section>
+
+    <!-- ROLES -->
+    <section id="roles" data-keywords="roles accounts user types learner coach admin super">
+      <h2 class="section-title">Account types (roles)</h2>
+      <p>Kolibri has four kinds of accounts. As a teacher, you'll usually work with the first two.</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Role</th>
+              <th>What they can do</th>
+              <th>Used by teachers?</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Learner</strong></td>
+              <td>View materials, do exercises, complete quizzes.</td>
+              <td>Yes — this is the account every student will have.</td>
+            </tr>
+            <tr>
+              <td><strong>Coach (teacher)</strong></td>
+              <td>Everything a learner can, plus: create lessons, quizzes, groups, and check progress.</td>
+              <td>Yes — this is your own account.</td>
+            </tr>
+            <tr>
+              <td><strong>Facility admin</strong></td>
+              <td>Everything a coach can, plus: create and edit users and classes for the school.</td>
+              <td>Sometimes — only if you also run the school's user list.</td>
+            </tr>
+            <tr>
+              <td><strong>Super admin</strong></td>
+              <td>Changes device-level settings, imports channels, manages permissions.</td>
+              <td><strong>No.</strong> Reserved for the project's technical team.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout note">
+        <span class="label">Two kinds of coach</span>
+        <p>When you create a coach account, you must choose between:</p>
+        <ul>
+          <li><strong>Class coach:</strong> can only follow the classes assigned to them.
+            The most common choice for a classroom teacher.</li>
+          <li><strong>Facility coach:</strong> can follow every class in the school.
+            Useful for academic coordinators or principals.</li>
+        </ul>
+      </div>
+
+      <figure>
+        <img src="images/coach-type.png" alt="Coach-type selector: class coach versus facility coach."
+             onerror="this.outerHTML='&lt;div class=&quot;img-placeholder&quot;&gt;[ Coach-type selector — images/coach-type.png ]&lt;/div&gt;'">
+        <figcaption>When creating a coach account, choose between <em>class coach</em> and <em>facility coach</em>.</figcaption>
+      </figure>
+
+      <div class="callout warning">
+        <span class="label">Important for this deployment</span>
+        <p>In our deployment, teachers are <strong>not</strong> super admins.
+          If a screen asks you to change device settings, import channels, or edit permissions,
+          <strong>stop</strong> and notify the project's technical team.</p>
+      </div>
+    </section>
+
+    <!-- CREATE STUDENTS -->
+    <section id="create-students" data-keywords="create students learners new account register users">
+      <h2 class="section-title">Create student accounts</h2>
+      <p>Each student needs their own account so Kolibri can track their progress.
+        To create students, you must sign in as <strong>facility admin</strong>.</p>
+
+      <div class="callout note">
+        <span class="label">What if I'm only a coach?</span>
+        <p>Coaches don't create users. If your account is coach-only, ask the facility admin
+          to create your students' accounts.</p>
+      </div>
+
+      <h3>Step by step</h3>
+      <ol class="steps">
+        <li>Sign in and open the <strong>Facility</strong> menu in the sidebar.</li>
+        <li>Open the <strong>Users</strong> tab.</li>
+        <li>Click <strong>NEW USER</strong>.</li>
+        <li>Fill in:
+          <ul>
+            <li><strong>Full name</strong> of the student.</li>
+            <li><strong>Username</strong> (short, no spaces, easy to remember).</li>
+            <li><strong>Password</strong> (may be optional, depending on facility settings).</li>
+          </ul>
+        </li>
+        <li>For <strong>User type</strong>, choose <strong>Learner</strong>.</li>
+        <li>Demographic data (birth year, gender) is optional.</li>
+        <li>Click <strong>SAVE</strong>.</li>
+      </ol>
+
+      <figure>
+        <img src="images/manage-users.png" alt="Kolibri user-management screen with the user list and the new-user button."
+             onerror="this.outerHTML='&lt;div class=&quot;img-placeholder&quot;&gt;[ Users management — images/manage-users.png ]&lt;/div&gt;'">
+        <figcaption>The <em>Users</em> tab inside <em>Facility</em>. Accounts are created, edited, and deleted here.</figcaption>
+      </figure>
+
+      <div class="callout tip">
+        <span class="label">Classroom tip</span>
+        <p>Use consistent, easy usernames for kids — for example <code>maria.lopez</code>
+          or <code>maria6a</code>. Keep usernames and passwords in a safe notebook until
+          your students have them memorized.</p>
+      </div>
+
+      <h3>Reset a student's password</h3>
+      <ol class="steps">
+        <li>Go to <strong>Facility &rarr; Users</strong>.</li>
+        <li>Next to the student's name, click <strong>OPTIONS</strong> and choose <strong>Reset password</strong>.</li>
+        <li>Type the new password twice and click <strong>SAVE</strong>.</li>
+      </ol>
+    </section>
+
+    <!-- CREATE TEACHERS -->
+    <section id="create-teachers" data-keywords="create teachers coaches account">
+      <h2 class="section-title">Create teacher / coach accounts</h2>
+      <p>The procedure is very similar to creating students, but you pick the
+        <strong>Coach</strong> role.</p>
+
+      <ol class="steps">
+        <li>Sign in as facility admin.</li>
+        <li>Go to <strong>Facility &rarr; Users</strong> and click <strong>NEW USER</strong>.</li>
+        <li>Fill in full name, username, and password.</li>
+        <li>For <strong>User type</strong> pick <strong>Coach</strong>.</li>
+        <li>An extra selector appears. For a classroom teacher, choose
+          <strong>Class coach</strong>. For a school-wide coordinator, choose
+          <strong>Facility coach</strong>.</li>
+        <li>Click <strong>SAVE</strong>.</li>
+      </ol>
+
+      <div class="callout tip">
+        <span class="label">Best practice</span>
+        <p>Create teachers <em>before</em> students. That way, when you create classes,
+          you can assign the right coach from the start.</p>
+      </div>
+    </section>
+
+    <!-- CREATE CLASS -->
+    <section id="create-class" data-keywords="create class classroom grade section classes new">
+      <h2 class="section-title">Create a class</h2>
+      <p><strong>Classes</strong> group together the students who receive the same lessons and
+        quizzes. They can match a grade, a section, or a project.</p>
+
+      <div class="callout note">
+        <span class="label">Who can create classes?</span>
+        <p>Only the facility admin. If you are coach-only, ask the admin to create the class
+          and assign you as the coach.</p>
+      </div>
+
+      <h3>Step by step</h3>
+      <ol class="steps">
+        <li>Go to <strong>Facility &rarr; Classes</strong>.</li>
+        <li>Click <strong>NEW CLASS</strong>.</li>
+        <li>Type a class name. Suggestions:
+          <ul>
+            <li><code>3rd grade — Math</code></li>
+            <li><code>Grade 6</code></li>
+            <li><code>Reading — afternoon shift</code></li>
+          </ul>
+        </li>
+        <li>Click <strong>SAVE</strong>.</li>
+      </ol>
+
+      <p>The class shows up in the facility's class list. It still has no students or coach yet —
+        those are added in the next steps.</p>
+    </section>
+
+    <!-- ENROLL STUDENTS -->
+    <section id="enroll-students" data-keywords="enroll students class add learners students roster">
+      <h2 class="section-title">Enroll students in a class</h2>
+      <p>Once the class exists, you must enroll students so they receive the lessons.</p>
+
+      <ol class="steps">
+        <li>Go to <strong>Facility &rarr; Classes</strong>.</li>
+        <li>Click the class name to open it.</li>
+        <li>Click <strong>ENROLL LEARNERS</strong>.</li>
+        <li>The list shows facility students who are <em>not yet</em> in this class. Use the search
+          field if the list is long.</li>
+        <li>Check the box next to each student you want to add.</li>
+        <li>Click <strong>CONFIRM</strong>.</li>
+      </ol>
+
+      <h3>Assign a coach to the class</h3>
+      <ol class="steps">
+        <li>On the same class page, find the <strong>Coaches</strong> section.</li>
+        <li>Click <strong>ASSIGN COACHES</strong>.</li>
+        <li>Check the teacher in charge and click <strong>CONFIRM</strong>.</li>
+      </ol>
+
+      <div class="callout tip">
+        <span class="label">Tip</span>
+        <p>A student can belong to more than one class (for example, their regular class plus an extra
+          reading group). Just enroll them in each class separately.</p>
+      </div>
+    </section>
+
+    <!-- GROUPS -->
+    <section id="groups" data-keywords="groups class subgroup level differentiation customize">
+      <h2 class="section-title">Create groups inside a class</h2>
+      <p><strong>Groups</strong> let you split a class into smaller subgroups — for example, by
+        reading level, project, or interest. You can then assign different materials to each
+        group without having to split children into separate classes.</p>
+
+      <figure>
+        <img src="images/groups-home.png" alt="Groups tab in the coach dashboard, showing groups within a class."
+             onerror="this.outerHTML='&lt;div class=&quot;img-placeholder&quot;&gt;[ Groups tab — images/groups-home.png ]&lt;/div&gt;'">
+        <figcaption>The <em>Groups</em> tab in the coach dashboard. Each group shows how many students it has.</figcaption>
+      </figure>
+
+      <h3>Create a group</h3>
+      <ol class="steps">
+        <li>Sign in as coach and open the <strong>Coach</strong> dashboard.</li>
+        <li>Pick your class and go to the <strong>Groups</strong> tab.</li>
+        <li>Click <strong>NEW GROUP</strong>.</li>
+        <li>Type a name — for example, <code>Beginner reading</code>,
+          <code>Advanced reading</code>, <code>Plants project</code>.</li>
+        <li>Click <strong>SAVE</strong>.</li>
+      </ol>
+
+      <h3>Add students to a group</h3>
+      <ol class="steps">
+        <li>From the <strong>Groups</strong> tab, click the group's name.</li>
+        <li>Click <strong>ENROLL LEARNERS</strong>.</li>
+        <li>Check the students you want to add to the group.</li>
+        <li>Click <strong>CONFIRM</strong>.</li>
+      </ol>
+
+      <figure>
+        <img src="images/learner-groups.png" alt="Screen for enrolling students in a group, with a checkbox per student."
+             onerror="this.outerHTML='&lt;div class=&quot;img-placeholder&quot;&gt;[ Enrolling students in a group — images/learner-groups.png ]&lt;/div&gt;'">
+        <figcaption>Enrolling students in a group. Only students from this class appear.</figcaption>
+      </figure>
+
+      <div class="callout tip">
+        <span class="label">Example</span>
+        <p>If part of your 4th grade reads fluently and others are still learning, create
+          two groups: <em>Beginner reading</em> and <em>Advanced reading</em>.
+          When you assign a lesson, pick the relevant group instead of the whole class.</p>
+      </div>
+    </section>
+
+    <!-- LESSONS -->
+    <section id="lessons" data-keywords="lesson lessons assign resources materials videos readings homework">
+      <h2 class="section-title">Assign lessons</h2>
+      <p>A <strong>lesson</strong> is a bundle of materials (videos, documents, exercises) that you
+        prepare and deliver to your students for a specific stretch of time.</p>
+
+      <figure>
+        <img src="images/lessons-home.png" alt="Lessons tab in the coach dashboard with the list of lessons for the class."
+             onerror="this.outerHTML='&lt;div class=&quot;img-placeholder&quot;&gt;[ Lessons tab — images/lessons-home.png ]&lt;/div&gt;'">
+        <figcaption>The <em>Lessons</em> tab. Each row shows the size, recipients, and progress of the lesson.</figcaption>
+      </figure>
+
+      <h3>Create a new lesson</h3>
+      <ol class="steps">
+        <li>Sign in as coach and open the <strong>Coach</strong> dashboard.</li>
+        <li>Pick your class and go to the <strong>Lessons</strong> tab.</li>
+        <li>Click <strong>NEW LESSON</strong>.</li>
+        <li>Fill in:
+          <ul>
+            <li><strong>Title</strong> — for example, <em>Equivalent fractions</em>.</li>
+            <li><strong>Description</strong> (optional).</li>
+            <li><strong>Recipients</strong> — the whole class, a group, or individual students.</li>
+          </ul>
+        </li>
+        <li>Click <strong>SAVE CHANGES</strong>. The lesson exists but has no resources yet.</li>
+      </ol>
+
+      <h3>Add materials to the lesson</h3>
+      <ol class="steps">
+        <li>Inside the lesson, click <strong>MANAGE RESOURCES</strong>.</li>
+        <li>Pick a channel (the source of materials — for example, <em>Khan Academy</em>).</li>
+        <li>Browse the folders until you find the resource you want.</li>
+        <li>Use the <strong>Search</strong> if you know the topic or title.</li>
+        <li>Check the box of a resource to add it. A confirmation appears at the bottom.</li>
+        <li>When done, click <strong>SAVE &amp; FINISH</strong>.</li>
+      </ol>
+
+      <figure>
+        <img src="images/lesson-visible.png" alt="Lesson detail view with the visible-to-learners switch turned on."
+             onerror="this.outerHTML='&lt;div class=&quot;img-placeholder&quot;&gt;[ Lesson visible — images/lesson-visible.png ]&lt;/div&gt;'">
+        <figcaption>A new lesson is hidden by default. Turn on the <em>Visible to learners</em> switch when it's ready.</figcaption>
+      </figure>
+
+      <h3>Make the lesson visible</h3>
+      <p>A new lesson is hidden from students until you make it visible:</p>
+      <ol class="steps">
+        <li>In the lesson summary, find the <strong>Visible to learners</strong> switch.</li>
+        <li>Turn it on so students can see and work on the lesson.</li>
+        <li>When the work period ends, turn it off to hide the lesson again.</li>
+      </ol>
+
+      <div class="callout tip">
+        <span class="label">Tip</span>
+        <p>If two classes work on the same topic, you don't have to build the lesson twice.
+          From the options menu (three dots), pick <strong>Copy lesson</strong> and choose
+          another class or group.</p>
+      </div>
+    </section>
+
+    <!-- QUIZZES -->
+    <section id="quizzes" data-keywords="quiz quizzes exam test evaluation assessment questions">
+      <h2 class="section-title">Create quizzes</h2>
+      <p>A <strong>quiz</strong> is an evaluation made of questions drawn from the channels' exercises.
+        It measures what your students have actually learned.</p>
+
+      <figure>
+        <img src="images/quizzes-home.png" alt="Quizzes tab in the coach dashboard, with quiz list and average score."
+             onerror="this.outerHTML='&lt;div class=&quot;img-placeholder&quot;&gt;[ Quizzes tab — images/quizzes-home.png ]&lt;/div&gt;'">
+        <figcaption>The <em>Quizzes</em> tab — shows average score, recipients, and status.</figcaption>
+      </figure>
+
+      <h3>Step by step</h3>
+      <ol class="steps">
+        <li>Open the <strong>Coach</strong> dashboard, your class, and the <strong>Quizzes</strong> tab.</li>
+        <li>Click <strong>NEW QUIZ &rarr; Create new quiz</strong>.</li>
+        <li>Type a title — for example, <em>Fractions test — week 3</em>.</li>
+        <li>Choose when learners will see their score:
+          <ul>
+            <li><strong>After submitting:</strong> each learner sees their score as soon as they finish.</li>
+            <li><strong>After the coach ends the quiz:</strong> no one sees their score until you close the quiz.</li>
+          </ul>
+        </li>
+        <li>Pick recipients (whole class, a group, or individual learners).</li>
+        <li>Click <strong>+ ADD QUESTIONS</strong>.</li>
+        <li>Set how many questions the quiz should have (default is 10; more than 25 is not recommended).</li>
+        <li>Select the exercises Kolibri should draw questions from, then click
+          <strong>ADD (N) QUESTIONS</strong>.</li>
+        <li>When you're ready, click <strong>SAVE &amp; CLOSE</strong>.</li>
+        <li>For students to start, click <strong>START QUIZ</strong>.</li>
+      </ol>
+
+      <div class="callout warning">
+        <span class="label">Important</span>
+        <p>You can change questions <strong>only before</strong> you start the quiz. Once started,
+          you can still change the title, recipients, and section order — but
+          <strong>not the questions</strong>.</p>
+      </div>
+
+      <h3>End the quiz</h3>
+      <p>When time is up or everyone has answered, open the quiz and click
+        <strong>END QUIZ</strong>. After this, scores are final.</p>
+    </section>
+
+    <!-- PROGRESS -->
+    <section id="progress" data-keywords="progress reports results completion advance">
+      <h2 class="section-title">Check student progress</h2>
+      <p>The coach dashboard shows at any moment how your students are doing with the lessons
+        and quizzes you've assigned.</p>
+
+      <figure>
+        <img src="images/coach-home.png" alt="Coach dashboard showing the list of classes assigned."
+             onerror="this.outerHTML='&lt;div class=&quot;img-placeholder&quot;&gt;[ Coach dashboard — images/coach-home.png ]&lt;/div&gt;'">
+        <figcaption>The coach dashboard. Pick a class to access tracking features.</figcaption>
+      </figure>
+
+      <h3>Overview (Class Home)</h3>
+      <p>When you open a class, the <strong>Class Home</strong> tab shows three blocks:</p>
+      <ul>
+        <li><strong>Quizzes:</strong> how many students have started and completed each one.</li>
+        <li><strong>Lessons:</strong> how many students are progressing, finished, or needing help.</li>
+        <li><strong>Class activity:</strong> recent notifications (e.g.,
+          "Maria and 3 others started lesson X").</li>
+      </ul>
+
+      <h3>See progress per student</h3>
+      <ol class="steps">
+        <li>Go to the <strong>Learners</strong> tab in the coach dashboard.</li>
+        <li>You'll see a table per student with completed exercises, scores, and last activity.</li>
+        <li>Click a student's name to see the detail: every lesson and quiz assigned to them
+          and how they are doing.</li>
+      </ol>
+
+      <figure>
+        <img src="images/learners-home.png" alt="Learners tab with a summary of progress per student."
+             onerror="this.outerHTML='&lt;div class=&quot;img-placeholder&quot;&gt;[ Per-student summary — images/learners-home.png ]&lt;/div&gt;'">
+        <figcaption>The <em>Learners</em> tab: per-student progress summary.</figcaption>
+      </figure>
+
+      <h3>Spot who needs help</h3>
+      <p>Kolibri flags students who answer many questions incorrectly as
+        <strong>“needs help”</strong>. In the <strong>Quizzes</strong> tab, opening a quiz
+        reveals a <strong>Difficult questions</strong> sub-tab that lists the questions students
+        got wrong most often. Use that list to revisit the trickiest concepts in class.</p>
+
+      <h3>Print or export a report</h3>
+      <p>In report views you'll see two small buttons:</p>
+      <ul>
+        <li><strong>Printer</strong> button: print or save the report as PDF.</li>
+        <li><strong>Download</strong> button: export as CSV (opens in Excel or any spreadsheet).</li>
+      </ul>
+    </section>
+
+    <!-- CONTENT -->
+    <section id="content" data-keywords="content library channels videos readings find search browse">
+      <h2 class="section-title">Help students find content</h2>
+      <p>Students reach materials from two places:</p>
+      <ul>
+        <li><strong>Classes:</strong> here they find the lessons and quizzes you assigned.</li>
+        <li><strong>Library:</strong> here they can freely explore all available channels.</li>
+      </ul>
+
+      <h3>Show them how to open a lesson</h3>
+      <ol class="steps">
+        <li>The student signs in with their username and password.</li>
+        <li>On the home screen they'll see their class. They click its name.</li>
+        <li>They see the list of <strong>Lessons</strong> and <strong>Quizzes</strong> you assigned.</li>
+        <li>They tap or click a lesson to start with the first resource.</li>
+      </ol>
+
+      <h3>Browse the library</h3>
+      <ol class="steps">
+        <li>From the side menu, the student opens <strong>Library</strong>.</li>
+        <li>They pick a channel (for example, <em>Primary math</em>) and browse the folders.</li>
+        <li>To search by topic, they type a word in the <strong>Keyword</strong> field
+          and press Enter.</li>
+        <li>They can filter results by activity type (video, reading, exercise),
+          language, or level.</li>
+      </ol>
+
+      <h3>Activity types</h3>
+      <ul>
+        <li><strong>Watch:</strong> videos.</li>
+        <li><strong>Listen:</strong> audio.</li>
+        <li><strong>Practice:</strong> exercises with correct answers.</li>
+        <li><strong>Read:</strong> PDF or ebook documents.</li>
+        <li><strong>Explore:</strong> interactive apps.</li>
+      </ul>
+
+      <div class="callout tip">
+        <span class="label">Tip</span>
+        <p>Remind students that exercises require <strong>5 correct answers in a row</strong>
+          to count as complete. If they miss one, the streak resets.</p>
+      </div>
+    </section>
+
+    <!-- CHECKLIST -->
+    <section id="checklist" data-keywords="checklist first day setup ready start">
+      <h2 class="section-title">First-day checklist</h2>
+      <p>Run through these before your first class with Kolibri:</p>
+
+      <h3>Before class</h3>
+      <ol class="steps">
+        <li>Confirm with the facility admin that your coach account is already created.</li>
+        <li>Make sure your class is created and you appear as its coach.</li>
+        <li>Make sure all your students are created and enrolled in the class.</li>
+        <li>Try signing in on a classroom computer before the kids arrive.</li>
+        <li>Prepare at least <strong>one lesson</strong> with two or three simple resources and
+          turn its visibility on.</li>
+      </ol>
+
+      <h3>First class with students</h3>
+      <ol class="steps">
+        <li>Hand out (or write on the board) the usernames and passwords.</li>
+        <li>Show them how to sign in, step by step.</li>
+        <li>Show them how to enter their class and open a lesson.</li>
+        <li>Explain the basic icons: in progress, completed, bookmark.</li>
+        <li>Remind students to sign out when they finish.</li>
+        <li>After class, open the coach dashboard to see who progressed and who needs help.</li>
+      </ol>
+    </section>
+
+    <!-- TROUBLESHOOTING -->
+    <section id="troubleshooting" data-keywords="problems errors failures not working password sign in help fix">
+      <h2 class="section-title">Troubleshooting</h2>
+      <p>Tap or click each problem to see the fix.</p>
+
+      <details class="tshoot">
+        <summary>A student can't sign in</summary>
+        <ol>
+          <li>Check that the student is typing the <strong>username</strong> exactly right
+            (no extra capitals, no spaces).</li>
+          <li>If they've forgotten the password, ask the facility admin to reset it
+            (Facility &rarr; Users &rarr; Options &rarr; Reset password).</li>
+          <li>Confirm the student is selecting the correct <strong>facility</strong>
+            (when more than one is available).</li>
+          <li>If it still fails, set a simple new password, let them in, then have them change it.</li>
+        </ol>
+      </details>
+
+      <details class="tshoot">
+        <summary>A student doesn't appear in my class</summary>
+        <ol>
+          <li>Sign in as facility admin (or ask the admin to help).</li>
+          <li>Go to <strong>Facility &rarr; Classes</strong> and open the class.</li>
+          <li>Click <strong>ENROLL LEARNERS</strong> and check whether the student is in the list
+            to enroll. If yes, tick the box and confirm.</li>
+          <li>If they don't appear, go to <strong>Facility &rarr; Users</strong> and verify the
+            account exists in this facility and is of type <em>Learner</em>.</li>
+          <li>If the student belongs to a different facility, they won't show up here.
+            Contact the technical team.</li>
+        </ol>
+      </details>
+
+      <details class="tshoot">
+        <summary>I can't assign lessons or quizzes</summary>
+        <ol>
+          <li>Make sure you're signed in with your <strong>coach</strong> account, not a learner one.</li>
+          <li>If you only see the <em>Learn</em> tab and not <em>Coach</em>, your account is probably
+            set as learner. Ask the admin to change the user type to <em>Coach</em>.</li>
+          <li>If your account is a <em>Class coach</em>, you'll only see classes assigned to you.
+            Ask to be assigned to the relevant class.</li>
+        </ol>
+      </details>
+
+      <details class="tshoot">
+        <summary>Content for a subject is missing</summary>
+        <ol>
+          <li>Make sure you're browsing <strong>Library</strong>, not just your class.</li>
+          <li>Use the search field with topic keywords (e.g., <em>fractions</em>).</li>
+          <li>Try filtering by <em>language</em>.</li>
+          <li>If you confirm the channel you need is not installed, contact the project's
+            technical team. Content is managed from the school's server and isn't something
+            a teacher needs to install.</li>
+        </ol>
+      </details>
+
+      <details class="tshoot">
+        <summary>The page doesn't load or stays blank</summary>
+        <ol>
+          <li>Check the Kolibri address is correct (e.g.
+            <code>http://192.168.x.x:8080</code>).</li>
+          <li>Refresh with <kbd>F5</kbd> or the browser's reload button.</li>
+          <li>Close and reopen the browser.</li>
+          <li>If the problem happens on every computer, the Kolibri server may be down.
+            Contact the technical team.</li>
+          <li>If only one computer is affected, try restarting that computer.</li>
+        </ol>
+      </details>
+
+      <details class="tshoot">
+        <summary>I'm not sure which account type to use</summary>
+        <ul>
+          <li><strong>Children in your class:</strong> <em>Learner</em>.</li>
+          <li><strong>Classroom teachers:</strong> <em>Class coach</em>.</li>
+          <li><strong>Academic coordinators or principals</strong> who need to see every class:
+            <em>Facility coach</em>.</li>
+          <li><strong>Person in charge of managing users and classes for the school:</strong>
+            <em>Facility admin</em>.</li>
+          <li><strong>Technical staff who maintain the server:</strong> <em>Super admin</em>.
+            Teachers <strong>should not</strong> have this role.</li>
+        </ul>
+      </details>
+
+      <details class="tshoot">
+        <summary>A student finished the lesson but progress doesn't show</summary>
+        <ol>
+          <li>Ask the student to close and reopen the lesson. There can be a small delay while
+            Kolibri saves data.</li>
+          <li>Refresh your own coach dashboard.</li>
+          <li>If students use devices that sync to a central server, it's normal for progress to
+            take a little time to appear. The <em>View learner devices</em> link on the class
+            page shows when devices last synced.</li>
+        </ol>
+      </details>
+    </section>
+
+    <!-- QUICK REFERENCE -->
+    <section id="quick-reference" data-keywords="quick reference cheat sheet summary buttons actions">
+      <h2 class="section-title">Quick reference</h2>
+      <p>Summary of the most-used steps. You can print this section as a one-page handout.</p>
+
+      <h3>Sign in</h3>
+      <ol>
+        <li>Open Kolibri in the browser.</li>
+        <li>Pick the facility if asked.</li>
+        <li>Type username and password.</li>
+        <li>Click <strong>SIGN IN</strong>.</li>
+      </ol>
+
+      <h3>Create a student (admin)</h3>
+      <ol>
+        <li>Facility &rarr; Users &rarr; <strong>NEW USER</strong>.</li>
+        <li>Name, username, password.</li>
+        <li>Type: <em>Learner</em>. <strong>SAVE</strong>.</li>
+      </ol>
+
+      <h3>Create a class (admin)</h3>
+      <ol>
+        <li>Facility &rarr; Classes &rarr; <strong>NEW CLASS</strong>.</li>
+        <li>Class name. <strong>SAVE</strong>.</li>
+      </ol>
+
+      <h3>Enroll students into a class</h3>
+      <ol>
+        <li>Open the class.</li>
+        <li>Click <strong>ENROLL LEARNERS</strong>.</li>
+        <li>Tick the students. <strong>CONFIRM</strong>.</li>
+      </ol>
+
+      <h3>Create a group (coach)</h3>
+      <ol>
+        <li>Coach &rarr; class &rarr; Groups &rarr; <strong>NEW GROUP</strong>.</li>
+        <li>Name. <strong>SAVE</strong>.</li>
+        <li>Open the group &rarr; <strong>ENROLL LEARNERS</strong>.</li>
+      </ol>
+
+      <h3>Assign a lesson</h3>
+      <ol>
+        <li>Coach &rarr; class &rarr; Lessons &rarr; <strong>NEW LESSON</strong>.</li>
+        <li>Title, description, recipients. <strong>SAVE CHANGES</strong>.</li>
+        <li><strong>MANAGE RESOURCES</strong> &rarr; choose materials &rarr; <strong>SAVE &amp; FINISH</strong>.</li>
+        <li>Turn on <em>Visible to learners</em>.</li>
+      </ol>
+
+      <h3>Create a quiz</h3>
+      <ol>
+        <li>Coach &rarr; class &rarr; Quizzes &rarr; <strong>NEW QUIZ</strong>.</li>
+        <li>Title, recipients, number of questions.</li>
+        <li>Select exercises &rarr; <strong>ADD QUESTIONS</strong> &rarr; <strong>SAVE &amp; CLOSE</strong>.</li>
+        <li><strong>START QUIZ</strong> to open it for students.</li>
+      </ol>
+
+      <h3>Check progress</h3>
+      <ol>
+        <li>Coach &rarr; class &rarr; Class Home (overview).</li>
+        <li><em>Learners</em> tab for per-student view.</li>
+        <li><em>Quizzes</em> tab &rarr; pick a quiz &rarr; <em>Difficult questions</em> to see common errors.</li>
+      </ol>
+    </section>
+
+    <!-- GLOSSARY -->
+    <section id="glossary" data-keywords="glossary terms definitions vocabulary words">
+      <h2 class="section-title">Short glossary</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Term</th><th>Meaning</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>Kolibri</strong></td><td>An offline learning platform that runs on the school's computer.</td></tr>
+            <tr><td><strong>Facility</strong></td><td>The organizational unit that groups users and classes (e.g., a school).</td></tr>
+            <tr><td><strong>Channel</strong></td><td>A collection of learning materials (e.g., Khan Academy videos).</td></tr>
+            <tr><td><strong>Resource</strong></td><td>A single material: a video, a reading, an exercise.</td></tr>
+            <tr><td><strong>Lesson</strong></td><td>A selection of resources a coach assigns to a class, group, or individual learners.</td></tr>
+            <tr><td><strong>Quiz</strong></td><td>An evaluation built from exercise questions. Previously called <em>Exam</em>.</td></tr>
+            <tr><td><strong>Coach</strong></td><td>The teacher role: can create lessons, quizzes, and groups, and see progress.</td></tr>
+            <tr><td><strong>Facility admin</strong></td><td>Manages users and classes inside the facility.</td></tr>
+            <tr><td><strong>Super admin</strong></td><td>Manages the server and channels. <strong>Not</strong> a teacher's role.</td></tr>
+            <tr><td><strong>Sync</strong></td><td>The process by which devices share progress with a central server.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<footer>
+  <p><strong>Teacher Guide · Kolibri</strong> — built for offline-first educational deployments.</p>
+  <p>Screenshots come from the official Kolibri documentation
+    (<a href="https://kolibri.readthedocs.io/en/latest/">kolibri.readthedocs.io</a>),
+    under <em>Creative Commons BY-SA</em>. Keep this attribution if you copy or redistribute the material.</p>
+  <p><em>Kolibri</em> and its logo are trademarks of Learning Equality. This guide is unofficial support material.</p>
+</footer>
+
+<script>
+(function () {
+  'use strict';
+
+  var menuBtn = document.getElementById('menuToggle');
+  var sidebar = document.getElementById('sidebar');
+  if (menuBtn && sidebar) {
+    menuBtn.addEventListener('click', function () {
+      var open = sidebar.classList.toggle('open');
+      menuBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+    sidebar.addEventListener('click', function (e) {
+      if (e.target.tagName === 'A' && window.innerWidth <= 860) {
+        sidebar.classList.remove('open');
+        menuBtn.setAttribute('aria-expanded', 'false');
+      }
+    });
+  }
+
+  var input = document.getElementById('searchInput');
+  var sections = document.querySelectorAll('main > section');
+  var noResults = document.getElementById('noResults');
+  var clearLink = document.getElementById('clearSearch');
+
+  function normalize(s) {
+    return (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  }
+
+  function applyFilter(q) {
+    q = normalize(q.trim());
+    var anyVisible = false;
+    sections.forEach(function (sec) {
+      if (sec.id === 'home' && !q) { sec.style.display = ''; anyVisible = true; return; }
+      if (!q) { sec.style.display = ''; anyVisible = true; return; }
+      var text = normalize(sec.textContent + ' ' + (sec.getAttribute('data-keywords') || ''));
+      if (text.indexOf(q) !== -1) { sec.style.display = ''; anyVisible = true; }
+      else { sec.style.display = 'none'; }
+    });
+    if (noResults) noResults.classList.toggle('visible', !anyVisible);
+  }
+
+  if (input) {
+    input.addEventListener('input', function () { applyFilter(input.value); });
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { input.value = ''; applyFilter(''); }
+    });
+  }
+  if (clearLink) {
+    clearLink.addEventListener('click', function (e) {
+      e.preventDefault();
+      if (input) { input.value = ''; input.focus(); }
+      applyFilter('');
+    });
+  }
+
+  var sideLinks = document.querySelectorAll('.sidebar a[href^="#"]');
+  var linkById = {};
+  sideLinks.forEach(function (a) {
+    var id = a.getAttribute('href').slice(1);
+    linkById[id] = a;
+  });
+  if ('IntersectionObserver' in window) {
+    var observer = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        var link = linkById[entry.target.id];
+        if (!link) return;
+        if (entry.isIntersecting) {
+          sideLinks.forEach(function (l) { l.classList.remove('active'); });
+          link.classList.add('active');
+        }
+      });
+    }, { rootMargin: '-30% 0px -55% 0px', threshold: 0 });
+    sections.forEach(function (sec) { observer.observe(sec); });
+  }
+})();
+</script>
+</body>
+</html>

@@ -16,7 +16,7 @@ COPY requirements.txt /app/requirements.txt
 RUN python -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.5.1+cpu \
     && python -m pip install --no-cache-dir -r /app/requirements.txt
 
-COPY app.py app_storage.py storage_migrations.py /app/
+COPY app.py app_storage.py app_routes.py app_payloads.py storage_migrations.py /app/
 
 # /app is read-only at runtime (read_only: true in docker-compose).
 # All runtime writes go to volume-mounted paths (/data, /state, /chroma_db, /chroma_db_es).

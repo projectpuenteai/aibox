@@ -1,0 +1,10 @@
+{"id": "en-001", "category": "factual", "query": "What is the capital of France?", "expected_topic": "Paris"}
+{"id": "en-002", "category": "factual", "query": "Who wrote the play Hamlet?", "expected_topic": "Shakespeare"}
+{"id": "en-003", "category": "factual", "query": "What is the largest planet in the solar system?", "expected_topic": "Jupiter"}
+{"id": "en-004", "category": "science", "query": "What is photosynthesis?", "expected_topic": "Photosynthesis"}
+{"id": "en-005", "category": "math", "query": "What is the Pythagorean theorem?", "expected_topic": "Pythagorean theorem"}
+{"id": "en-006", "category": "history", "query": "When did World War II end?", "expected_topic": "World War II"}
+{"id": "en-007", "category": "geography", "query": "What is the longest river in South America?", "expected_topic": "Amazon River"}
+{"id": "en-008", "category": "biology", "query": "What is DNA?", "expected_topic": "DNA"}
+{"id": "en-009", "category": "ambiguous", "query": "How does a transformer work?", "expected_topic": "Transformer"}
+{"id": "en-010", "category": "ood", "query": "What is my favorite color?", "expected_topic": null}

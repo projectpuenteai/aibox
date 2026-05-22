@@ -15,8 +15,7 @@ This repository intentionally does not store local model weights, Chroma databas
 - `tools/tests/`: comprehensive RAG test suite
 - `tools/llama-runtime/`: PowerShell preflight and startup scripts
 - `docs/operator-safe-commands.md`: safe, risky, and prohibited field commands
-- `docs/maintenance-workflow.md`: dependency update and vulnerability review process
-- `docs/legacy-root-stack-archive.md`: status of the archived legacy root stack
+- `docs/maintenance.md`: dependency updates, image policy, and PowerShell validation
 
 ## What Is Not In This Repo
 

@@ -12,10 +12,18 @@ Run inside the ai-control container after the stack is up:
   docker exec aibox-ai-control python /app/tools/tests/test_rag_pipeline_smoke_es.py
 """
 
-import json
 import sys
+from pathlib import Path
 
-from app_storage import StorageRuntime
+# Path shim so the test also runs from the host repo, not only inside the
+# container. tools/ai-control is added to sys.path so `import app_storage`
+# resolves. Note that models + index are still required on the host for this
+# to actually do useful work.
+_AI_CONTROL_DIR = Path(__file__).resolve().parents[1] / "ai-control"
+if _AI_CONTROL_DIR.exists() and str(_AI_CONTROL_DIR) not in sys.path:
+    sys.path.insert(0, str(_AI_CONTROL_DIR))
+
+from app_storage import StorageRuntime  # noqa: E402  (after path shim)
 
 
 QUERIES = [

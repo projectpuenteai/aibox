@@ -1,0 +1,10 @@
+{"id": "es-001", "category": "factual", "query": "¿Cuál es la capital de Francia?", "expected_topic": "París"}
+{"id": "es-002", "category": "factual", "query": "¿Quién escribió la obra Hamlet?", "expected_topic": "Shakespeare"}
+{"id": "es-003", "category": "factual", "query": "¿Cuál es el planeta más grande del sistema solar?", "expected_topic": "Júpiter"}
+{"id": "es-004", "category": "science", "query": "¿Qué es la fotosíntesis?", "expected_topic": "Fotosíntesis"}
+{"id": "es-005", "category": "math", "query": "¿Qué es el teorema de Pitágoras?", "expected_topic": "Teorema de Pitágoras"}
+{"id": "es-006", "category": "history", "query": "¿Cuándo terminó la Segunda Guerra Mundial?", "expected_topic": "Segunda Guerra Mundial"}
+{"id": "es-007", "category": "geography", "query": "¿Cuál es el río más largo de Sudamérica?", "expected_topic": "Río Amazonas"}
+{"id": "es-008", "category": "biology", "query": "¿Qué es el ADN?", "expected_topic": "ADN"}
+{"id": "es-009", "category": "ambiguous", "query": "¿Cómo funciona un transformador?", "expected_topic": "Transformador"}
+{"id": "es-010", "category": "ood", "query": "¿Cuál es mi color favorito?", "expected_topic": null}

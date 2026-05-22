@@ -16,36 +16,6 @@ $ErrorActionPreference = "Stop"
 $script:EnvDefaultsPath = Join-Path $PSScriptRoot '..\..\..\stack\.env.defaults'
 $script:EnvDefaults = if (Test-Path -LiteralPath $script:EnvDefaultsPath) { Get-DotEnvMap -Path $script:EnvDefaultsPath } else { @{} }
 
-function Get-DotEnvMap {
-  param([string]$Path)
-
-  $map = @{}
-  if (-not (Test-Path $Path)) {
-    return $map
-  }
-
-  foreach ($line in Get-Content $Path) {
-    $trimmed = $line.Trim()
-    if (-not $trimmed -or $trimmed.StartsWith("#")) {
-      continue
-    }
-
-    $idx = $trimmed.IndexOf("=")
-    if ($idx -lt 1) {
-      continue
-    }
-
-    $key = $trimmed.Substring(0, $idx).Trim()
-    $value = $trimmed.Substring($idx + 1).Trim()
-    if ($value.StartsWith('"') -and $value.EndsWith('"') -and $value.Length -ge 2) {
-      $value = $value.Substring(1, $value.Length - 2)
-    }
-    $map[$key] = $value
-  }
-
-  return $map
-}
-
 function Resolve-Setting {
   param(
     [string]$Name,

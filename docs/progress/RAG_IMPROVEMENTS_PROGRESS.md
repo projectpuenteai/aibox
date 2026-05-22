@@ -96,7 +96,7 @@
 - Add small boost in `_heuristic_rerank_score()` when chunk language matches query language
 
 ### Phase 3: Comprehensive Validation
-- Expand `test_rag_pipeline.py` with full graded test suite
+- Expand `tools/tests/test_rag_pipeline_smoke.py` and `tools/tests/test_rag_pipeline_smoke_es.py` with full graded test suite
 - End-to-end generation tests
 - Comparison matrix across all phases
 - Injection safety test

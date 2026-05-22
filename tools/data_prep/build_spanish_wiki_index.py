@@ -1,5 +1,19 @@
 """End-to-end Spanish Wikipedia subset builder for the local RAG stack.
 
+NOTE (2026-05-20): the LIVE Spanish index at backend-data/chroma_db_es/
+(rehydrated into the chroma_db_es_native named volume) uses the collection
+name `simplewiki_chunks` — the same name the ai-control runtime reads via
+CHROMA_COLLECTION_ES in stack/docker-compose.yaml. This script's
+COLLECTION_NAME_ES below is the historical name used during prototyping; if
+you re-run this end-to-end builder you must either:
+
+  (a) set COLLECTION_NAME_ES = "simplewiki_chunks" before running, OR
+  (b) update CHROMA_COLLECTION_ES in stack/docker-compose.yaml to match
+      whatever this script produces.
+
+Mismatching the two will surface as a `collection not found` error in
+ai-control logs and a permanently-503 /health endpoint.
+
 Runs four stages, each resumable:
   1. Build a title allowlist (vital articles + top pageviews).
   2. Download article plain text via the MediaWiki API.
@@ -10,7 +24,7 @@ Designed to run on any machine with Python + network. Output files:
   backend-data/allowlist_es.txt
   backend-data/pages_es.jsonl
   backend-data/chunks_es.jsonl
-  backend-data/chroma_db/  (collection: eswiki_chunks, separate from simplewiki_chunks)
+  backend-data/chroma_db/  (collection: see COLLECTION_NAME_ES below)
 
 Usage:
   python -m tools.data_prep.build_spanish_wiki_index
@@ -50,7 +64,7 @@ ALLOWLIST_FILE = BACKEND_DATA_DIR / "allowlist_es.txt"
 PAGES_FILE_ES = BACKEND_DATA_DIR / "pages_es.jsonl"
 CHUNKS_FILE_ES = BACKEND_DATA_DIR / "chunks_es.jsonl"
 DOWNLOAD_STATE = BACKEND_DATA_DIR / "pages_es.state.json"
-COLLECTION_NAME_ES = "eswiki_chunks"
+COLLECTION_NAME_ES = os.getenv("CHROMA_COLLECTION_ES", "eswiki_chunks")
 
 VITAL_ROOTS = [
     "Wikipedia:Artículos vitales/Nivel 3",

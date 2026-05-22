@@ -1,0 +1,52 @@
+<Window x:Class="AIBox.FirstRun.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="AIBox First Run"
+        Width="720" Height="520"
+        MinWidth="640" MinHeight="460"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="CanResize">
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,16">
+            <TextBlock x:Name="HeaderText"
+                       Text="AIBox First Run"
+                       FontSize="22"
+                       FontWeight="SemiBold"/>
+            <TextBlock x:Name="SubheaderText"
+                       Text="Preparing your offline Project Puente AI install."
+                       Foreground="{StaticResource MutedBrush}"
+                       Margin="0,4,0,0"/>
+        </StackPanel>
+
+        <ContentControl x:Name="PhaseHost" Grid.Row="1"/>
+
+        <Border Grid.Row="2"
+                Background="{StaticResource PanelBrush}"
+                CornerRadius="3"
+                Padding="10,6"
+                Margin="0,16,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="StatusText"
+                           Grid.Column="0"
+                           Text="Initializing..."
+                           VerticalAlignment="Center"
+                           Foreground="{StaticResource MutedBrush}"/>
+                <TextBlock x:Name="VersionText"
+                           Grid.Column="1"
+                           Text=""
+                           VerticalAlignment="Center"
+                           Foreground="{StaticResource MutedBrush}"/>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

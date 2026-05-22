@@ -66,11 +66,11 @@ Run once, on the laptop that will host the demo:
 4. **(Optional) Install autostart**, so the stack + hotspot come up at every
    logon without a UAC prompt:
    ```powershell
-   powershell -ExecutionPolicy Bypass -File aibox\scripts\windows\install-startup-task.ps1
+   powershell -ExecutionPolicy Bypass -File aibox\tools\llama-runtime\scripts\install_autostart.ps1
    ```
    This registers the `AIBox-Puente-Startup` scheduled task (logon trigger,
    45 s delay) and creates Desktop + Start Menu shortcuts to the WPF control
-   panel.
+   panel. (`uninstall_autostart.ps1` in the same folder reverses it.)
 
 ---
 
@@ -153,7 +153,7 @@ Hotspot. The demo stack does not depend on upstream connectivity either way.
 3. Check the Windows Settings → Network & Internet → Mobile Hotspot toggle
    state. If it's off, something stopped it between startup and now
    (Windows 10 Home auto-off being the most common cause).
-4. Run `start-hotspot.ps1` to retry.
+4. Run `tools\llama-runtime\scripts\setup_hotspot.ps1` to retry.
 
 ### "Students see the SSID but cannot load the portal"
 
@@ -161,7 +161,7 @@ Hotspot. The demo stack does not depend on upstream connectivity either way.
    - **Portal responds on 127.0.0.1** → Docker issue. Check
      `docker compose -f aibox/stack/docker-compose.yaml logs caddy`.
    - **Portal responds via hotspot IP** → firewall issue. Re-run
-     `start-hotspot.ps1` to re-create the `AIBox Hotspot HTTP` rule.
+     `tools\llama-runtime\scripts\setup_hotspot.ps1` to re-create the `AIBox Hotspot HTTP` rule.
    - **Hosts file offline-hostname mapping** → DNS issue.
      Students should still reach `http://192.168.137.1/` as fallback.
 

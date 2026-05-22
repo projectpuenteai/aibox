@@ -89,7 +89,7 @@ def test_index_manifest_summary_and_smoke_terms(runtime, tmp_path):
                 "tool_version": "test",
                 "built_at": "2026-05-15T00:00:00+00:00",
                 "source": {"chunks_file_name": "chunks.jsonl", "chunks_file_sha256": "abc"},
-                "embedding_model": {"name": "/models/embed", "dimension": 1024},
+                "embedding_model": {"name": "/models/embed-m3", "dimension": 1024},
                 "chroma": {"collection_name": "simplewiki_chunks", "chunk_count": 10},
                 "build": {"skipped_chunks": 2},
             }
@@ -105,7 +105,7 @@ def test_index_manifest_summary_and_smoke_terms(runtime, tmp_path):
         "built_at": "2026-05-15T00:00:00+00:00",
         "source_file": "chunks.jsonl",
         "source_sha256": "abc",
-        "embedding_model": "/models/embed",
+        "embedding_model": "/models/embed-m3",
         "embedding_dimension": 1024,
         "collection_name": "simplewiki_chunks",
         "chunk_count": 10,

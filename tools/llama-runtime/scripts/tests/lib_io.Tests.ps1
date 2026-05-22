@@ -19,12 +19,37 @@ Describe 'lib_io' {
         It 'preserves multi-line content without corruption' {
             $tmp = New-TemporaryFile
             try {
-                $lines = @('first line', 'second line', 'third line with unicode: ñ é')
+                $lines = @('first line', 'second line', 'third line with unicode: n~ e~')
                 Write-Utf8NoBom -Path $tmp.FullName -Lines $lines
                 $readBack = [System.IO.File]::ReadAllLines($tmp.FullName, [System.Text.Encoding]::UTF8)
                 $readBack.Length | Should -Be 3
                 $readBack[0] | Should -BeExactly 'first line'
-                $readBack[2] | Should -BeExactly 'third line with unicode: ñ é'
+                $readBack[2] | Should -BeExactly 'third line with unicode: n~ e~'
+            } finally {
+                Remove-Item -LiteralPath $tmp.FullName -Force
+            }
+        }
+
+        It 'accepts empty-string lines' {
+            $tmp = New-TemporaryFile
+            try {
+                $lines = @('first line', '', 'third line', '')
+                Write-Utf8NoBom -Path $tmp.FullName -Lines $lines
+                $readBack = [System.IO.File]::ReadAllLines($tmp.FullName, [System.Text.Encoding]::UTF8)
+                $readBack.Length | Should -Be 4
+                $readBack[1] | Should -BeExactly ''
+                $readBack[3] | Should -BeExactly ''
+            } finally {
+                Remove-Item -LiteralPath $tmp.FullName -Force
+            }
+        }
+
+        It 'accepts an empty line collection' {
+            $tmp = New-TemporaryFile
+            try {
+                Write-Utf8NoBom -Path $tmp.FullName -Lines @()
+                $readBack = [System.IO.File]::ReadAllText($tmp.FullName, [System.Text.Encoding]::UTF8)
+                $readBack | Should -BeExactly ''
             } finally {
                 Remove-Item -LiteralPath $tmp.FullName -Force
             }

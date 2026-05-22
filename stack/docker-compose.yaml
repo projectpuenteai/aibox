@@ -196,6 +196,13 @@ services:
       - ADMIN_DEFAULT_PASSWORD=${ADMIN_DEFAULT_PASSWORD:?Set ADMIN_DEFAULT_PASSWORD in stack/.env}
       - SESSION_TOKEN_PEPPER=${SESSION_TOKEN_PEPPER:?Set SESSION_TOKEN_PEPPER in stack/.env}
       - SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-false}
+      # ── Signup ──
+      # Default true so any device on the puente.link hotspot can self-register.
+      # Set ALLOW_PUBLIC_SIGNUP=false in stack/.env to lock down enrollment.
+      - ALLOW_PUBLIC_SIGNUP=${ALLOW_PUBLIC_SIGNUP:-true}
+      - SIGNUP_MAX_PER_HOUR_PER_IP=${SIGNUP_MAX_PER_HOUR_PER_IP:-5}
+      - USER_PASSWORD_MIN_LENGTH=${USER_PASSWORD_MIN_LENGTH:-8}
+      - GUEST_PASSWORD_MIN_LENGTH=${GUEST_PASSWORD_MIN_LENGTH:-4}
       # ── RAG / retrieval ──
       # CHROMA paths point to their own mounts, not under /data, so the index
       # and user data can be managed and backed up independently.
@@ -316,10 +323,12 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    # pidof catches "process gone" but not "process hung on a lock" — a real
-    # HTTP probe against the root catches both.
+    # HTTP probe alone catches both "process gone" and "process hung on a lock".
+    # We previously OR'd with `pidof kiwix-serve`, but pidof is not guaranteed
+    # to exist in the upstream image and a missing binary masks real failures
+    # as healthy.
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- --tries=1 --timeout=4 http://127.0.0.1:8080/ >/dev/null 2>&1 || pidof kiwix-serve >/dev/null"]
+      test: ["CMD-SHELL", "wget -q -O- --tries=1 --timeout=4 http://127.0.0.1:8080/ >/dev/null 2>&1 || exit 1"]
       interval: 30s
       timeout: 6s
       retries: 5
@@ -341,10 +350,12 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    # pidof catches "process gone" but not "process hung on a lock" — a real
-    # HTTP probe against the root catches both.
+    # HTTP probe alone catches both "process gone" and "process hung on a lock".
+    # We previously OR'd with `pidof kiwix-serve`, but pidof is not guaranteed
+    # to exist in the upstream image and a missing binary masks real failures
+    # as healthy.
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- --tries=1 --timeout=4 http://127.0.0.1:8080/ >/dev/null 2>&1 || pidof kiwix-serve >/dev/null"]
+      test: ["CMD-SHELL", "wget -q -O- --tries=1 --timeout=4 http://127.0.0.1:8080/ >/dev/null 2>&1 || exit 1"]
       interval: 30s
       timeout: 6s
       retries: 5

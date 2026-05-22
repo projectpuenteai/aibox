@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tutoriales — Project Puente AI</title>
+    <style>
+      :root {
+        --bg:         #eaf2fb;
+        --bg-end:     #d6e4f6;
+        --panel:      #ffffff;
+        --border:     #d9e5f3;
+        --accent:     #2f74db;
+        --accent-s:   #1b4f9c;
+        --accent-bg:  #eef4fb;
+        --text:       #0f172a;
+        --text-soft:  #475569;
+        --text-muted: #64748b;
+        --shadow:     0 8px 32px rgba(27,76,138,.1);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg:         #0c1730;
+          --bg-end:     #0f1f36;
+          --panel:      #162844;
+          --border:     #294669;
+          --accent:     #5b8ff5;
+          --accent-s:   #7aa6ff;
+          --accent-bg:  #162844;
+          --text:       #f8fafc;
+          --text-soft:  #cbd5e1;
+          --text-muted: #94a3b8;
+          --shadow:     0 8px 32px rgba(0,0,0,.3);
+        }
+      }
+      html[data-theme="light"] {
+        --bg:         #eaf2fb;
+        --bg-end:     #d6e4f6;
+        --panel:      #ffffff;
+        --border:     #d9e5f3;
+        --accent:     #2f74db;
+        --accent-s:   #1b4f9c;
+        --accent-bg:  #eef4fb;
+        --text:       #0f172a;
+        --text-soft:  #475569;
+        --text-muted: #64748b;
+        --shadow:     0 8px 32px rgba(27,76,138,.1);
+      }
+      html[data-theme="dark"] {
+        --bg:         #0c1730;
+        --bg-end:     #0f1f36;
+        --panel:      #162844;
+        --border:     #294669;
+        --accent:     #5b8ff5;
+        --accent-s:   #7aa6ff;
+        --accent-bg:  #162844;
+        --text:       #f8fafc;
+        --text-soft:  #cbd5e1;
+        --text-muted: #94a3b8;
+        --shadow:     0 8px 32px rgba(0,0,0,.3);
+      }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      html, body { min-height: 100%; }
+      body {
+        font-family: Aptos, "Segoe UI", Tahoma, sans-serif;
+        background: linear-gradient(135deg, var(--bg) 0%, var(--bg-end) 100%);
+        color: var(--text);
+        padding: 32px 20px 64px;
+      }
+      .wrap {
+        max-width: 880px;
+        margin: 0 auto;
+      }
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 28px;
+      }
+      .back-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--accent);
+        text-decoration: none;
+        font-weight: 600;
+        font-size: 15px;
+        padding: 8px 14px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        box-shadow: var(--shadow);
+        transition: transform .15s ease, background .15s ease;
+      }
+      .back-link:hover {
+        transform: translateX(-2px);
+        background: var(--accent-bg);
+      }
+      .brand {
+        font-size: 14px;
+        color: var(--text-muted);
+        font-weight: 600;
+        letter-spacing: .04em;
+        text-transform: uppercase;
+      }
+      h1 {
+        font-size: 32px;
+        font-weight: 700;
+        margin-bottom: 8px;
+        letter-spacing: -.01em;
+      }
+      .subtitle {
+        color: var(--text-soft);
+        font-size: 16px;
+        margin-bottom: 32px;
+      }
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 18px;
+      }
+      .card {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 22px;
+        border-radius: 16px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        box-shadow: var(--shadow);
+        text-decoration: none;
+        color: inherit;
+        transition: transform .15s ease, border-color .15s ease;
+      }
+      .card:hover {
+        transform: translateY(-2px);
+        border-color: var(--accent);
+      }
+      .card-icon {
+        width: 44px;
+        height: 44px;
+        border-radius: 12px;
+        background: var(--accent-bg);
+        color: var(--accent);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .card-title {
+        font-size: 18px;
+        font-weight: 700;
+      }
+      .card-desc {
+        color: var(--text-soft);
+        font-size: 14px;
+        line-height: 1.5;
+      }
+      .card-badge {
+        display: inline-block;
+        align-self: flex-start;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: .06em;
+        text-transform: uppercase;
+        color: var(--accent-s);
+        background: var(--accent-bg);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 3px 10px;
+      }
+      .hidden { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="topbar">
+        <a class="back-link" href="/" id="backLink">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
+          <span id="backLabel">Volver al portal</span>
+        </a>
+        <span class="brand">Project Puente AI</span>
+      </div>
+
+      <h1 id="pageTitle">Tutoriales</h1>
+      <p class="subtitle" id="pageSubtitle">Guías para aprender a usar el dispositivo Puente AI.</p>
+
+      <div class="cards">
+        <a class="card" href="general.html" id="cardGeneral">
+          <span class="card-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+            </svg>
+          </span>
+          <div class="card-title" id="cardGeneralTitle">Tutorial General</div>
+          <div class="card-desc" id="cardGeneralDesc">Guía general para usar el portal Puente AI.</div>
+        </a>
+
+        <a class="card hidden" href="kolibri-es.html" id="cardKolibri">
+          <span class="card-badge" id="cardKolibriBadge">Solo administradores</span>
+          <span class="card-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 10v6"/>
+              <path d="M2 10l10-5 10 5-10 5z"/>
+              <path d="M6 12v5c3 3 9 3 12 0v-5"/>
+            </svg>
+          </span>
+          <div class="card-title" id="cardKolibriTitle">Guía de Kolibri (Profesores)</div>
+          <div class="card-desc" id="cardKolibriDesc">Cómo configurar centros educativos, grupos y usuarios en Kolibri.</div>
+        </a>
+      </div>
+    </div>
+
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("puente-theme");
+          if (t === "light" || t === "dark") {
+            document.documentElement.setAttribute("data-theme", t);
+          }
+        } catch (e) {}
+      })();
+
+      var STRINGS = {
+        es: {
+          docTitle: "Tutoriales — Project Puente AI",
+          back: "Volver al portal",
+          title: "Tutoriales",
+          subtitle: "Guías para aprender a usar el dispositivo Puente AI.",
+          generalTitle: "Tutorial General",
+          generalDesc: "Guía general para usar el portal Puente AI.",
+          kolibriTitle: "Guía de Kolibri (Profesores)",
+          kolibriDesc: "Cómo configurar centros educativos, grupos y usuarios en Kolibri.",
+          adminBadge: "Solo administradores",
+          htmlLang: "es"
+        },
+        en: {
+          docTitle: "Tutorials — Project Puente AI",
+          back: "Back to portal",
+          title: "Tutorials",
+          subtitle: "Guides for learning how to use the Puente AI device.",
+          generalTitle: "General Tutorial",
+          generalDesc: "Overview of how to use the Puente AI portal.",
+          kolibriTitle: "Kolibri Teacher Guide (Spanish)",
+          kolibriDesc: "How to set up facilities, groups, and users in Kolibri.",
+          adminBadge: "Admins only",
+          htmlLang: "en"
+        }
+      };
+
+      function applyLanguage() {
+        var lang = "es";
+        try {
+          var stored = localStorage.getItem("puente-language");
+          if (stored === "en" || stored === "es") lang = stored;
+        } catch (e) {}
+        var s = STRINGS[lang];
+        document.documentElement.lang = s.htmlLang;
+        document.title = s.docTitle;
+        document.getElementById("backLabel").textContent = s.back;
+        document.getElementById("pageTitle").textContent = s.title;
+        document.getElementById("pageSubtitle").textContent = s.subtitle;
+        document.getElementById("cardGeneralTitle").textContent = s.generalTitle;
+        document.getElementById("cardGeneralDesc").textContent = s.generalDesc;
+        document.getElementById("cardKolibriTitle").textContent = s.kolibriTitle;
+        document.getElementById("cardKolibriDesc").textContent = s.kolibriDesc;
+        document.getElementById("cardKolibriBadge").textContent = s.adminBadge;
+      }
+
+      function checkAdmin() {
+        fetch("/ai/api/v1/app/auth/me", { credentials: "same-origin" })
+          .then(function (r) {
+            if (r.status === 401 || r.status === 403) {
+              window.location.replace("/");
+              return null;
+            }
+            if (!r.ok) return null;
+            return r.json();
+          })
+          .then(function (data) {
+            if (!data) return;
+            var user = data.user || data;
+            if (user && user.role === "admin") {
+              document.getElementById("cardKolibri").classList.remove("hidden");
+            }
+          })
+          .catch(function () {});
+      }
+
+      applyLanguage();
+      checkAdmin();
+    </script>
+  </body>
+</html>

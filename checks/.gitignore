@@ -1,0 +1,8 @@
+results.db
+results.db-wal
+results.db-shm
+reports/
+scratch/
+__pycache__/
+*.pyc
+.cache/

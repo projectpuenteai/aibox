@@ -1,6 +1,7 @@
 import base64
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 from fastapi import FastAPI
@@ -102,7 +103,10 @@ def test_language_specific_citation_uses_requested_language(mounted_app):
     _app, runtime = mounted_app
     citation = runtime._build_wiki_citation("Cafe", "http://localhost", wiki_language="es")
     assert citation is not None
-    assert citation["wiki_url"] == "http://localhost/wiki/es/viewer#wiki/Cafe"
+    assert citation["wiki_url"] == (
+        "http://localhost/wiki/es/search"
+        f"?books.name={quote(runtime.kiwix_book_es, safe='')}&pattern=Cafe"
+    )
 
 
 def test_citations_follow_rag_index_language_when_user_prefers_spanish(mounted_app):
@@ -115,7 +119,9 @@ def test_citations_follow_rag_index_language_when_user_prefers_spanish(mounted_a
         "http://localhost",
     )
     urls = [citation["wiki_url"] for citation in citations]
+    en_book = quote(runtime.kiwix_book_en, safe="")
+    es_book = quote(runtime.kiwix_book_es, safe="")
     assert urls == [
-        "http://localhost/wiki/en/viewer#wiki/Photosynthesis",
-        "http://localhost/wiki/es/viewer#wiki/Fotosintesis",
+        f"http://localhost/wiki/en/search?books.name={en_book}&pattern=Photosynthesis",
+        f"http://localhost/wiki/es/search?books.name={es_book}&pattern=Fotosintesis",
     ]

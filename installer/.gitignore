@@ -1,0 +1,32 @@
+# Build outputs
+dist/
+*.exe
+*.exe.sig
+*.msi
+*.dll
+*.pdb
+
+# Dev keypairs (NEVER commit)
+build/.secrets/
+build/.secrets/**
+*.ed25519.sk
+
+# Inno output
+Output/
+
+# .NET
+**/bin/
+**/obj/
+
+# WPF / .NET IDE
+*.user
+*.suo
+.vs/
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+
+# Local content staging
+build/staging/

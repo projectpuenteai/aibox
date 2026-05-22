@@ -1171,7 +1171,7 @@ Write-Host "[5/5] Refreshing portal connection info..."
 $netInfoScript = Join-Path $scriptDir "get_network_info.ps1"
 if (Test-Path $netInfoScript) {
   try {
-    & powershell -ExecutionPolicy Bypass -File $netInfoScript -Quiet | Out-Null
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $netInfoScript -Quiet | Out-Null
   } catch {
     $result.warnings.Add("Could not refresh network-info.json after hotspot setup.")
   }

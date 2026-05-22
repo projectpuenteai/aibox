@@ -7,7 +7,6 @@ chunk metadata that the indexer will embed and store.
 
 import argparse
 import json
-import math
 import os
 import re
 import sys
@@ -22,6 +21,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from tools.config.index_settings import CHUNKS_FILE, EMBED_DIM, EMBED_MODEL_NAME, PAGES_FILE
+from tools.pipeline_utils import count_lines, format_eta, set_low_priority
 
 CHUNK_TOOL_VERSION = "2026-05-15.1"
 CHECKPOINT_INTERVAL = int(os.getenv("CHUNK_CHECKPOINT_INTERVAL", "500"))
@@ -68,42 +68,6 @@ def _build_chunk_config(chunk_words, chunk_chars, overlap_words, min_chunk_words
         "overlap_words": int(overlap_words),
         "min_chunk_words": int(min_chunk_words),
     }
-
-def count_lines(filepath: str) -> int:
-    """Fast line count without loading entire file into memory."""
-    count = 0
-    with open(filepath, "rb") as f:
-        while True:
-            buf = f.raw.read(1024 * 1024)
-            if not buf:
-                break
-            count += buf.count(b"\n")
-    return count
-
-
-def format_eta(seconds: float) -> str:
-    if seconds <= 0 or not math.isfinite(seconds):
-        return "--:--"
-    m, s = divmod(int(seconds), 60)
-    h, m = divmod(m, 60)
-    if h > 0:
-        return f"{h}h {m:02d}m {s:02d}s"
-    return f"{m}m {s:02d}s"
-
-
-def set_low_priority():
-    try:
-        if sys.platform == "win32":
-            import ctypes
-            BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
-            ctypes.windll.kernel32.SetPriorityClass(
-                ctypes.windll.kernel32.GetCurrentProcess(),
-                BELOW_NORMAL_PRIORITY_CLASS,
-            )
-        else:
-            os.nice(10)
-    except Exception:
-        pass
 
 
 _word_re = re.compile(r"\w+", re.UNICODE)
@@ -619,7 +583,6 @@ if __name__ == "__main__":
         max(1, args.map_chunksize),
         resume=not args.no_resume,
     )
-
 
 
 

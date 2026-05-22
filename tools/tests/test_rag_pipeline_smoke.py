@@ -1,14 +1,26 @@
 #!/usr/bin/env python3
 """Verification script for the RAG pipeline.
 
-Requires the ChromaDB index and embedding/reranker models to be available
-(run inside the ai-control Docker container).
+Requires the ChromaDB index and embedding/reranker models to be available.
+Can be run two ways:
+
+  1. Inside the ai-control Docker container — `app_storage` is on sys.path.
+  2. From the repo on the host — the path shim below adds tools/ai-control
+     so the import resolves. The host still needs the embedding/reranker
+     models present and ChromaDB pointing at a populated index.
 """
 
-import json
 import sys
+from pathlib import Path
 
-from app_storage import StorageRuntime
+# Path shim: when run from tools/tests, add tools/ai-control so
+# `import app_storage` resolves. Harmless inside the container where
+# app_storage is already importable.
+_AI_CONTROL_DIR = Path(__file__).resolve().parents[1] / "ai-control"
+if _AI_CONTROL_DIR.exists() and str(_AI_CONTROL_DIR) not in sys.path:
+    sys.path.insert(0, str(_AI_CONTROL_DIR))
+
+from app_storage import StorageRuntime  # noqa: E402  (after path shim)
 
 
 def run_query(rt: StorageRuntime, query: str) -> dict:
@@ -71,7 +83,7 @@ def assert_retrieval_works(payload: dict, query: str):
     for citation in citations:
         assert citation.get("page_title"), f"FAIL [{query}]: citation missing page_title"
         assert citation.get("wiki_url"), f"FAIL [{query}]: citation missing wiki_url"
-        assert "/wiki/en/viewer#wiki/" in str(citation.get("wiki_url")), f"FAIL [{query}]: citation url has wrong format"
+        assert "/wiki/en/search?" in str(citation.get("wiki_url")), f"FAIL [{query}]: citation url has wrong format"
     for chunk in selected:
         assert not chunk.get("duplicate_removed"), (
             f"FAIL [{query}]: selected chunk incorrectly marked duplicate_removed: {chunk.get('title')}"
@@ -91,11 +103,15 @@ def assert_context_stats(payload: dict, query: str):
 
 
 def assert_citation_encoding(rt: StorageRuntime):
+    from urllib.parse import quote as _quote
     sample_title = "Caf\u00e9 con leche / a\u00f1o"
     citation = rt._build_wiki_citation(sample_title, "http://localhost")
     assert citation is not None, "FAIL [citation]: helper returned None"
     assert citation["page_title"] == sample_title, "FAIL [citation]: page_title mismatch"
-    assert citation["wiki_url"] == "http://localhost/wiki/en/viewer#wiki/Caf%C3%A9%20con%20leche%20%2F%20a%C3%B1o", (
+    expected_book = _quote(rt.kiwix_book_en, safe="")
+    expected_pattern = _quote(sample_title, safe="")
+    expected = f"http://localhost/wiki/en/search?books.name={expected_book}&pattern={expected_pattern}"
+    assert citation["wiki_url"] == expected, (
         f"FAIL [citation]: unexpected url {citation['wiki_url']!r}"
     )
     print("  PASS: citation helper encodes spaces, slash, and accents")

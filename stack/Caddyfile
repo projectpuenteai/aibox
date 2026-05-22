@@ -69,7 +69,16 @@
 
   @learn_root path /learn /learn/
   redir @learn_root /kolibri/
-  @learn_sub path_regexp learn_sub ^/learn/(.*)$
+  # The /learn/* portal shortcut redirects to /kolibri/* — but Kolibri's own
+  # Learn plugin exposes API endpoints at /learn/api/* (e.g.
+  # /learn/api/learnerclassroom/), which must NOT be redirected. Exclude the
+  # API path from the matcher and proxy /learn/api/* straight to Kolibri.
+  @learn_sub {
+    path_regexp learn_sub ^/learn/(.*)$
+    not {
+      path /learn/api /learn/api/*
+    }
+  }
   redir @learn_sub /kolibri/{re.learn_sub.1}
 
   redir /kolibri /kolibri/
@@ -100,6 +109,27 @@
   handle /content/* {
     reverse_proxy kolibri:8080
   }
+  # Kolibri plugins register their own URL roots outside /api/ — the Coach
+  # plugin in particular polls /coach/api/notifications/ every ~3s and the
+  # whole Coach module wedges into Kolibri's generic error page when that
+  # 404s. Other plugins (management, facility, user) can also expose
+  # plugin-rooted endpoints. Route them all to Kolibri so the SPA can finish
+  # bootstrapping.
+  handle /coach/* {
+    reverse_proxy kolibri:8080
+  }
+  handle /facility/api/* {
+    reverse_proxy kolibri:8080
+  }
+  handle /management/api/* {
+    reverse_proxy kolibri:8080
+  }
+  handle /user/api/* {
+    reverse_proxy kolibri:8080
+  }
+  handle /learn/api/* {
+    reverse_proxy kolibri:8080
+  }
 
   # ---- Portal homepage fallback ----
   root * /srv/portal
@@ -118,8 +148,22 @@
   @portal_js_css path *.js *.css
   header @portal_js_css Cache-Control "public, max-age=3600"
 
-  @portal_html path *.html /
-  header @portal_html Cache-Control "no-cache"
+  # Match every HTML entry point: literal *.html (e.g. /connect.html), the
+  # root /, and the per-app directory roots (/ai/, /docs/, /wiki-app/,
+  # /learn-app/) — Caddy resolves those to the directory's index.html via
+  # file_server, but the path matcher itself doesn't end in .html, so it
+  # would otherwise be missed and get the default (cacheable) response. A
+  # stale ai/index.html in the browser is the difference between RAG
+  # appearing broken and working, so this matcher must stay broad.
+  @portal_html path *.html / /ai/ /docs/ /wiki-app/ /learn-app/ /tutorials/
+  header @portal_html Cache-Control "no-cache, no-store, must-revalidate"
+
+  # Dynamic compression for responses that don't have a precompressed sibling
+  # on disk (most of the portal — MathJax, markdown-it, ai/index.html, etc.).
+  # Layered with `precompressed` below: Caddy serves a pre-built .zst/.gz/.br
+  # if one exists, otherwise falls back to on-the-fly zstd/gzip. Proxied
+  # responses from ai-control, Kolibri, Kiwix, etc. also get compressed.
+  encode zstd gzip
 
   file_server {
     precompressed zstd gzip br

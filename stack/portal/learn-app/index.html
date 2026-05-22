@@ -84,7 +84,7 @@
         <a id="homeLink" class="btn primary" href="/">Back to Home</a>
       </div>
     </header>
-    <iframe id="learnFrame" src="/kolibri/" title="Kolibri Learn"></iframe>
+    <iframe id="learnFrame" src="/kolibri/en/learn/" title="Kolibri Learn"></iframe>
   </main>
   <script>
     const STORAGE_KEYS = { language: "puente-language" };
@@ -114,6 +114,18 @@
       }
     }
 
+    // Kolibri 0.12.8 ships Latin-American Spanish as "es-419" (not "es") and
+    // English as "en". The bare /kolibri/ path returns the user's last-used
+    // locale, but a fresh visitor lands on the still-loading shell, so we
+    // pin the iframe to an explicit, known-good locale URL.
+    const KOLIBRI_LOCALE = { en: "en", es: "es-419" };
+    const KOLIBRI_BASE = "/kolibri";
+
+    function kolibriUrl(language) {
+      const locale = KOLIBRI_LOCALE[language] || KOLIBRI_LOCALE.en;
+      return `${KOLIBRI_BASE}/${locale}/learn/`;
+    }
+
     function applyLanguage(language = getLanguage()) {
       const t = copy[language] || copy.en;
       document.documentElement.lang = language;
@@ -122,7 +134,11 @@
       document.getElementById("pageSub").textContent = t.subtitle;
       document.getElementById("openLink").textContent = t.openFullPage;
       document.getElementById("homeLink").textContent = t.backToHome;
-      document.getElementById("learnFrame").setAttribute("title", t.iframeTitle);
+      const frame = document.getElementById("learnFrame");
+      frame.setAttribute("title", t.iframeTitle);
+      const target = kolibriUrl(language);
+      if (frame.getAttribute("src") !== target) frame.setAttribute("src", target);
+      document.getElementById("openLink").setAttribute("href", target);
     }
 
     async function syncLanguageFromUser() {

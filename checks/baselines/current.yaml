@@ -1,0 +1,8 @@
+# Pinned baselines for regression detection.
+# Add entries as: <check_id>.<metric_name>: {target: <value>, tolerance_pct: <pct>}
+# The reporter flags a metric as REGRESSION when |observed - target| / target > tolerance_pct / 100.
+
+# Example (uncomment and tune after first real runs):
+# "4.1.first_token_p95_ms": {target: 4000, tolerance_pct: 15}
+# "6.1.gpu_temp_max_c":     {target: 80,   tolerance_pct: 10}
+# "2.1.backend_data_bytes": {target: 5e9,  tolerance_pct: 50}

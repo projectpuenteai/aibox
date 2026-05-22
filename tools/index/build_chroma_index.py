@@ -13,7 +13,6 @@ This avoids the progressive HNSW slowdown that makes incremental writes very slo
 import argparse
 import hashlib
 import json
-import math
 import os
 import sys
 import time
@@ -39,6 +38,7 @@ from tools.config.index_settings import (
     EMBED_MODEL_NAME,
     PERSIST_DIR,
 )
+from tools.pipeline_utils import count_lines, format_eta, set_low_priority
 
 # CHROMA_BATCH controls how many vectors are flushed to Chroma per `col.add()`
 # call during the bulk-load phase. Larger batches mean fewer commits and lower
@@ -78,45 +78,6 @@ SKIP_SECTION_TITLES = {
     "bibliografia",
     "notas",
 }
-
-
-def count_lines(filepath: str) -> int:
-    """Fast line count without loading entire file into memory."""
-    count = 0
-    with open(filepath, "rb") as f:
-        while True:
-            buf = f.raw.read(1024 * 1024)
-            if not buf:
-                break
-            count += buf.count(b"\n")
-    return count
-
-
-def format_eta(seconds: float) -> str:
-    """Format seconds into a human-readable ETA string."""
-    if seconds <= 0 or not math.isfinite(seconds):
-        return "--:--"
-    m, s = divmod(int(seconds), 60)
-    h, m = divmod(m, 60)
-    if h > 0:
-        return f"{h}h {m:02d}m {s:02d}s"
-    return f"{m}m {s:02d}s"
-
-
-def set_low_priority():
-    """Set the current process to below-normal priority (Windows-aware)."""
-    try:
-        if sys.platform == "win32":
-            import ctypes
-            BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
-            ctypes.windll.kernel32.SetPriorityClass(
-                ctypes.windll.kernel32.GetCurrentProcess(),
-                BELOW_NORMAL_PRIORITY_CLASS,
-            )
-        else:
-            os.nice(10)
-    except Exception:
-        pass
 
 
 INDEX_TOOL_VERSION = "2026-05-15.1"
@@ -323,10 +284,25 @@ def main(
         configured_threads = max(1, int(raw * min(100, max(1, max_cpu_percent)) / 100))
         worker_threads = configured_threads
 
+    # Fail fast when the local embedding model is absent. The previous fallback
+    # silently caught the TypeError from sentence-transformers' older signature
+    # AND from missing files, which let us download the wrong checkpoint and
+    # build a corrupted index. We now retry without local_files_only ONLY when
+    # the path exists — a missing path is a real error and should stop the run.
+    embed_model_path = Path(EMBED_MODEL_NAME)
+    if not embed_model_path.exists():
+        raise FileNotFoundError(
+            f"Embedding model not found at {embed_model_path}. "
+            f"Set EMBED_MODEL to a real local path, or download the model "
+            f"into {embed_model_path} before running this script. We do not "
+            f"silently fall back to network download to avoid building the "
+            f"index with the wrong checkpoint."
+        )
     try:
-        model = SentenceTransformer(EMBED_MODEL_NAME, device=device, local_files_only=True)
+        model = SentenceTransformer(str(embed_model_path), device=device, local_files_only=True)
     except TypeError:
-        model = SentenceTransformer(EMBED_MODEL_NAME, device=device)
+        # Older sentence-transformers versions don't accept local_files_only.
+        model = SentenceTransformer(str(embed_model_path), device=device)
 
     # Buffer many texts before calling encode() — encode() handles internal
     # batching via batch_size, so a large buffer amortizes Python overhead

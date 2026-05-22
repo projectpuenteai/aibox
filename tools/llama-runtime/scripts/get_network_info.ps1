@@ -610,6 +610,9 @@ if ($hotspotActive -and -not $hotspotSourceReady) {
 if ($hotspotActive -and $preferredHostname -and -not $hotspotHostnameReady) {
   $warnings.Add("$preferredHostname is not resolving to $hotspotIp through the laptop's DNS service yet. Clients may need to use the hotspot IP.")
 }
+if ($hotspotActive -and $preferredHostname -and $hotspotIp) {
+  $notes.Add("Some clients use Private DNS or DNS-over-HTTPS and may ignore hotspot DNS. If $preferredHostname does not load on a client, use http://$hotspotIp/ or disable Private DNS for this Wi-Fi.")
+}
 
 $hostnameCandidates = @()
 if ($preferredHostname) {
@@ -620,7 +623,7 @@ if ($preferredHostname) {
     $hostnameCandidates += "http://$preferredHostname.local"
   }
   if ($hotspotReadiness -eq "ready") {
-    $notes.Add("OFFLINE_HOSTNAME is validated for hotspot clients and currently resolves through the AIBox DNS service.")
+    $notes.Add("OFFLINE_HOSTNAME is validated for hotspot clients and currently resolves through the AIBox DNS service, but some client DNS settings can still bypass local DNS.")
   } else {
     $notes.Add("OFFLINE_HOSTNAME is only advertised when client DNS, mDNS, or hosts entries resolve it to the host IP.")
   }
@@ -636,6 +639,7 @@ switch ($recommendedMethod) {
     if ($hotspotReadiness -eq "ready" -and $preferredHostname) {
       $steps += "Open http://$preferredHostname/ in a browser."
       $steps += "If the page does not load, use http://$hotspotIp/ as a temporary fallback and rerun diagnose_local_access.ps1 on the host."
+      $steps += "If the client uses Private DNS/DoH and the hostname still fails, disable that setting for this Wi-Fi or keep using http://$hotspotIp/."
     } else {
       $steps += "Open http://$hotspotIp/ in a browser."
       $steps += "The hotspot is up, but puente.link is not fully ready yet."
