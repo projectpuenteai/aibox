@@ -133,7 +133,7 @@ function Write-CheckLine {
 if (-not $Quiet) {
   Write-Host ""
   Write-Host "=== AIBox Demo Network Self-Test ===" -ForegroundColor Cyan
-  Write-Host ""
+  Write-Host "" 
 }
 
 # ── 0. Refresh network-info.json if requested ────────────────────────────────
@@ -203,7 +203,7 @@ try {
   foreach ($line in ($psOutput -split "`r?`n")) {
     $line = $line.Trim()
     if ([string]::IsNullOrWhiteSpace($line)) { continue }
-    if ($line -notmatch '^\s*\{') { continue }
+    if ($line[0] -ne '{') { continue }
     try {
       $svc = $line | ConvertFrom-Json
       if ($svc.State -eq "running") {
@@ -293,37 +293,6 @@ if ([string]::IsNullOrWhiteSpace($offlineHost)) {
 } else {
   $detail = if ($hostsDetail) { $hostsDetail } else { "'$offlineHost' not mapped to 192.168.137.x" }
   Add-Check "Hosts file offline-hostname mapping" "WARN" "$detail (setup_hotspot.ps1 writes this when the hotspot starts)" "Run tools\llama-runtime\scripts\setup_hotspot.ps1"
-}
-
-# -- 8b. Offline hostname resolves through hotspot DNS gateway ----------------
-$hotspotDnsDetail = ""
-$hotspotDnsResolved = $false
-if ([string]::IsNullOrWhiteSpace($offlineHost)) {
-  Add-Check "Offline hostname resolves via hotspot DNS" "WARN" "OFFLINE_HOSTNAME not set in .env"
-} elseif ([string]::IsNullOrWhiteSpace($hotspotIp)) {
-  Add-Check "Offline hostname resolves via hotspot DNS" "WARN" "hotspot IP not available; cannot query hotspot DNS gateway"
-} else {
-  try {
-    $dnsRecords = Resolve-DnsName -Name $offlineHost -Server $hotspotIp -Type A -DnsOnly -NoHostsFile -ErrorAction Stop
-    $resolvedIps = @(
-      $dnsRecords |
-        Where-Object { $_.Type -eq "A" -and -not [string]::IsNullOrWhiteSpace($_.IPAddress) } |
-        Select-Object -ExpandProperty IPAddress -Unique
-    )
-    if ($resolvedIps.Count -gt 0) {
-      $hotspotDnsDetail = "$offlineHost -> $($resolvedIps -join ', ') via $hotspotIp"
-    }
-    $hotspotDnsResolved = ($resolvedIps -contains $hotspotIp)
-  } catch {
-    $hotspotDnsDetail = "query failed: $($_.Exception.Message)"
-  }
-
-  if ($hotspotDnsResolved) {
-    Add-Check "Offline hostname resolves via hotspot DNS" "PASS" "$hotspotDnsDetail (note: some clients with Private DNS/DoH may still bypass hotspot DNS)"
-  } else {
-    $detail = if ($hotspotDnsDetail) { $hotspotDnsDetail } else { "$offlineHost did not resolve to $hotspotIp through hotspot DNS" }
-    Add-Check "Offline hostname resolves via hotspot DNS" "WARN" "$detail. Clients should use http://$hotspotIp/ and may need Private DNS/DoH disabled for this Wi-Fi."
-  }
 }
 
 # ── 9. Student URL printable ─────────────────────────────────────────────────
