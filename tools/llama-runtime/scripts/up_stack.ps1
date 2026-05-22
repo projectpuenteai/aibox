@@ -53,12 +53,12 @@ function Invoke-HotspotStartup {
   $jsonFile = Join-Path ([System.IO.Path]::GetTempPath()) ("aibox-hotspot-" + [guid]::NewGuid().ToString() + ".json")
   try {
     if (Test-IsAdministrator) {
-      & powershell -ExecutionPolicy Bypass -File $ScriptPath -EmitJson -JsonOutFile $jsonFile | Out-Null
+      & powershell -NoProfile -ExecutionPolicy Bypass -File $ScriptPath -EmitJson -JsonOutFile $jsonFile | Out-Null
     } else {
       try {
         $proc = Start-Process `
           -FilePath "powershell.exe" `
-          -ArgumentList @("-ExecutionPolicy", "Bypass", "-File", $ScriptPath, "-EmitJson", "-JsonOutFile", $jsonFile) `
+          -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $ScriptPath, "-EmitJson", "-JsonOutFile", $jsonFile) `
           -Verb RunAs `
           -Wait `
           -PassThru
@@ -216,6 +216,37 @@ function New-HexSecret {
   return ([BitConverter]::ToString($buffer) -replace "-", "").ToLowerInvariant()
 }
 
+function New-Base64Secret {
+  param([int]$Bytes = 32)
+
+  $buffer = New-Object byte[] $Bytes
+  $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+  try {
+    $rng.GetBytes($buffer)
+  } finally {
+    $rng.Dispose()
+  }
+  return [Convert]::ToBase64String($buffer)
+}
+
+function New-AdminPassword {
+  # 24 url-safe characters (~144 bits of entropy). Avoid characters that
+  # confuse copy-paste from a terminal log (no =, +, /, quotes).
+  $alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+  $buffer = New-Object byte[] 24
+  $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+  try {
+    $rng.GetBytes($buffer)
+  } finally {
+    $rng.Dispose()
+  }
+  $sb = New-Object System.Text.StringBuilder
+  foreach ($b in $buffer) {
+    [void]$sb.Append($alphabet[$b % $alphabet.Length])
+  }
+  return $sb.ToString()
+}
+
 function Set-DotEnvValue {
   param(
     [string]$Path,
@@ -255,27 +286,77 @@ function Set-DotEnvValue {
   Write-Utf8NoBom -Path $Path -Lines @($lines)
 }
 
+function Ensure-RequiredSecret {
+  param(
+    [Parameter(Mandatory)] [string]$Name,
+    [Parameter(Mandatory)] [string]$EnvPath,
+    [Parameter(Mandatory)] [hashtable]$EnvMap,
+    [Parameter(Mandatory)] [scriptblock]$Generator,
+    [string]$Description = "",
+    [switch]$AnnounceValue
+  )
+
+  $procVal = [Environment]::GetEnvironmentVariable($Name)
+  if (-not [string]::IsNullOrWhiteSpace($procVal)) {
+    Write-Info "$Name supplied by process environment."
+    return
+  }
+
+  if ($EnvMap.ContainsKey($Name) -and -not [string]::IsNullOrWhiteSpace($EnvMap[$Name])) {
+    Write-Info "$Name already configured in stack/.env."
+    return
+  }
+
+  $value = & $Generator
+  Set-DotEnvValue -Path $EnvPath -Name $Name -Value $value
+  $EnvMap[$Name] = $value
+  if ($AnnounceValue) {
+    Write-Info "Generated $Name and saved it to stack/.env."
+    Write-Host ""
+    Write-Host "  >>> $Name = $value" -ForegroundColor Yellow
+    if ($Description) { Write-Host "      $Description" -ForegroundColor DarkGray }
+    Write-Host ""
+  } else {
+    Write-Info "Generated $Name and saved it to stack/.env."
+  }
+}
+
 function Ensure-StartupEnv {
   param([string]$ComposeFilePath)
 
   $stackDir = Split-Path -Parent $ComposeFilePath
   $stackEnvPath = Join-Path $stackDir ".env"
   $stackEnv = Get-DotEnvMap -Path $stackEnvPath
-  $dnsEnv = [Environment]::GetEnvironmentVariable("DNS_ADMIN_PASSWORD")
 
-  if (-not [string]::IsNullOrWhiteSpace($dnsEnv)) {
-    Write-Info "DNS_ADMIN_PASSWORD supplied by process environment."
-    return
+  # DNS admin: hex secret, never shown to operator (DNS server has its own UI).
+  Ensure-RequiredSecret -Name "DNS_ADMIN_PASSWORD" -EnvPath $stackEnvPath -EnvMap $stackEnv `
+    -Generator { New-HexSecret -Bytes 32 }
+
+  # AES-256-GCM document/chat-encryption master key. Rotating this key would
+  # invalidate every encrypted artifact in storage, so we only generate it once
+  # and never touch it again.
+  Ensure-RequiredSecret -Name "APP_ENCRYPTION_MASTER_KEY" -EnvPath $stackEnvPath -EnvMap $stackEnv `
+    -Generator { New-Base64Secret -Bytes 32 }
+
+  # Session-token pepper. Rotating invalidates every active session — annoying
+  # but recoverable. Hex for simplicity.
+  Ensure-RequiredSecret -Name "SESSION_TOKEN_PEPPER" -EnvPath $stackEnvPath -EnvMap $stackEnv `
+    -Generator { New-HexSecret -Bytes 32 }
+
+  # Admin account. ADMIN_USERNAME has a sensible default in .env.example
+  # (puenteAdmin); we generate and ANNOUNCE the password so a fresh install
+  # has a working admin login without manual setup. The seeded password can
+  # only ever be set once — subsequent edits to .env have no effect.
+  if (-not $stackEnv.ContainsKey("ADMIN_USERNAME") -or [string]::IsNullOrWhiteSpace($stackEnv["ADMIN_USERNAME"])) {
+    Set-DotEnvValue -Path $stackEnvPath -Name "ADMIN_USERNAME" -Value "puenteAdmin"
+    $stackEnv["ADMIN_USERNAME"] = "puenteAdmin"
+    Write-Info "Defaulted ADMIN_USERNAME to puenteAdmin in stack/.env."
   }
 
-  if ($stackEnv.ContainsKey("DNS_ADMIN_PASSWORD") -and -not [string]::IsNullOrWhiteSpace($stackEnv["DNS_ADMIN_PASSWORD"])) {
-    Write-Info "DNS_ADMIN_PASSWORD already configured in stack/.env."
-    return
-  }
-
-  $generated = New-HexSecret -Bytes 32
-  Set-DotEnvValue -Path $stackEnvPath -Name "DNS_ADMIN_PASSWORD" -Value $generated
-  Write-Info "Generated DNS_ADMIN_PASSWORD and saved it to stack/.env."
+  Ensure-RequiredSecret -Name "ADMIN_DEFAULT_PASSWORD" -EnvPath $stackEnvPath -EnvMap $stackEnv `
+    -Generator { New-AdminPassword } `
+    -Description "Record this — it is the seed password for the admin account on first start. Change it via the portal afterward." `
+    -AnnounceValue
 }
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -549,7 +630,7 @@ if (-not $volumeProbeImagePresent) {
 # ─────────────────────────────────────────────────────────────────────────────
 
 $preflight = Join-Path $scriptDir "preflight_llama_runtime.ps1"
-$preflightArgs = @("-ExecutionPolicy", "Bypass", "-File", $preflight, "-ComposeFile", $ComposeFile)
+$preflightArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $preflight, "-ComposeFile", $ComposeFile)
 if ($SkipGpuProbe) {
   $preflightArgs += "-SkipGpuProbe"
 }
@@ -565,6 +646,11 @@ $canUseStart = ($desiredServices.Count -eq 0 -and $existingServices.Count -gt 0)
 if ($desiredServices.Count -gt 0) {
   $missingServices = @($desiredServices | Where-Object { $_ -notin $existingServices })
   $canUseStart = ($missingServices.Count -eq 0)
+}
+# -Recreate must override the start shortcut: the whole point of the switch
+# is to apply .env / compose changes that "docker compose start" preserves.
+if ($Recreate) {
+  $canUseStart = $false
 }
 
 if ($canUseStart) {
@@ -642,7 +728,7 @@ try {
 $cleanupScript = Join-Path $scriptDir "cleanup_docker_storage.ps1"
 if (Test-Path $cleanupScript) {
   Write-Info "Running routine Docker storage cleanup..."
-  & powershell -ExecutionPolicy Bypass -File $cleanupScript -Apply -Quiet
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $cleanupScript -Apply -Quiet
   if ($LASTEXITCODE -ne 0) {
     Write-Warn "Docker storage cleanup returned a non-zero exit code; continuing anyway."
   }
@@ -694,13 +780,108 @@ if (-not $SkipHotspot) {
   Write-Info "Hotspot skipped via -SkipHotspot."
 }
 
+# ── Puente DNS responder (after hotspot) ──────────────────────────────────────
+# Windows ICS's built-in DNS proxy only consults the hosts file for queries
+# from the host itself, so connected clients can't resolve puente.link through
+# it. Disable that proxy and run our own UDP DNS responder bound to the
+# hotspot IP. On any failure roll back to ICS DNS so clients still get
+# upstream lookups (they just won't get puente.link).
+if (-not $SkipHotspot -and $hotspotResult -and (([string]$hotspotResult.status) -in @('ready','ip_only'))) {
+  $hotspotIp = $null
+  try { $hotspotIp = [string]$hotspotResult.host_ip } catch {}
+  if ([string]::IsNullOrWhiteSpace($hotspotIp)) { $hotspotIp = "192.168.137.1" }
+
+  . (Join-Path $scriptDir 'lib\lib_ics_dns.ps1')
+  . (Join-Path $scriptDir 'lib\lib_puente_dns.ps1')
+
+  $dnsPidFile      = Join-Path $aiboxDir "backend-data\appdata\host-admin\puente_dns.pid"
+  $icsStateFile    = Join-Path $aiboxDir "backend-data\appdata\host-admin\ics_dns_prev.json"
+  $dnsPidDir       = Split-Path -Parent $dnsPidFile
+  $responderScript = Join-Path $scriptDir 'puente_dns_responder.ps1'
+  if (-not (Test-Path -LiteralPath $dnsPidDir)) {
+    New-Item -ItemType Directory -Path $dnsPidDir -Force | Out-Null
+  }
+
+  # If a previous responder is still alive AND answering correctly, leave it
+  # alone — re-running up_stack should be idempotent and not cause a DNS gap.
+  $alreadyHealthy = $false
+  if (Test-Path -LiteralPath $dnsPidFile) {
+    try {
+      $existingPid = [int](Get-Content -LiteralPath $dnsPidFile -Raw).Trim()
+      if (Test-PuenteResponderProcess -ProcessId $existingPid) {
+        if (Test-PuenteResponderAnswering -HostIp $hotspotIp -Domain "puente.link" -ExpectedIp $hotspotIp) {
+          Write-Ok "Puente DNS responder already running and answering (PID $existingPid). Skipping restart."
+          $alreadyHealthy = $true
+        } else {
+          Write-Info "Existing responder PID $existingPid is alive but not answering — restarting."
+          [void](Stop-PuenteResponderByPid -ProcessId $existingPid)
+        }
+      } else {
+        Write-Info "Stale puente_dns.pid contained PID $existingPid (not our responder). Discarding."
+      }
+    } catch {
+      Write-Info "Could not parse puente_dns.pid: $($_.Exception.Message). Discarding."
+    }
+    if (-not $alreadyHealthy) {
+      Remove-Item -LiteralPath $dnsPidFile -Force -ErrorAction SilentlyContinue
+    }
+  }
+
+  if (-not $alreadyHealthy) {
+    $prevIcsEnabled = $true
+    $icsToggled     = $false
+    try {
+      Write-Info "Disabling ICS DNS proxy so the Puente responder can bind ${hotspotIp}:53..."
+      $prevIcsEnabled = Disable-IcsDnsProxy
+      $icsToggled     = $true
+      Save-IcsDnsPriorState -Path $icsStateFile -PrevEnabled $prevIcsEnabled -WeToggled $true
+      Start-Sleep -Seconds 2
+
+      $dnsProc = Start-Process -FilePath "powershell.exe" `
+        -ArgumentList @(
+          "-NoProfile","-ExecutionPolicy","Bypass",
+          "-File",$responderScript,
+          "-ListenIp",$hotspotIp,
+          "-AnswerIp",$hotspotIp,
+          "-Domain","puente.link"
+        ) `
+        -WindowStyle Hidden -PassThru
+      Set-Content -LiteralPath $dnsPidFile -Value $dnsProc.Id -Encoding ASCII
+
+      # Poll for up to 6 s — cold-start of a hidden powershell.exe can easily
+      # take 2-3 s before the script reaches its UdpClient bind.
+      $verified = Wait-PuenteResponderAnswering `
+        -HostIp $hotspotIp -Domain "puente.link" -ExpectedIp $hotspotIp `
+        -TimeoutSec 6 -IntervalMs 250
+
+      if ($verified) {
+        Write-Ok "Puente DNS responder is answering puente.link -> $hotspotIp (PID $($dnsProc.Id))."
+      } else {
+        Write-Warn "Puente DNS responder did not verify within 6 s. Rolling back to ICS DNS proxy."
+        [void](Stop-PuenteResponderByPid -ProcessId $dnsProc.Id)
+        Remove-Item -LiteralPath $dnsPidFile -Force -ErrorAction SilentlyContinue
+        if ($icsToggled -and $prevIcsEnabled) {
+          try { Enable-IcsDnsProxy } catch { Write-Warn "Rollback Enable-IcsDnsProxy failed: $($_.Exception.Message)" }
+        }
+        Remove-Item -LiteralPath $icsStateFile -Force -ErrorAction SilentlyContinue
+      }
+    } catch {
+      Write-Warn "Could not start the Puente DNS responder: $($_.Exception.Message)"
+      if ($icsToggled -and $prevIcsEnabled) {
+        try { Enable-IcsDnsProxy } catch { Write-Warn "Rollback Enable-IcsDnsProxy failed: $($_.Exception.Message)" }
+      }
+      Remove-Item -LiteralPath $icsStateFile -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
 # ── Update portal connection info (best-effort, non-fatal) ────────────────────
 # Writes portal/network-info.json so connect.html shows current IPs / hotspot
 # status without needing a live API call.  Does not require elevation.
 $netInfoScript = Join-Path $scriptDir "get_network_info.ps1"
 if (Test-Path $netInfoScript) {
   Write-Info "Refreshing network info for portal..."
-  & powershell -ExecutionPolicy Bypass -File $netInfoScript -Quiet
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $netInfoScript -Quiet
   if ($LASTEXITCODE -ne 0) {
     Write-Warn "get_network_info.ps1 returned non-zero; portal connection info may be stale."
   }

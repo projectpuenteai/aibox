@@ -339,6 +339,13 @@
             <button class="copy-btn" onclick="copyText(document.getElementById('primaryUrl').textContent, this)">Copy</button>
           </div>
         </div>
+        <div class="url-block" id="backupUrlBlock" style="display:none; margin-top:14px">
+          <div class="url-label" id="backupUrlLabel">If puente.link does not load, use this address:</div>
+          <div class="url-row">
+            <a class="url-value" id="backupUrl" href="#" target="_blank">-</a>
+            <button class="copy-btn" onclick="copyText(document.getElementById('backupUrl').textContent, this)">Copy</button>
+          </div>
+        </div>
       </div>
 
       <div class="card guide-card" id="quickGuideCard" style="display:none">
@@ -518,6 +525,24 @@
             if (d.primary_url) {
               show("urlCard");
               href("primaryUrl", d.primary_url);
+            }
+
+            // Always surface the hotspot IPv4 as a backup URL when the hotspot is
+            // active, regardless of whether puente.link is currently resolving.
+            // Clients using DNS-over-HTTPS / Private DNS bypass the hotspot DNS
+            // entirely and can only reach the portal via the IP.
+            if (d.hotspot && d.hotspot.host_ip) {
+              var hotspotActive = d.hotspot && d.hotspot.status === "active";
+              var hostnameInPrimary = d.primary_url && d.primary_url.indexOf(d.hotspot.host_ip) === -1;
+              if (hotspotActive && hostnameInPrimary) {
+                show("backupUrlBlock");
+                var backupUrl = "http://" + d.hotspot.host_ip + "/";
+                href("backupUrl", backupUrl);
+                text("backupUrlLabel",
+                  d.hotspot.readiness === "ready"
+                    ? "If puente.link does not load on your device, use this address:"
+                    : "Backup address (puente.link is not resolving yet):");
+              }
             }
 
             var quickGuide = buildQuickGuide(d);
