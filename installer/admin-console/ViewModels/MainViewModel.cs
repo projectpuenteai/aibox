@@ -20,6 +20,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string _language = Translations.LangEs;
     private StackState _state = StackState.Off;
     private string? _ip;
+    private bool _hotspotUp;
+    private bool _statusBusy;
     private string? _lastError;
     private CancellationTokenSource? _runCts;
     private readonly DispatcherTimer _statusTimer;
@@ -39,20 +41,24 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }, () => ConsoleLines.Count > 0);
         ConsoleLines.CollectionChanged += (_, _) => ClearConsoleCommand.RaiseCanExecuteChanged();
 
-        _statusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
-        _statusTimer.Tick += (_, _) => OnStatusTick();
+        _statusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
+        _statusTimer.Tick += (_, _) => _ = RefreshStatusAsync();
 
-        // Probe once before timer starts so the UI opens in the right state
-        // even when the scheduled-task autostart brought the stack up earlier.
-        var probe = StackStatusProbe.Probe();
-        if (probe.IsLive)
-        {
-            _ip = probe.HotspotIp;
-            _state = StackState.Ready;
-        }
+        // Seed the hotspot fields synchronously so the Wi-Fi card opens with the
+        // right IP. State stays Off here; the first async refresh (kicked from
+        // StartStatusTimer) flips it to Ready ~1-2 s later when Docker is up —
+        // which is what happens after the scheduled-task autostart.
+        (_hotspotUp, _ip) = StackStatusProbe.ProbeHotspot();
     }
 
-    public void StartStatusTimer() => _statusTimer.Start();
+    public void StartStatusTimer()
+    {
+        _statusTimer.Start();
+        // Refresh immediately so the UI corrects to the real state on open
+        // instead of waiting a full tick.
+        _ = RefreshStatusAsync();
+    }
+
     public void StopStatusTimer() => _statusTimer.Stop();
 
     public bool IsTransitioning => _state == StackState.Starting || _state == StackState.Stopping;
@@ -89,7 +95,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
     }
 
-    public string IpDisplay => _ip ?? Translations.T(Language, "ipUnavailable");
+    public string IpDisplay => State == StackState.Ready
+        ? (_hotspotUp && _ip is not null ? _ip : Translations.T(Language, "hotspotInactive"))
+        : Translations.T(Language, "ipUnavailable");
+
+    /// <summary>Red when the system is up but the hotspot isn't broadcasting; blue otherwise.</summary>
+    public Brush IpBrush => Resource(State == StackState.Ready && !_hotspotUp
+        ? "BrandDangerDeep"
+        : "BrandBlueDeep");
 
     public string Title          => Translations.T(Language, "title");
     public string Subtitle       => Translations.T(Language, "subtitle");
@@ -123,7 +136,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             StackState.Off      => Translations.T(Language, "footerOff"),
             StackState.Starting => Translations.T(Language, "footerStarting"),
-            StackState.Ready    => Translations.TF(Language, "footerReady", Hostname),
+            StackState.Ready    => _hotspotUp
+                ? Translations.TF(Language, "footerReady", Hostname)
+                : Translations.T(Language, "footerReadyNoHotspot"),
             StackState.Stopping => Translations.T(Language, "footerStopping"),
             _ => "",
         };
@@ -211,15 +226,17 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
                 if (start.Ok)
                 {
-                    // Poll for the hotspot for up to 30 s. up_stack already does
-                    // its own recovery when the ICS DNS toggle disrupts the
-                    // adapter, but Mobile Hotspot can need a few seconds for
-                    // WinRT to rebind 192.168.137.1 after that recovery
-                    // finishes — we don't want to flash an error pill while
-                    // it's still settling.
-                    var probe = StackStatusProbe.Probe();
-                    var deadline = DateTime.UtcNow.AddSeconds(30);
-                    while (!probe.IsLive && DateTime.UtcNow < deadline)
+                    // Docker is the source of truth for "running". Confirm the
+                    // containers came up, then poll the hotspot for up to 20 s to
+                    // capture 192.168.137.1 — but DON'T gate Ready on it. Mobile
+                    // Hotspot can need a few seconds for WinRT to rebind after the
+                    // ICS DNS toggle, and an offline hotspot is a normal displayed
+                    // state ("HOTSPOT NOT ACTIVE"), not an error.
+                    var dockerRunning = await StackStatusProbe.ProbeDockerAsync(_runCts.Token).ConfigureAwait(true);
+
+                    var (hotspotUp, hotspotIp) = StackStatusProbe.ProbeHotspot();
+                    var deadline = DateTime.UtcNow.AddSeconds(20);
+                    while (!hotspotUp && DateTime.UtcNow < deadline)
                     {
                         try
                         {
@@ -229,13 +246,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
                         {
                             break;
                         }
-                        probe = StackStatusProbe.Probe();
+                        (hotspotUp, hotspotIp) = StackStatusProbe.ProbeHotspot();
                     }
 
-                    _ip = probe.HotspotIp;
-                    State = probe.IsLive ? StackState.Ready : StackState.Off;
-                    if (!probe.IsLive)
-                        _lastError = Translations.T(Language, "hotspotNotDetected");
+                    _hotspotUp = hotspotUp;
+                    _ip = hotspotIp;
+                    State = dockerRunning ? StackState.Ready : StackState.Off;
+                    if (!dockerRunning)
+                        _lastError = Translations.TF(Language, "scriptFailed", $"exit {start.ExitCode}");
                 }
                 else
                 {
@@ -243,6 +261,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                     State = StackState.Off;
                 }
                 Notify(nameof(IpDisplay));
+                Notify(nameof(IpBrush));
                 Notify(nameof(Footer));
                 break;
 
@@ -253,39 +272,50 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
                 var stop = await StackController.StopStackAsync(AppendConsoleLine, _runCts.Token).ConfigureAwait(true);
                 _ip = null;
+                _hotspotUp = false;
                 if (!stop.Ok)
                     _lastError = Translations.TF(Language, "scriptFailed", stop.ErrorMessage ?? $"exit {stop.ExitCode}");
                 State = StackState.Off;
                 Notify(nameof(IpDisplay));
+                Notify(nameof(IpBrush));
                 Notify(nameof(Footer));
                 break;
         }
     }
 
-    private void OnStatusTick()
+    private async Task RefreshStatusAsync()
     {
         // While a script is in flight, ToggleAsync owns the state — don't second-guess it.
-        if (IsTransitioning) return;
+        if (IsTransitioning || _statusBusy) return;
 
-        var probe = StackStatusProbe.Probe();
-        if (State == StackState.Off && probe.IsLive)
+        _statusBusy = true;
+        try
         {
+            var probe = await StackStatusProbe.ProbeAsync().ConfigureAwait(true);
+
+            var hotspotChanged = probe.HotspotUp != _hotspotUp || probe.HotspotIp != _ip;
+            _hotspotUp = probe.HotspotUp;
             _ip = probe.HotspotIp;
-            State = StackState.Ready;
-            Notify(nameof(IpDisplay));
-            Notify(nameof(Footer));
+
+            // Docker drives the pill/button. Auto-flip from idle states only;
+            // State's setter is a no-op when unchanged.
+            if (State == StackState.Off && probe.DockerRunning)
+                State = StackState.Ready;
+            else if (State == StackState.Ready && !probe.DockerRunning)
+                State = StackState.Off;
+
+            // Ip text/colour and the footer also depend on the hotspot, which the
+            // State setter doesn't cover — refresh them when it moved.
+            if (hotspotChanged)
+            {
+                Notify(nameof(IpDisplay));
+                Notify(nameof(IpBrush));
+                Notify(nameof(Footer));
+            }
         }
-        else if (State == StackState.Ready && !probe.IsLive)
+        finally
         {
-            _ip = null;
-            State = StackState.Off;
-            Notify(nameof(IpDisplay));
-            Notify(nameof(Footer));
-        }
-        else if (State == StackState.Ready && probe.IsLive && probe.HotspotIp != _ip)
-        {
-            _ip = probe.HotspotIp;
-            Notify(nameof(IpDisplay));
+            _statusBusy = false;
         }
     }
 
@@ -316,6 +346,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         Notify(nameof(PillDot));
         Notify(nameof(ButtonBrush));
         Notify(nameof(ButtonEnabled));
+        Notify(nameof(IpDisplay));
+        Notify(nameof(IpBrush));
         Notify(nameof(Footer));
         ToggleCommand.RaiseCanExecuteChanged();
     }
