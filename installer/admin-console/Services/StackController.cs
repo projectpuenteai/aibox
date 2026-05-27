@@ -9,7 +9,8 @@ namespace AIBox.AdminConsole.Services;
 /// <summary>
 /// Shells out to up_stack.ps1 / down_stack.ps1 via powershell.exe and streams
 /// each output line both to an optional UI callback and to the admin-console
-/// log file. Pattern adapted from aibox/installer/first-run/Services/DockerCli.cs.
+/// log file. Pattern adapted from the retired first-run app's DockerCli.cs
+/// (now archived at legacy/installer-download-path/first-run/Services/DockerCli.cs).
 ///
 /// The line callback receives (streamTag, line) where streamTag is "out" or
 /// "err"; UI consumers can colour-code error lines without re-parsing strings.

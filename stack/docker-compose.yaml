@@ -251,7 +251,11 @@ services:
       # User runtime data: SQLite DB, encrypted docs/chats, temp, security
       # Does NOT contain the ChromaDB index (kept separate below)
       - ../backend-data/appdata:/data
-      # ChromaDB indexes — isolated from user data for independent backup/restore
+      # ChromaDB indexes — isolated from user data for independent backup/restore.
+      # The English index (/chroma_db) is intentionally optional: it is NOT shipped
+      # on the USB payload and stays closed at runtime (RAG_SPANISH_ONLY=1,
+      # WARMUP_EN_AT_STARTUP=0). On a fresh USB install this bind-mount source does
+      # not exist; Docker creates an empty dir and the index is simply never opened.
       - ../backend-data/chroma_db:/chroma_db
       # Spanish index lives on a WSL2 native ext4 named volume to bypass the
       # ~120 MB/s 9p ceiling of the Windows bind mount. Cuts cold-boot HNSW
@@ -326,9 +330,11 @@ services:
     # HTTP probe alone catches both "process gone" and "process hung on a lock".
     # We previously OR'd with `pidof kiwix-serve`, but pidof is not guaranteed
     # to exist in the upstream image and a missing binary masks real failures
-    # as healthy.
+    # as healthy. The probe path MUST match --urlRootLocation (above): kiwix-serve
+    # serves everything under /wiki/en and returns 404 on /, so probing / would
+    # report the container unhealthy even while it serves fine.
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- --tries=1 --timeout=4 http://127.0.0.1:8080/ >/dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O- --tries=1 --timeout=4 http://127.0.0.1:8080/wiki/en >/dev/null 2>&1 || exit 1"]
       interval: 30s
       timeout: 6s
       retries: 5
@@ -353,9 +359,11 @@ services:
     # HTTP probe alone catches both "process gone" and "process hung on a lock".
     # We previously OR'd with `pidof kiwix-serve`, but pidof is not guaranteed
     # to exist in the upstream image and a missing binary masks real failures
-    # as healthy.
+    # as healthy. The probe path MUST match --urlRootLocation (above): kiwix-serve
+    # serves everything under /wiki/es and returns 404 on /, so probing / would
+    # report the container unhealthy even while it serves fine.
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- --tries=1 --timeout=4 http://127.0.0.1:8080/ >/dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O- --tries=1 --timeout=4 http://127.0.0.1:8080/wiki/es >/dev/null 2>&1 || exit 1"]
       interval: 30s
       timeout: 6s
       retries: 5
@@ -383,8 +391,11 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    # treehouses/kolibri ships Python 2 (no urllib.request) — try Py3 first, then
+    # fall back to Py2's urllib2 so the probe works regardless of the image's Python.
+    # Kolibri serves at :8080/ (HTTP 200), so / is the right probe path here.
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/', timeout=5)\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request as u; u.urlopen('http://127.0.0.1:8080/', timeout=5)\" >/dev/null 2>&1 || python -c \"import urllib2; urllib2.urlopen('http://127.0.0.1:8080/', timeout=5)\""]
       interval: 30s
       timeout: 10s
       retries: 10
