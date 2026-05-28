@@ -146,6 +146,30 @@ function Test-DockerDaemon {
   }
 }
 
+function Invoke-Docker {
+  # PS 5.1 promotes a native command's stderr to a TERMINATING error under
+  # $ErrorActionPreference='Stop' (set below) whenever a 2>/*> redirect is
+  # active. docker writes to stderr exactly when a probed volume/image is
+  # missing (the fresh-install case), so every probe must run with the
+  # preference relaxed or the script throws before its $LASTEXITCODE guard can
+  # run. Mirrors preflight_llama_runtime.ps1's helper.
+  param([string[]]$DockerArgs)
+
+  $saved = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $output = & docker @DockerArgs 2>&1
+    $code = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $saved
+  }
+
+  return @{
+    ExitCode = $code
+    Output = [string]::Join("`n", @($output))
+  }
+}
+
 function Start-DockerDesktopIfNeeded {
   param(
     [int]$TimeoutSeconds = 300
@@ -518,20 +542,33 @@ if (-not (Test-Path -LiteralPath $migrationSentinel)) {
 }
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ── Spanish Chroma native-volume bootstrap ───────────────────────────────────
-# Runtime mounts chroma_db_es_native at /chroma_db_es for faster HNSW loads on
-# WSL2. Keep startup self-healing by creating/populating the volume from the
-# repo-adjacent bind-mount source when needed.
-$spanishChromaSource = Join-Path $backendDataDir "chroma_db_es"
-$spanishChromaVolume = "chroma_db_es_native"
-$volumeInspect = & docker volume inspect $spanishChromaVolume 2>$null
-if ($LASTEXITCODE -ne 0) {
-  Write-Info "Creating Docker volume $spanishChromaVolume"
-  & docker volume create $spanishChromaVolume | Out-Null
-  if ($LASTEXITCODE -ne 0) {
-    throw "Could not create Docker volume $spanishChromaVolume"
+# ── Pre-create required external volumes ──────────────────────────────────────
+# docker-compose.yaml declares chroma_db_es_native and kolibri_data_native as
+# `external: true`, so `docker compose up` will NOT create them — it aborts with
+# "external volume ... not found" if they are missing. Pre-create them here
+# (idempotently) so the population blocks below and the final compose up all
+# succeed on a fresh install. This is the earliest point the Docker daemon is
+# guaranteed reachable (post Start-DockerDesktopIfNeeded / WSL-sync recovery) and
+# it precedes every `docker volume inspect`. Add any future external volume here.
+$RequiredVolumes = @('chroma_db_es_native', 'kolibri_data_native')
+foreach ($vol in $RequiredVolumes) {
+  if ((Invoke-Docker -DockerArgs @('volume', 'inspect', $vol)).ExitCode -ne 0) {
+    Write-Info "Creating Docker volume $vol"
+    $createResult = Invoke-Docker -DockerArgs @('volume', 'create', $vol)
+    if ($createResult.ExitCode -ne 0) {
+      throw "Could not create Docker volume '$vol': $($createResult.Output)"
+    }
+  } else {
+    Write-Info "Docker volume $vol already exists."
   }
 }
+
+# ── Spanish Chroma native-volume bootstrap ───────────────────────────────────
+# Runtime mounts chroma_db_es_native at /chroma_db_es for faster HNSW loads on
+# WSL2. Keep startup self-healing by populating the (pre-created above) volume
+# from the repo-adjacent bind-mount source when it is empty.
+$spanishChromaSource = Join-Path $backendDataDir "chroma_db_es"
+$spanishChromaVolume = "chroma_db_es_native"
 
 $volumeProbeImage = if ($env:VOLUME_PROBE_IMAGE) {
   $env:VOLUME_PROBE_IMAGE
@@ -542,21 +579,22 @@ $volumeProbeImage = if ($env:VOLUME_PROBE_IMAGE) {
 }
 # Pre-pull the volume probe image when missing so preflight and bootstrap blocks
 # can use it. Soft-fail when offline or pull is rate-limited.
-& docker image inspect $volumeProbeImage *> $null
-if ($LASTEXITCODE -ne 0) {
+if ((Invoke-Docker -DockerArgs @('image', 'inspect', $volumeProbeImage)).ExitCode -ne 0) {
   Write-Info "Pulling volume probe image $volumeProbeImage"
-  & docker pull $volumeProbeImage 2>&1 | ForEach-Object { Write-Host "  $_" }
-  if ($LASTEXITCODE -ne 0) {
+  $pullResult = Invoke-Docker -DockerArgs @('pull', $volumeProbeImage)
+  foreach ($pullLine in ($pullResult.Output -split "`r?`n")) {
+    if (-not [string]::IsNullOrWhiteSpace($pullLine)) { Write-Host "  $pullLine" }
+  }
+  if ($pullResult.ExitCode -ne 0) {
     Write-Warn "Volume probe image not pullable (offline or rate-limited); bootstrap will skip volume-content probes."
   }
 }
 $volumeHasCatalog = $false
 $volumeProbeImagePresent = $false
-& docker image inspect $volumeProbeImage *> $null
-if ($LASTEXITCODE -eq 0) {
+if ((Invoke-Docker -DockerArgs @('image', 'inspect', $volumeProbeImage)).ExitCode -eq 0) {
   $volumeProbeImagePresent = $true
-  & docker run --rm -v "${spanishChromaVolume}:/dst:ro" $volumeProbeImage sh -c "test -f /dst/chroma.sqlite3" *> $null
-  $volumeHasCatalog = ($LASTEXITCODE -eq 0)
+  $catalogProbe = Invoke-Docker -DockerArgs @('run', '--rm', '-v', "${spanishChromaVolume}:/dst:ro", $volumeProbeImage, 'sh', '-c', 'test -f /dst/chroma.sqlite3')
+  $volumeHasCatalog = ($catalogProbe.ExitCode -eq 0)
 }
 
 function Test-RealFile {
@@ -585,9 +623,9 @@ if (-not $volumeProbeImagePresent) {
   Write-Warn "Volume probe image $volumeProbeImage is not local; skipping Spanish Chroma volume copy."
 } elseif (-not $volumeHasCatalog -and (Test-RealFile -Path $spanishChromaCatalogPath)) {
   Write-Info "Populating $spanishChromaVolume from backend-data/chroma_db_es"
-  & docker run --rm -v "${spanishChromaSource}:/src:ro" -v "${spanishChromaVolume}:/dst" $volumeProbeImage sh -c "cd /src && tar cf - . | tar xf - -C /dst"
-  if ($LASTEXITCODE -ne 0) {
-    throw "Could not populate $spanishChromaVolume from $spanishChromaSource"
+  $copyResult = Invoke-Docker -DockerArgs @('run', '--rm', '-v', "${spanishChromaSource}:/src:ro", '-v', "${spanishChromaVolume}:/dst", $volumeProbeImage, 'sh', '-c', 'cd /src && tar cf - . | tar xf - -C /dst')
+  if ($copyResult.ExitCode -ne 0) {
+    throw "Could not populate $spanishChromaVolume from $spanishChromaSource. $($copyResult.Output)"
   }
 } elseif (-not $volumeHasCatalog) {
   Write-Warn "$spanishChromaVolume is not populated and backend-data/chroma_db_es/chroma.sqlite3 is missing."
@@ -597,37 +635,42 @@ if (-not $volumeProbeImagePresent) {
 # ── Kolibri native-volume bootstrap ──────────────────────────────────────────
 # Kolibri was migrated from a bind-mount to a named volume on 2026-05-19 to
 # avoid SQLite corruption on NTFS. Mirror the Spanish-Chroma self-healing
-# pattern: ensure the volume exists, and seed it from the repo-adjacent
-# bind-mount source when the volume is empty.
+# pattern: the volume is pre-created above; seed it from the repo-adjacent
+# bind-mount source when it is empty. On a fresh USB install the source is
+# absent (Kolibri creates its own db.sqlite3 on first boot and channels are
+# network-imported afterwards), so the volume simply stays empty here.
 $kolibriDataSource = Join-Path $aiboxDir "kolibri-data"
 $kolibriDataVolume = "kolibri_data_native"
-$kolibriVolumeInspect = & docker volume inspect $kolibriDataVolume 2>$null
-if ($LASTEXITCODE -ne 0) {
-  Write-Info "Creating Docker volume $kolibriDataVolume"
-  & docker volume create $kolibriDataVolume | Out-Null
-  if ($LASTEXITCODE -ne 0) {
-    throw "Could not create Docker volume $kolibriDataVolume"
-  }
-}
 
 $kolibriHasCatalog = $false
 if ($volumeProbeImagePresent) {
-  & docker run --rm -v "${kolibriDataVolume}:/dst:ro" $volumeProbeImage sh -c "test -f /dst/db.sqlite3" *> $null
-  $kolibriHasCatalog = ($LASTEXITCODE -eq 0)
+  $kolibriProbe = Invoke-Docker -DockerArgs @('run', '--rm', '-v', "${kolibriDataVolume}:/dst:ro", $volumeProbeImage, 'sh', '-c', 'test -f /dst/db.sqlite3')
+  $kolibriHasCatalog = ($kolibriProbe.ExitCode -eq 0)
 }
 
 if (-not $volumeProbeImagePresent) {
   Write-Warn "Volume probe image $volumeProbeImage is not local; skipping Kolibri volume copy."
 } elseif (-not $kolibriHasCatalog -and (Test-Path -LiteralPath $kolibriDataSource -PathType Container) -and (@(Get-ChildItem -LiteralPath $kolibriDataSource -Force -ErrorAction SilentlyContinue).Count -gt 0)) {
   Write-Info "Populating $kolibriDataVolume from kolibri-data/"
-  & docker run --rm -v "${kolibriDataSource}:/src:ro" -v "${kolibriDataVolume}:/dst" $volumeProbeImage sh -c "cd /src && tar cf - . | tar xf - -C /dst"
-  if ($LASTEXITCODE -ne 0) {
-    throw "Could not populate $kolibriDataVolume from $kolibriDataSource"
+  $kolibriCopyResult = Invoke-Docker -DockerArgs @('run', '--rm', '-v', "${kolibriDataSource}:/src:ro", '-v', "${kolibriDataVolume}:/dst", $volumeProbeImage, 'sh', '-c', 'cd /src && tar cf - . | tar xf - -C /dst')
+  if ($kolibriCopyResult.ExitCode -ne 0) {
+    throw "Could not populate $kolibriDataVolume from $kolibriDataSource. $($kolibriCopyResult.Output)"
   }
 } elseif (-not $kolibriHasCatalog) {
   Write-Warn "$kolibriDataVolume is not populated and bind-mount source ($kolibriDataSource) is empty/missing."
 }
 # ─────────────────────────────────────────────────────────────────────────────
+
+# Pull the container images before preflight. Preflight requires the llama image
+# to be present locally (it does not pull), so a fresh install with un-pulled
+# images would otherwise fail there. Best-effort: warn but do not throw if the
+# pull is offline/rate-limited — preflight then emits the actionable per-image
+# error. (Requires internet on the target, per the documented USB-install path.)
+Write-Info "Pulling container images (docker compose pull)..."
+$pullImages = Invoke-Docker -DockerArgs @('compose', '-f', $ComposeFile, 'pull')
+if ($pullImages.ExitCode -ne 0) {
+  Write-Warn "docker compose pull returned non-zero (offline or rate-limited?); preflight will report any missing image."
+}
 
 $preflight = Join-Path $scriptDir "preflight_llama_runtime.ps1"
 $preflightArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $preflight, "-ComposeFile", $ComposeFile)

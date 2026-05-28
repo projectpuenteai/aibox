@@ -6,11 +6,12 @@
 # into the repo's aibox/ tree, verifying every file against the SHA256 manifest,
 # then hands off to up_stack.ps1 to finish the install.
 #
-# up_stack.ps1 (reused, not duplicated here) generates stack/.env, populates the
-# chroma_db_es_native volume from the backend-data/chroma_db_es we just placed,
-# runs preflight, performs `docker compose pull` (needs internet), and starts the
-# stack. Kolibri channels are then imported over the network by
-# import_kolibri_channels.ps1 (the USB carries no Kolibri content).
+# up_stack.ps1 (reused, not duplicated here) generates stack/.env, pre-creates the
+# external named volumes, populates chroma_db_es_native from the
+# backend-data/chroma_db_es we just placed, performs `docker compose pull` (needs
+# internet), runs preflight, and starts the stack. Kolibri channels are then
+# imported over the network by import_kolibri_channels.ps1 (the USB carries no
+# Kolibri content).
 #
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File .\install_from_usb.ps1

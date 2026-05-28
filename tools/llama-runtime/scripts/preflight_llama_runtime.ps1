@@ -121,12 +121,22 @@ function Test-DockerVolumeDirectory {
   param(
     [string]$VolumeName,
     [string]$Description,
-    [string]$RequiredFile
+    [string]$RequiredFile,
+    # When set, only require the volume to EXIST, not to contain data. Used for
+    # volumes the stack fills on first boot (e.g. Kolibri creates its own
+    # db.sqlite3 and imports channels over the network after startup), which are
+    # legitimately empty at preflight time on a fresh install.
+    [switch]$AllowEmpty
   )
 
   $inspect = Invoke-Docker -Args @("volume", "inspect", $VolumeName)
   if ($inspect.ExitCode -ne 0) {
     Fail "volume_missing" "$Description Docker volume '$VolumeName' was not found. Populate it before startup or switch compose back to a bind mount."
+  }
+
+  if ($AllowEmpty) {
+    Write-Info "Found $Description Docker volume: $VolumeName (content not required at preflight)."
+    return
   }
 
   if (-not (Test-LocalDockerImage -ImageRef $script:VolumeProbeImage)) {
@@ -384,7 +394,7 @@ $kiwixDir = Join-Path $aiboxDir "kiwix"
 Test-RequiredFile -Code "kiwix_en_missing" -Path (Join-Path $kiwixDir "wikipedia_en_all_mini_2026-03.zim") -Description "English Kiwix ZIM"
 Test-RequiredFile -Code "kiwix_es_missing" -Path (Join-Path $kiwixDir "wikipedia_es_all_maxi_2026-02.zim") -Description "Spanish Kiwix ZIM"
 
-Test-DockerVolumeDirectory -VolumeName "kolibri_data_native" -Description "Kolibri data"
+Test-DockerVolumeDirectory -VolumeName "kolibri_data_native" -Description "Kolibri data" -AllowEmpty
 $kolibriDir = Join-Path $aiboxDir "kolibri-data"
 if (Test-Path -LiteralPath $kolibriDir -PathType Container) {
   # DarkGray soft-info hint; intentionally left as raw Write-Host so the visual
@@ -400,9 +410,16 @@ $retrievalOn = ([string]$retrievalEnabled.Value).Trim().ToLowerInvariant() -in @
 if ($retrievalOn) {
   $chromaDir = Join-Path $backendDataDir "chroma_db"
   $chromaEsDir = Join-Path $backendDataDir "chroma_db_es"
-  Test-RequiredDirectory -Code "chroma_en_missing" -Path $chromaDir -Description "English Chroma index" -RequireContent
+  # The English Chroma index is intentionally optional: it is NOT shipped on the
+  # USB payload and is never opened at runtime (docker-compose sets
+  # RAG_SPANISH_ONLY=1 / WARMUP_EN_AT_STARTUP=0). Warn if absent instead of
+  # failing so a fresh install is not blocked; all retrieval uses chroma_db_es.
   $chromaDb = Join-Path $chromaDir "chroma.sqlite3"
-  Test-RequiredFile -Code "chroma_en_sqlite_missing" -Path $chromaDb -Description "English Chroma SQLite catalog"
+  if (Test-Path -LiteralPath $chromaDb -PathType Leaf) {
+    Write-Info "Found English Chroma index: $chromaDir"
+  } else {
+    Write-Warn "English Chroma index absent ($chromaDir); skipping (RAG_SPANISH_ONLY uses chroma_db_es only)."
+  }
   Test-DockerVolumeDirectory -VolumeName "chroma_db_es_native" -Description "Spanish Chroma index" -RequiredFile "chroma.sqlite3"
   if (Test-Path -LiteralPath $chromaEsDir -PathType Container) {
     Write-Info "Found Spanish Chroma bind-mount source for repopulation: $chromaEsDir"
