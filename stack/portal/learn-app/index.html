@@ -107,10 +107,11 @@
 
     function getLanguage() {
       try {
-        const value = localStorage.getItem(STORAGE_KEYS.language);
-        return value === "es" ? "es" : "en";
+        // Session-scoped display language (sessionStorage), default Spanish.
+        const value = sessionStorage.getItem(STORAGE_KEYS.language);
+        return value === "en" ? "en" : "es";
       } catch {
-        return "en";
+        return "es";
       }
     }
 
@@ -146,8 +147,13 @@
         const response = await fetch("/ai/api/v1/app/auth/me", { credentials: "same-origin" });
         if (!response.ok) return;
         const data = await response.json();
-        const language = data?.user?.preferred_language === "es" ? "es" : getLanguage();
-        try { localStorage.setItem(STORAGE_KEYS.language, language); } catch {}
+        // A session toggle wins; otherwise follow the account's saved default.
+        let sessionLanguage = null;
+        try { sessionLanguage = sessionStorage.getItem(STORAGE_KEYS.language); } catch {}
+        const language = (sessionLanguage === "en" || sessionLanguage === "es")
+          ? sessionLanguage
+          : (data?.user?.preferred_language === "es" ? "es" : "en");
+        try { sessionStorage.setItem(STORAGE_KEYS.language, language); } catch {}
         applyLanguage(language);
       } catch {}
     }

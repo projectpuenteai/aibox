@@ -217,6 +217,9 @@
           <h1 id="chatTitle">Project Puente AI</h1>
         </div>
         <div class="row head-actions">
+          <button id="langToggle" class="btn theme-toggle icon-btn" type="button" aria-label="Cambiar idioma" title="Cambiar idioma">
+            <span id="langToggleLabel">EN</span>
+          </button>
           <button id="themeToggle" class="btn theme-toggle icon-btn" type="button" aria-label="Toggle theme" title="Toggle theme">
             <span id="themeIcon">&#9790;</span>
           </button>
@@ -297,6 +300,7 @@
         chats: "Chats",
         toggleSidebar: "Toggle sidebar",
         toggleTheme: "Toggle theme",
+        toggleLanguage: "Switch language",
         darkTheme: "Dark theme",
         lightTheme: "Light theme",
         chatTitle: "Project Puente AI",
@@ -511,6 +515,7 @@
         chats: "Chats",
         toggleSidebar: "Mostrar u ocultar barra lateral",
         toggleTheme: "Cambiar tema",
+        toggleLanguage: "Cambiar idioma",
         darkTheme: "Tema oscuro",
         lightTheme: "Tema claro",
         chatTitle: "Project Puente AI",
@@ -746,13 +751,15 @@
       sidebarOverlay: document.getElementById("sidebarOverlay"),
       themeToggle: document.getElementById("themeToggle"),
       themeIcon: document.getElementById("themeIcon"),
+      langToggle: document.getElementById("langToggle"),
+      langToggleLabel: document.getElementById("langToggleLabel"),
       clearChatTrashBtn: document.getElementById("clearChatTrashBtn"),
       createFolderBtn: document.getElementById("createFolderBtn"),
       createChatBtn: document.getElementById("createChatBtn")
     };
 
     const state = {
-      language: "en",
+      language: "es",
       user: null,
       chats: [],
       folders: [],
@@ -790,7 +797,9 @@
 
     function loadLocalPreferences() {
       try {
-        const language = localStorage.getItem(STORAGE_KEYS.language);
+        // Session-scoped display language: defaults to Spanish, a session toggle
+        // (sessionStorage) carries an "en" choice across in-tab navigation only.
+        const language = sessionStorage.getItem(STORAGE_KEYS.language);
         if (language === "en" || language === "es") {
           state.language = language;
         }
@@ -800,15 +809,37 @@
 
     function writeLocalPreferences() {
       try {
-        localStorage.setItem(STORAGE_KEYS.language, state.language);
+        sessionStorage.setItem(STORAGE_KEYS.language, state.language);
       } catch {}
     }
 
     function syncPreferencesFromUser(user) {
       if (!user) return;
-      state.language = user.preferred_language === "es" ? "es" : "en";
+      // A session toggle wins; otherwise follow the account's saved default.
+      let sessionLanguage = null;
+      try { sessionLanguage = sessionStorage.getItem(STORAGE_KEYS.language); } catch {}
+      state.language = (sessionLanguage === "en" || sessionLanguage === "es")
+        ? sessionLanguage
+        : (user.preferred_language === "es" ? "es" : "en");
       document.documentElement.lang = state.language;
       writeLocalPreferences();
+      renderStaticText();
+      renderMessages();
+      renderScopeTabs();
+      renderFolderList();
+      renderChatList();
+      renderComposerState();
+      renderActiveChatTitle();
+      renderRagToggle();
+      renderDiagnostics();
+    }
+
+    function setSessionLanguage(nextLanguage) {
+      // Session-only switch: changes the displayed language for this browser session
+      // without touching the account's saved default. Reverts on a new session / login.
+      state.language = nextLanguage === "en" ? "en" : "es";
+      try { sessionStorage.setItem(STORAGE_KEYS.language, state.language); } catch {}
+      document.documentElement.lang = state.language;
       renderStaticText();
       renderMessages();
       renderScopeTabs();
@@ -997,6 +1028,12 @@
       ui.prompt.placeholder = text("composerPlaceholder");
       ui.ragToggleBtn.setAttribute("aria-label", text("thinkingMode"));
       ui.ragToggleBtn.setAttribute("title", text("thinkingMode"));
+      if (ui.langToggle) {
+        ui.langToggle.setAttribute("aria-label", text("toggleLanguage"));
+        ui.langToggle.setAttribute("title", text("toggleLanguage"));
+      }
+      // Label shows the language the button switches TO.
+      if (ui.langToggleLabel) ui.langToggleLabel.textContent = state.language === "es" ? "EN" : "ES";
       renderComposerState();
       if (!state.sending && (!ui.status.textContent || ui.status.textContent === copy.en.loading || ui.status.textContent === copy.es.loading)) {
         ui.status.textContent = text("loading");
@@ -3374,6 +3411,12 @@
       ui.themeToggle.addEventListener("click", () => {
         applyTheme(!document.documentElement.classList.contains("dark"));
       });
+
+      if (ui.langToggle) {
+        ui.langToggle.addEventListener("click", () => {
+          setSessionLanguage(state.language === "en" ? "es" : "en");
+        });
+      }
 
       ui.messages.addEventListener("click", event => {
         const target = event.target;

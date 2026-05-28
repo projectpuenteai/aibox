@@ -44,6 +44,70 @@ if ($LASTEXITCODE -ne 0) {
   throw "docker compose up failed (exit code $LASTEXITCODE)"
 }
 
+# Wait for ai-control to be reachable through Caddy and report portal_ok=true
+# so the operator gets a clear ready signal before this script exits. The
+# portal loading overlay would also surface this state in the browser, but
+# without this CLI confirmation the operator has to refresh the tab to learn
+# whether the new container actually came back up. /ai/api/health returns 503
+# with the payload during warm-up (readiness_ok=false is the steady state on
+# this hardware), so we accept any status code and inspect the body.
+function Get-PortalHealthBody {
+  param([int]$TimeoutSec = 5)
+  $oldPref = $ProgressPreference
+  $ProgressPreference = 'SilentlyContinue'
+  try {
+    try {
+      $resp = Invoke-WebRequest -Uri "http://localhost/ai/api/health" -TimeoutSec $TimeoutSec -UseBasicParsing -ErrorAction Stop
+      return ($resp.Content | ConvertFrom-Json)
+    } catch [System.Net.WebException] {
+      if ($_.Exception.Response) {
+        try {
+          $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+          $bodyText = $reader.ReadToEnd()
+          $reader.Close()
+          return ($bodyText | ConvertFrom-Json)
+        } catch { return $null }
+      }
+      return $null
+    } catch {
+      return $null
+    }
+  } finally {
+    $ProgressPreference = $oldPref
+  }
+}
+
+Write-Info "Waiting for ai-control to report portal_ok (up to 240 s)..."
+$waitBudgetSec = 240
+$progressEverySec = 30
+$startedAt = Get-Date
+$readyDeadline = $startedAt.AddSeconds($waitBudgetSec)
+$readyConfirmed = $false
+$lastProgressAt = $startedAt
+while ((Get-Date) -lt $readyDeadline) {
+  $body = Get-PortalHealthBody -TimeoutSec 5
+  if ($body -and $body.portal_ok -eq $true) {
+    $readyConfirmed = $true
+    break
+  }
+  if (((Get-Date) - $lastProgressAt).TotalSeconds -ge $progressEverySec) {
+    $elapsed = [int]((Get-Date) - $startedAt).TotalSeconds
+    if ($body) {
+      Write-Info ("  still warming ({0}s elapsed; status_reason={1})" -f $elapsed, $body.status_reason)
+    } else {
+      Write-Info ("  still warming ({0}s elapsed; backend not yet responding)" -f $elapsed)
+    }
+    $lastProgressAt = Get-Date
+  }
+  Start-Sleep -Seconds 5
+}
+if ($readyConfirmed) {
+  $waited = [int]((Get-Date) - $startedAt).TotalSeconds
+  Write-Ok ("ai-control reachable (portal_ok=true after {0}s)" -f $waited)
+} else {
+  Write-Warn ("ai-control did not report portal_ok within {0} s -- check 'docker logs aibox-ai-control'" -f $waitBudgetSec)
+}
+
 if ($SkipPrune) {
   Write-Ok "Rebuild complete (prune skipped)."
   exit 0

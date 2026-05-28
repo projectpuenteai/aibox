@@ -22,7 +22,7 @@ def _coerce_bool(value: Any, default: bool = False) -> bool:
     return bool(default)
 
 
-def normalize_language_preference(value: Any, default: str = "en") -> str:
+def normalize_language_preference(value: Any, default: str = "es") -> str:
     """Clamp user-facing language choices to the supported portal locales."""
     text = str(value or "").strip().lower()
     return text if text in ("en", "es") else default
@@ -43,7 +43,7 @@ class SignupPayload(BaseModel):
     username: str
     password: str
     role: Optional[str] = "user"
-    preferred_language: Optional[str] = "en"
+    preferred_language: Optional[str] = "es"
     preferred_theme: Optional[str] = "light"
 
 

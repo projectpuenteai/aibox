@@ -634,17 +634,31 @@ def _public_startup_progress(payload: Dict[str, Any]) -> Dict[str, Any]:
         return {"phase": "stopping", "percent": 0}
     if service_state == "error":
         return {"phase": "error", "percent": 0}
+    # service_state == "running" but readiness_ok still false — FastAPI + storage
+    # runtime are up, only the strict gate (llama health probe + RAG smoke test)
+    # has not flipped True yet. Distinguish this from a true unknown state so
+    # the portal can show "AI warming up" rather than an opaque spinner.
+    if service_state == "running" and bool(payload.get("portal_ok")):
+        return {"phase": "warming_up", "percent": 50}
     return {"phase": service_state or "unknown", "percent": 50}
 
 
 @app.get("/health")
 def health_public() -> Dict[str, Any]:
-    """Minimal liveness check for Docker HEALTHCHECK — no internal details exposed."""
+    """Minimal liveness check for Docker HEALTHCHECK — no internal details exposed.
+
+    Exposes ``portal_ok`` and ``status_reason`` alongside ``readiness_ok`` so the
+    portal loading overlay can dismiss as soon as FastAPI + storage runtime are
+    mounted (``portal_ok``) without waiting for the stricter ``readiness_ok``
+    gate that also requires the llama 2-second health probe + RAG smoke test.
+    """
     payload = _status_payload()
     ok = bool(payload.get("readiness_ok"))
     result = {
         "ok": ok,
         "readiness_ok": ok,
+        "portal_ok": bool(payload.get("portal_ok")),
+        "status_reason": payload.get("status_reason"),
         "startup_progress": _public_startup_progress(payload),
     }
     if ok:

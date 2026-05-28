@@ -232,7 +232,7 @@ const ui = {
 const dompurifyAvailable = !!(window.DOMPurify && typeof window.DOMPurify.sanitize === "function");
 
 const state = {
-  language: "en",
+  language: "es",
   theme: "light",
   user: null,
   docs: [],
@@ -268,11 +268,16 @@ function applyTheme(theme) {
 
 function syncPreferencesFromUser(user) {
   if (!user) return;
-  state.language = user.preferred_language === "es" ? "es" : "en";
+  // A session toggle (sessionStorage) wins; otherwise follow the account's default.
+  let sessionLanguage = null;
+  try { sessionLanguage = sessionStorage.getItem(STORAGE_KEYS.language); } catch {}
+  state.language = (sessionLanguage === "en" || sessionLanguage === "es")
+    ? sessionLanguage
+    : (user.preferred_language === "es" ? "es" : "en");
   state.theme = user.preferred_theme === "dark" ? "dark" : "light";
   applyTheme(state.theme);
   try {
-    localStorage.setItem(STORAGE_KEYS.language, state.language);
+    sessionStorage.setItem(STORAGE_KEYS.language, state.language);
     localStorage.setItem(STORAGE_KEYS.theme, state.theme);
   } catch {}
   renderStaticText();
@@ -281,7 +286,8 @@ function syncPreferencesFromUser(user) {
 
 function loadLocalPreferences() {
   try {
-    const language = localStorage.getItem(STORAGE_KEYS.language);
+    // Language is session-scoped (sessionStorage), default Spanish; theme persists.
+    const language = sessionStorage.getItem(STORAGE_KEYS.language);
     const theme = localStorage.getItem(STORAGE_KEYS.theme);
     if (language === "en" || language === "es") {
       state.language = language;

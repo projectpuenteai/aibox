@@ -3484,6 +3484,11 @@ class StorageRuntime:
                 if r["role"] != "admin":
                     c.execute("UPDATE users SET role='admin' WHERE id=?", (r["id"],))
                     promoted = True
+                # One-time flip of the operator admin to Spanish: the portal defaults
+                # to Spanish for Latin American students, so puenteAdmin should too.
+                # Scoped to ADMIN_USERNAME only (this row) — does not touch students.
+                if r["preferred_language"] == "en":
+                    c.execute("UPDATE users SET preferred_language='es' WHERE id=?", (r["id"],))
                 self.ensure_restrictions_row(c, r["id"])
                 if promoted:
                     self._record_security_event(
@@ -3498,7 +3503,7 @@ class StorageRuntime:
             self.ensure_user_dirs(uid_)
             c.execute(
                 "INSERT INTO users(id,username,username_norm,password_hash,role,created_at,storage_bytes_used,preferred_language,preferred_theme) VALUES(?,?,?,?, 'admin', ?,0,?,?)",
-                (uid_, self.admin_username, self.nuser(self.admin_username), self._ph.hash(self.admin_password), self.now_iso(), "en", "light"),
+                (uid_, self.admin_username, self.nuser(self.admin_username), self._ph.hash(self.admin_password), self.now_iso(), "es", "light"),
             )
             self.ensure_restrictions_row(c, uid_)
             self._record_security_event(

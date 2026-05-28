@@ -80,7 +80,7 @@ def register_routes(app, rt) -> None:
         security_events for audit visibility.
         """
         username = (p.username or "").strip(); pw = p.password or ""; role = (p.role or "user").strip().lower()
-        preferred_language = normalize_language_preference(p.preferred_language, default="en")
+        preferred_language = normalize_language_preference(p.preferred_language, default="es")
         preferred_theme = normalize_theme_preference(p.preferred_theme, default="light")
         ip_ = rt.ip(req)
         endpoint = req.url.path
@@ -200,7 +200,7 @@ def register_routes(app, rt) -> None:
                     "last_login_at": u["last_login_at"],
                     "last_active_at": u["last_active_at"],
                     "storage_bytes_used": int(u["storage_bytes_used"]),
-                    "preferred_language": normalize_language_preference(u["preferred_language"], default="en"),
+                    "preferred_language": normalize_language_preference(u["preferred_language"], default="es"),
                     "preferred_theme": normalize_theme_preference(u["preferred_theme"], default="light"),
                     "locked_until": lock_until,
                     "docs_write_blocked_until": rr["docs_write_blocked_until"],
@@ -213,7 +213,7 @@ def register_routes(app, rt) -> None:
     def app_update_preferences(p: PreferencePayload, req: Request):
         with rt.tx() as c:
             u = rt.req_user(c, req, write=True)
-            preferred_language = normalize_language_preference(p.preferred_language, default=normalize_language_preference(u["preferred_language"], default="en"))
+            preferred_language = normalize_language_preference(p.preferred_language, default=normalize_language_preference(u["preferred_language"], default="es"))
             preferred_theme = normalize_theme_preference(p.preferred_theme, default=normalize_theme_preference(u["preferred_theme"], default="light"))
             c.execute("UPDATE users SET preferred_language=?, preferred_theme=? WHERE id=?", (preferred_language, preferred_theme, u["id"]))
             return {"ok": True, "user": {"id": u["id"], "username": u["username"], "role": u["role"], "preferred_language": preferred_language, "preferred_theme": preferred_theme}}
@@ -1246,8 +1246,8 @@ LIMIT ?
         title = str(payload.get("title") or user_msg[:48] or "New Chat")[:120]
         warns: List[Dict[str, Any]] = []
         user_role = "user"
-        preferred_language = "en"
-        response_language = "en"
+        preferred_language = "es"
+        response_language = "es"
         analytics_user: Optional[Dict[str, Any]] = None
         summary_base: Dict[str, Any] = {
             "request_id": request_id,
@@ -1279,9 +1279,9 @@ LIMIT ?
                 "preferred_language": u["preferred_language"],
             }
             try:
-                preferred_language = str(u["preferred_language"] or "en").strip().lower()
+                preferred_language = str(u["preferred_language"] or "es").strip().lower()
             except (KeyError, IndexError):
-                preferred_language = "en"
+                preferred_language = "es"
             # Detect query language; fall back to user's preferred language
             detected_lang = rt._detect_query_language(user_msg)
             response_language = detected_lang if detected_lang in ("en", "es") else preferred_language

@@ -252,7 +252,7 @@
       function applyLanguage() {
         var lang = "es";
         try {
-          var stored = localStorage.getItem("puente-language");
+          var stored = sessionStorage.getItem("puente-language");
           if (stored === "en" || stored === "es") lang = stored;
         } catch (e) {}
         var s = STRINGS[lang];

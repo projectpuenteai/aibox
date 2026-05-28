@@ -182,6 +182,38 @@
         color: var(--text-soft);
         font-weight: 600;
       }
+      .ai-warmup-pill {
+        display: none;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 14px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--text-soft);
+        border: 1px solid var(--panel-border);
+        font-size: 0.85rem;
+        font-weight: 500;
+        line-height: 1.2;
+        max-width: 280px;
+      }
+      .ai-warmup-pill.visible { display: inline-flex; }
+      .ai-warmup-pill .pill-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--accent);
+        flex-shrink: 0;
+        animation: ai-warmup-pulse 1.6s ease-in-out infinite;
+      }
+      .ai-warmup-pill .pill-text {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      @keyframes ai-warmup-pulse {
+        0%, 100% { opacity: 0.4; transform: scale(0.85); }
+        50% { opacity: 1; transform: scale(1.1); }
+      }
       .submit-btn, .tool-link.primary, .admin-btn.primary {
         border-color: var(--accent);
         background: linear-gradient(90deg, #4b84e4 0%, var(--accent) 100%);
@@ -1277,6 +1309,10 @@
                 </div>
               </div>
               <div class="header-actions">
+                <div class="ai-warmup-pill" id="aiWarmupPill" aria-live="polite">
+                  <span class="pill-dot" aria-hidden="true"></span>
+                  <span class="pill-text">AI calentándose / AI warming up</span>
+                </div>
                 <a href="/tutorials/" id="tutorialsBtn" class="header-btn icon-btn" title="Tutoriales" style="display:inline-flex;align-items:center;justify-content:center;text-decoration:none;" aria-label="Tutoriales">
                   <span class="icon" aria-hidden="true">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -2187,15 +2223,13 @@
 
       function readLocalPreferences() {
         try {
-          const language = localStorage.getItem(STORAGE_KEYS.language);
+          // Display language is session-scoped (sessionStorage): a previous-session
+          // "en" must not carry over. The logged-out home page always defaults to
+          // Spanish. Theme remains a persistent preference (localStorage).
+          const language = sessionStorage.getItem(STORAGE_KEYS.language);
           const theme = localStorage.getItem(STORAGE_KEYS.theme);
-          if (language === "en" || language === "es") {
-            state.language = language;
-            state.preferredLanguage = language;
-          } else {
-            state.language = "es";
-            state.preferredLanguage = "es";
-          }
+          state.language = (language === "en" || language === "es") ? language : "es";
+          state.preferredLanguage = "es";
           if (theme === "light" || theme === "dark") {
             state.theme = theme;
           }
@@ -2204,9 +2238,13 @@
 
       function writeLocalPreferences() {
         try {
-          localStorage.setItem(STORAGE_KEYS.language, state.language);
+          sessionStorage.setItem(STORAGE_KEYS.language, state.language);
           localStorage.setItem(STORAGE_KEYS.theme, state.theme);
         } catch {}
+      }
+
+      function clearSessionLanguage() {
+        try { sessionStorage.removeItem(STORAGE_KEYS.language); } catch {}
       }
 
       function normalizeRoleLabel(role) {
@@ -2261,21 +2299,41 @@
         if (!user) return;
         const preferredLanguage = user.preferred_language === "es" ? "es" : "en";
         const preferredTheme = user.preferred_theme === "dark" ? "dark" : "light";
-        state.language = preferredLanguage;
         state.preferredLanguage = preferredLanguage;
+        // A session toggle (sessionStorage) wins for the current session; otherwise
+        // the logged-in display language follows the account's saved default.
+        let sessionLanguage = null;
+        try { sessionLanguage = sessionStorage.getItem(STORAGE_KEYS.language); } catch {}
+        state.language = (sessionLanguage === "en" || sessionLanguage === "es")
+          ? sessionLanguage
+          : preferredLanguage;
         applyTheme(preferredTheme);
         writeLocalPreferences();
       }
 
-      function setLanguage(nextLanguage, persist = false) {
-        state.language = nextLanguage === "es" ? "es" : "en";
-        state.preferredLanguage = state.language;
+      function setSessionLanguage(nextLanguage) {
+        // Session-only switch (top-bar toggle): changes the displayed language for
+        // this browser session without touching the account's saved default. Reverts
+        // on a new session / next login.
+        state.language = nextLanguage === "en" ? "en" : "es";
+        try { sessionStorage.setItem(STORAGE_KEYS.language, state.language); } catch {}
+        renderStaticText();
+        renderAuthScreen();
+        renderPortal();
+      }
+
+      function setPreferredLanguage(nextLanguage) {
+        // Sticky per-account default (settings/signup picker). Persists to the backend
+        // when logged in; on the signup screen it just seeds the signup payload.
+        const lang = nextLanguage === "en" ? "en" : "es";
+        state.preferredLanguage = lang;
+        state.language = lang;
         writeLocalPreferences();
         renderStaticText();
         renderAuthScreen();
         renderPortal();
-        if (persist && state.user) {
-          persistPreferences({ preferred_language: state.language }).catch(() => {});
+        if (state.user) {
+          persistPreferences({ preferred_language: lang }).catch(() => {});
         }
       }
 
@@ -2895,12 +2953,13 @@
                 username: creds.username,
                 password: creds.password,
                 role: "guest",
-                preferred_language: state.language,
+                preferred_language: state.preferredLanguage,
                 preferred_theme: "light"
               });
               await api("/auth/login", "POST", { username: creds.username, password: creds.password });
               ui.loginUser.value = "";
               ui.loginPass.value = "";
+              clearSessionLanguage();
               await refreshSession();
               return;
             } catch (error) {
@@ -3104,7 +3163,7 @@
 
       ui.langToggleBtn.addEventListener("click", () => {
         const nextLanguage = state.language === "en" ? "es" : "en";
-        setLanguage(nextLanguage, !!state.user);
+        setSessionLanguage(nextLanguage);
       });
 
       ui.themeToggleBtn.addEventListener("click", () => {
@@ -3121,8 +3180,8 @@
         });
       });
 
-      ui.prefSpanishBtn.addEventListener("click", () => setLanguage("es", false));
-      ui.prefEnglishBtn.addEventListener("click", () => setLanguage("en", false));
+      ui.prefSpanishBtn.addEventListener("click", () => setPreferredLanguage("es"));
+      ui.prefEnglishBtn.addEventListener("click", () => setPreferredLanguage("en"));
       ui.themeLightBtn.addEventListener("click", () => setCreateTheme("light"));
       ui.themeDarkBtn.addEventListener("click", () => setCreateTheme("dark"));
 
@@ -3144,7 +3203,7 @@
           ui.signupUser.value = "";
           ui.signupPass.value = "";
           ui.signupConfirm.value = "";
-          writeLocalPreferences();
+          clearSessionLanguage();
           await refreshSession();
         } catch (error) {
           ui.signupError.textContent = error instanceof Error ? error.message : t.signupFailed;
@@ -3162,6 +3221,7 @@
           await api("/auth/login", "POST", { username: ui.loginUser.value, password: ui.loginPass.value });
           ui.loginUser.value = "";
           ui.loginPass.value = "";
+          clearSessionLanguage();
           await refreshSession();
         } catch (error) {
           ui.loginError.textContent = error instanceof Error ? error.message : t.loginFailed;
@@ -3177,6 +3237,10 @@
       ui.logoutBtn.addEventListener("click", async () => {
         try { await api("/auth/logout", "POST"); } catch {}
         state.user = null;
+        // Back to the logged-out home page: always Spanish, drop any session toggle.
+        clearSessionLanguage();
+        state.language = "es";
+        state.preferredLanguage = "es";
         state.adminVisible = false;
         stopAdminAutoRefresh();
         state.users = [];
@@ -3328,9 +3392,9 @@
         var _loadStart = 0;
         var _loadTimer = null;
         var _continueShownAt = 0;
-        var _hardCapMs = 180000;     // auto-dismiss after 3 minutes
-        var _continueAfterMs = 60000; // offer "Continue anyway" after 60s
-        var _hintAfterMs = 25000;    // surface status_reason after 25s
+        var _hardCapMs = 45000;
+        var _continueAfterMs = 20000;
+        var _hintAfterMs = 12000;
         var _settled = false;
 
         var STATUS_REASON_HINTS = {
@@ -3342,6 +3406,8 @@
           shutdown_in_progress: "Backend is shutting down.",
           manual_forced_off: "AI is manually disabled — portal still usable.",
           startup_failed: "Backend reported a startup error — see admin diagnostics.",
+          warming_up: "AI calentándose / AI warming up",
+          backend_unreachable: "Reconectando con el servidor / Reconnecting to backend",
         };
 
         function _hintFor(payload) {
@@ -3405,8 +3471,8 @@
         }
 
         async function fetchBackendStatus() {
-          // Read /ai/api/health regardless of HTTP status — the 503 body still
-          // carries portal_ok, readiness_ok, and status_reason.
+          // /ai/api/health returns 503 with the full payload during warm-up;
+          // we need to inspect the body either way.
           try {
             var res = await fetch("/ai/api/health", { cache: "no-store" });
             var data = await res.json().catch(function () { return null; });
@@ -3422,14 +3488,80 @@
         }
 
         function _isPortalReady(snap) {
+          // Lenient: portal is browsable once FastAPI + storage runtime are
+          // up (portal_ok). Strict readiness (llama health + RAG smoke test)
+          // is tracked separately by _isAIReady and surfaced as a topbar pill,
+          // not as a blocking overlay — chat works once portal_ok is true.
           if (!snap || !snap.reachable || !snap.data) return false;
           var d = snap.data;
-          // Strict gate: wait for llama to be healthy AND RAG smoke test to
-          // pass (readiness_ok). "Continue anyway" + 180 s hard timeout cover
-          // the case where warm-up stalls.
+          if (d.portal_ok === true) return true;
           if (d.readiness_ok === true) return true;
           if (d.readiness_ok === undefined && d.liveness_ok === true) return true;
           return false;
+        }
+
+        function _isAIReady(snap) {
+          if (!snap || !snap.reachable || !snap.data) return false;
+          return snap.data.readiness_ok === true;
+        }
+
+        // Topbar warmup pill — shown when portal_ok && !readiness_ok.
+        var _aiPillTimer = null;
+        var _aiPillStartedAt = 0;
+        var _aiPillMaxMs = 5 * 60 * 1000;
+        var _aiPillIntervalMs = 8000;
+
+        function _setPillVisible(visible, hint) {
+          var pill = document.getElementById("aiWarmupPill");
+          if (!pill) return;
+          var text = pill.querySelector(".pill-text");
+          if (visible) {
+            if (text && hint) text.textContent = hint;
+            pill.classList.add("visible");
+          } else {
+            pill.classList.remove("visible");
+          }
+        }
+
+        function _stopAIWarmupPoll() {
+          if (_aiPillTimer) { clearInterval(_aiPillTimer); _aiPillTimer = null; }
+        }
+
+        async function _aiWarmupTick() {
+          if (Date.now() - _aiPillStartedAt > _aiPillMaxMs) {
+            _setPillVisible(false);
+            _stopAIWarmupPoll();
+            return;
+          }
+          var snap = await fetchBackendStatus();
+          if (_isAIReady(snap)) {
+            _setPillVisible(false);
+            _stopAIWarmupPoll();
+            return;
+          }
+          // Reachable + portal_ok: AI still warming.
+          if (snap && snap.reachable && snap.data && snap.data.portal_ok === true) {
+            _setPillVisible(true, _hintFor(snap.data) || STATUS_REASON_HINTS.warming_up);
+            return;
+          }
+          // Unreachable or 5xx without portal_ok — surface as "Reconnecting".
+          // Don't go silent: a mid-session ai-control restart would otherwise
+          // leave the user clicking dead buttons with no visible signal.
+          _setPillVisible(true, STATUS_REASON_HINTS.backend_unreachable);
+        }
+
+        function startAIWarmupPoll(initialSnap) {
+          _stopAIWarmupPoll();
+          if (initialSnap && _isAIReady(initialSnap)) {
+            _setPillVisible(false);
+            return;
+          }
+          if (initialSnap && initialSnap.data && initialSnap.data.portal_ok === true) {
+            _setPillVisible(true, _hintFor(initialSnap.data) || "AI calentándose / AI warming up");
+          }
+          _aiPillStartedAt = Date.now();
+          _aiPillTimer = setInterval(_aiWarmupTick, _aiPillIntervalMs);
+          if (!initialSnap) setTimeout(_aiWarmupTick, 50);
         }
 
         var _onReadyCallback = null;
@@ -3450,7 +3582,12 @@
         async function pollUntilReady(onReady) {
           _onReadyCallback = onReady;
           var snap = await fetchBackendStatus();
-          if (_isPortalReady(snap)) { _onReadyCallback = null; onReady(); return; }
+          if (_isPortalReady(snap)) {
+            _onReadyCallback = null;
+            onReady();
+            startAIWarmupPoll(snap);
+            return;
+          }
           showLoadingOverlay();
           var btn = document.getElementById("loadingContinueBtn");
           if (btn) {
@@ -3467,6 +3604,7 @@
               _settled = true;
               _onReadyCallback = onReady;
               _forceContinue("ready");
+              startAIWarmupPoll(s);
               return;
             }
             var hint = document.getElementById("loadingHint");

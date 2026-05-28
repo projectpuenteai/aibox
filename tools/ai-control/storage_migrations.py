@@ -61,7 +61,7 @@ def ensure_column(c: sqlite3.Connection, table: str, column: str, ddl: str) -> N
 def _migration_001_core_schema(c: sqlite3.Connection) -> None:
     c.executescript(
         """
-CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,username TEXT UNIQUE NOT NULL,username_norm TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,role TEXT NOT NULL,created_at TEXT NOT NULL,last_login_at TEXT,last_active_at TEXT,storage_bytes_used INTEGER NOT NULL DEFAULT 0,is_deleted INTEGER NOT NULL DEFAULT 0,deleted_at TEXT,locked_until TEXT,lock_reason TEXT,preferred_language TEXT NOT NULL DEFAULT 'en',preferred_theme TEXT NOT NULL DEFAULT 'light');
+CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,username TEXT UNIQUE NOT NULL,username_norm TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,role TEXT NOT NULL,created_at TEXT NOT NULL,last_login_at TEXT,last_active_at TEXT,storage_bytes_used INTEGER NOT NULL DEFAULT 0,is_deleted INTEGER NOT NULL DEFAULT 0,deleted_at TEXT,locked_until TEXT,lock_reason TEXT,preferred_language TEXT NOT NULL DEFAULT 'es',preferred_theme TEXT NOT NULL DEFAULT 'light');
 CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,user_id TEXT NOT NULL,token_hash TEXT UNIQUE NOT NULL,created_at TEXT NOT NULL,expires_at TEXT NOT NULL,last_accessed_at TEXT,ip TEXT,user_agent TEXT,revoked_at TEXT,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
 CREATE INDEX IF NOT EXISTS ix_sessions_token ON sessions(token_hash);
 CREATE TABLE IF NOT EXISTS login_attempts(username_norm TEXT NOT NULL,ip TEXT NOT NULL,fail_count INTEGER NOT NULL DEFAULT 0,first_attempt_ts INTEGER NOT NULL,last_attempt_ts INTEGER NOT NULL,lockout_until_ts INTEGER,PRIMARY KEY(username_norm,ip));
@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS cleanup_events(id INTEGER PRIMARY KEY AUTOINCREMENT,r
     ensure_column(c, "users", "deleted_at", "deleted_at TEXT")
     ensure_column(c, "users", "locked_until", "locked_until TEXT")
     ensure_column(c, "users", "lock_reason", "lock_reason TEXT")
-    ensure_column(c, "users", "preferred_language", "preferred_language TEXT NOT NULL DEFAULT 'en'")
+    ensure_column(c, "users", "preferred_language", "preferred_language TEXT NOT NULL DEFAULT 'es'")
     ensure_column(c, "users", "preferred_theme", "preferred_theme TEXT NOT NULL DEFAULT 'light'")
 
     ensure_column(c, "chats", "last_accessed_at", "last_accessed_at TEXT")
@@ -105,10 +105,10 @@ CREATE TABLE IF NOT EXISTS cleanup_events(id INTEGER PRIMARY KEY AUTOINCREMENT,r
 
 
 def _migration_002_user_and_chat_lifecycle(c: sqlite3.Connection) -> None:
-    ensure_column(c, "users", "preferred_language", "preferred_language TEXT NOT NULL DEFAULT 'en'")
+    ensure_column(c, "users", "preferred_language", "preferred_language TEXT NOT NULL DEFAULT 'es'")
     ensure_column(c, "users", "preferred_theme", "preferred_theme TEXT NOT NULL DEFAULT 'light'")
     ensure_column(c, "users", "guest_logout_at", "guest_logout_at TEXT")
-    c.execute("UPDATE users SET preferred_language='en' WHERE preferred_language IS NULL OR TRIM(preferred_language)='' OR LOWER(TRIM(preferred_language)) NOT IN ('en','es')")
+    c.execute("UPDATE users SET preferred_language='es' WHERE preferred_language IS NULL OR TRIM(preferred_language)='' OR LOWER(TRIM(preferred_language)) NOT IN ('en','es')")
     c.execute("UPDATE users SET preferred_theme='light' WHERE preferred_theme IS NULL OR TRIM(preferred_theme)='' OR LOWER(TRIM(preferred_theme)) NOT IN ('light','dark')")
 
     c.execute(
